@@ -97,3 +97,9 @@ curl http://127.0.0.1:3100/health
   и перезапустить приложение. (Правки бэкенда — просто перезапуск launchd-джобы.)
 - **Бэкенд крутится из зеркала вне iCloud**: `~/Library/Application Support/Negroni/runtime-20260906` (см. `REPO` в `negroni-stack.sh`). Изменённые исходники api/packages нужно скопировать туда, собранный веб положить и в `/Applications/Negroni.app/Contents/Resources/web`, и в `runtime-20260906/apps/web/dist` (его отдаёт `vite preview` на 5173), потом перезапустить джобу.
 - 2026-09-03: починили нечитаемый код в светлой теме — `packages/chat-ui/src/markdown.web.css`, инлайн-код и код-блоки теперь `#ececf0` на тёмной заливке.
+
+## TestFlight (2026-09-24)
+
+- Пайплайн: `apps/mobile/Scripts/testflight_release.sh testflight` (prepare, archive, export, inspect, upload). Перед запуском синхронизировать номер билда в трёх местах: `apps/mobile/app.json` (`ios.buildNumber`), `CURRENT_PROJECT_VERSION` в `project.pbxproj`, `CFBundleVersion` в `ios/Negroni/Info.plist`.
+- Из неинтерактивного шелла запускать с `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8`: без этого `pod install` падает с `Unicode Normalization not appropriate for ASCII-8BIT`.
+- GitHub: `origin` = `brokiv2/negroni` (наш форк, main = состояние Negroni), `upstream` = `elie222/rakazo`; апстрим на момент форка сохранён в ветке `upstream-main`.
