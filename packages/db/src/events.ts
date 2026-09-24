@@ -16,6 +16,7 @@ import {
   createThreadMessageInTransaction,
   RunHistoryWriteError,
 } from "./messages.js";
+import { teamThreadOnly } from "./thread-kind.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 const EVENT_BATCH_SIZE = 200;
@@ -829,12 +830,13 @@ export async function finalizeComputerControlRelease(
 
     const bot = await tx.bot.findFirst({
       where: { id: input.botId, spaceId: input.spaceId },
-      select: { thread: { select: { id: true } } },
+      select: { threads: { ...teamThreadOnly, select: { id: true } } },
     });
-    if (!bot?.thread) return { threadId: null, seq: null, runId };
+    const botThread = bot?.threads[0];
+    if (!botThread) return { threadId: null, seq: null, runId };
     const event = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
-      threadId: bot.thread.id,
+      threadId: botThread.id,
       botId: input.botId,
       runId: runId ?? undefined,
       type: "computer.takeover.released",

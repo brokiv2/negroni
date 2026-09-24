@@ -105,6 +105,7 @@ export async function querySpaceSearch(
       WHERE t."spaceId" = ${actor.spaceId}
         AND t."userId" = ${actor.userId}
         AND t."botId" = ${artifact.botId}
+        AND t.kind = 'team'
         AND m.blocks::text ILIKE ${`%${artifact.id}%`}
       ORDER BY m."createdAt" DESC
       LIMIT 1
@@ -212,6 +213,7 @@ export async function querySpaceSearch(
     INNER JOIN threads t ON t.id = m."threadId"
     INNER JOIN bots b ON b.id = t."botId"
     WHERE t."spaceId" = ${actor.spaceId}
+      AND t.kind = 'team'
       AND t."userId" = ${actor.userId}
       AND b."archivedAt" IS NULL
       AND m.blocks::text ILIKE ${pattern}

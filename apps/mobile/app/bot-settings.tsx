@@ -1,4 +1,4 @@
-import type { Bot, ComputerStatus, Me, ThinkingLevel } from "@rakazo/contracts";
+import type { Bot, ComputerStatus, Me, ThinkingLevel, VoiceInfo } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
@@ -9,21 +9,23 @@ import {
 import { connectedModelOptions, modelOptionKey, parseModelOptionKey } from "@rakazo/core";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput } from "react-native";
+import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
 import { type MobileBot, type MobileModel, type MobileModelCredential, rpc } from "../lib/api";
 import { native, useResolvedAppearance } from "../lib/native";
 
 type BotSettingsRecord = MobileBot &
-  Pick<Bot, "modelProvider" | "modelId"> & {
+  Pick<Bot, "modelProvider" | "modelId" | "voiceId" | "autoSpeak"> & {
     description?: string;
   };
 
 export default function BotSettingsScreen() {
   const router = useRouter();
   useResolvedAppearance();
-  const { botId } = useLocalSearchParams<{ botId: string }>();
+  const { botId, section } = useLocalSearchParams<{ botId: string; section?: string }>();
+  // The Personal menu opens this screen on just the assistant's voice.
+  const voiceOnly = section === "voice";
   const [bot, setBot] = useState<BotSettingsRecord | null>(null);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -38,6 +40,12 @@ export default function BotSettingsScreen() {
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelLoadError, setModelLoadError] = useState(false);
+  const [voiceId, setVoiceId] = useState("");
+  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [voices, setVoices] = useState<VoiceInfo[] | null>(null);
+  const voiceLabel = voiceId
+    ? (voices?.find((voice) => voice.id === voiceId)?.label ?? voiceId)
+    : "Account default";
   const connectedOptions = connectedModelOptions(credentials, catalog);
   const selectedModel = connectedOptions.find((entry) => entry.key === modelKey);
   const modelLabel = modelKey
@@ -62,9 +70,25 @@ export default function BotSettingsScreen() {
         setDescription(next.description ?? "");
         setComputerMode(next.computerMode);
         setComputer(status);
+        setVoiceId(next.voiceId ?? "");
+        setAutoSpeak(next.autoSpeak ?? false);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load bot"));
   }, [botId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void rpc<VoiceInfo[]>("voice/voices", {})
+      .then((next) => {
+        if (!cancelled) setVoices(next);
+      })
+      .catch(() => {
+        if (!cancelled) setVoices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,7 +126,11 @@ export default function BotSettingsScreen() {
         modelProvider?: string | null;
         modelId?: string | null;
         thinkingLevel?: ThinkingLevel | null;
+        voiceId?: string | null;
+        autoSpeak?: boolean;
       } = { botId };
+      if ((voiceId || null) !== (bot.voiceId ?? null)) input.voiceId = voiceId || null;
+      if (autoSpeak !== (bot.autoSpeak ?? false)) input.autoSpeak = autoSpeak;
       if (profile.name !== bot.name) input.name = profile.name;
       if (profile.title !== bot.title) input.title = profile.title;
       if (profile.description !== (bot.description ?? "")) {
@@ -136,117 +164,176 @@ export default function BotSettingsScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Chat settings" }} />
+      <Stack.Screen options={{ title: voiceOnly ? "Voice" : "Chat settings" }} />
       <ScrollView
         style={{ flex: 1, backgroundColor: "#050506" }}
         contentContainerStyle={{ padding: 24 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
-        <Text style={{ color: "#85858A", fontSize: 14 }}>Name</Text>
-        <TextInput
-          value={name}
-          maxLength={BOT_NAME_MAX_LENGTH}
-          onChangeText={setName}
-          placeholder="Name this bot"
-          placeholderTextColor="#6C6C70"
-          style={{
-            marginTop: 8,
-            backgroundColor: "#1A1A1D",
-            borderRadius: 11,
-            padding: 16,
-            color: "#ECECEE",
-          }}
-        />
-        <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Title</Text>
-        <TextInput
-          value={title}
-          maxLength={BOT_TITLE_MAX_LENGTH}
-          onChangeText={setTitle}
-          placeholder="Describe what this bot does"
-          placeholderTextColor="#6C6C70"
-          style={{
-            marginTop: 8,
-            backgroundColor: "#1A1A1D",
-            borderRadius: 11,
-            padding: 16,
-            color: "#ECECEE",
-          }}
-        />
-        <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Description</Text>
-        <TextInput
-          value={description}
-          maxLength={BOT_DESCRIPTION_MAX_LENGTH}
-          onChangeText={setDescription}
-          placeholder="What this bot is for"
-          placeholderTextColor="#6C6C70"
-          multiline
-          style={{
-            marginTop: 8,
-            backgroundColor: "#1A1A1D",
-            borderRadius: 11,
-            padding: 16,
-            color: "#ECECEE",
-            minHeight: 120,
-            textAlignVertical: "top",
-          }}
-        />
-        <Text style={{ color: native.secondaryLabel, marginTop: 20, fontSize: 14 }}>Model</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Model: ${modelLabel}`}
-          accessibilityState={{ expanded: modelPickerOpen }}
-          onPress={() => setModelPickerOpen((value) => !value)}
-          disabled={pending || !bot}
-          style={{ marginTop: 8, padding: 16, borderRadius: 14, backgroundColor: native.fill }}
-        >
-          <Text style={{ color: native.label, fontSize: 16 }}>{modelLabel}</Text>
-        </Pressable>
-        {modelPickerOpen ? (
+        {voiceOnly ? null : (
           <>
-            {[
-              { key: "", label: `Space default${defaultModel ? ` (${defaultModel})` : ""}` },
-              ...connectedOptions,
-            ].map((option) => (
-              <Pressable
-                key={option.key}
-                accessibilityRole="radio"
-                accessibilityState={{ checked: option.key === modelKey }}
-                disabled={pending}
-                onPress={() => {
-                  setModelKey(option.key);
-                  setModelPickerOpen(false);
-                }}
-                style={{
-                  marginTop: 4,
-                  padding: 14,
-                  borderRadius: 12,
-                  backgroundColor: option.key === modelKey ? native.fillPressed : native.fill,
-                }}
-              >
-                <Text style={{ color: native.label, fontSize: 15 }}>{option.label}</Text>
-              </Pressable>
-            ))}
-            {modelLoadError ? (
-              <Text style={{ color: native.secondaryLabel, marginTop: 8 }}>
-                Could not load connected models.
-              </Text>
+            <Text style={{ color: "#85858A", fontSize: 14 }}>Name</Text>
+            <TextInput
+              value={name}
+              maxLength={BOT_NAME_MAX_LENGTH}
+              onChangeText={setName}
+              placeholder="Name this bot"
+              placeholderTextColor="#6C6C70"
+              style={{
+                marginTop: 8,
+                backgroundColor: "#1A1A1D",
+                borderRadius: 11,
+                padding: 16,
+                color: "#ECECEE",
+              }}
+            />
+            <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Title</Text>
+            <TextInput
+              value={title}
+              maxLength={BOT_TITLE_MAX_LENGTH}
+              onChangeText={setTitle}
+              placeholder="Describe what this bot does"
+              placeholderTextColor="#6C6C70"
+              style={{
+                marginTop: 8,
+                backgroundColor: "#1A1A1D",
+                borderRadius: 11,
+                padding: 16,
+                color: "#ECECEE",
+              }}
+            />
+            <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Description</Text>
+            <TextInput
+              value={description}
+              maxLength={BOT_DESCRIPTION_MAX_LENGTH}
+              onChangeText={setDescription}
+              placeholder="What this bot is for"
+              placeholderTextColor="#6C6C70"
+              multiline
+              style={{
+                marginTop: 8,
+                backgroundColor: "#1A1A1D",
+                borderRadius: 11,
+                padding: 16,
+                color: "#ECECEE",
+                minHeight: 120,
+                textAlignVertical: "top",
+              }}
+            />
+            <Text style={{ color: native.secondaryLabel, marginTop: 20, fontSize: 14 }}>Model</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Model: ${modelLabel}`}
+              accessibilityState={{ expanded: modelPickerOpen }}
+              onPress={() => setModelPickerOpen((value) => !value)}
+              disabled={pending || !bot}
+              style={{ marginTop: 8, padding: 16, borderRadius: 14, backgroundColor: native.fill }}
+            >
+              <Text style={{ color: native.label, fontSize: 16 }}>{modelLabel}</Text>
+            </Pressable>
+            {modelPickerOpen ? (
+              <>
+                {[
+                  { key: "", label: `Space default${defaultModel ? ` (${defaultModel})` : ""}` },
+                  ...connectedOptions,
+                ].map((option) => (
+                  <Pressable
+                    key={option.key}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: option.key === modelKey }}
+                    disabled={pending}
+                    onPress={() => {
+                      setModelKey(option.key);
+                      setModelPickerOpen(false);
+                    }}
+                    style={{
+                      marginTop: 4,
+                      padding: 14,
+                      borderRadius: 12,
+                      backgroundColor: option.key === modelKey ? native.fillPressed : native.fill,
+                    }}
+                  >
+                    <Text style={{ color: native.label, fontSize: 15 }}>{option.label}</Text>
+                  </Pressable>
+                ))}
+                {modelLoadError ? (
+                  <Text style={{ color: native.secondaryLabel, marginTop: 8 }}>
+                    Could not load connected models.
+                  </Text>
+                ) : null}
+              </>
             ) : null}
+            <ComputerModePicker value={computerMode} onChange={setComputerMode} />
+            <ComputerMaintenanceActions
+              botId={botId}
+              computer={computer}
+              onChanged={async () => {
+                const status = await rpc<ComputerStatus>("computer/status", { botId });
+                setComputer(status);
+              }}
+            />
           </>
-        ) : null}
-        <ComputerModePicker value={computerMode} onChange={setComputerMode} />
-        <ComputerMaintenanceActions
-          botId={botId}
-          computer={computer}
-          onChanged={async () => {
-            const status = await rpc<ComputerStatus>("computer/status", { botId });
-            setComputer(status);
+        )}
+        <Text style={{ color: native.secondaryLabel, marginTop: voiceOnly ? 0 : 24, fontSize: 14 }}>
+          Voice
+        </Text>
+        <View
+          style={{
+            marginTop: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            borderRadius: 14,
+            backgroundColor: native.fill,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
           }}
-        />
+        >
+          <Text style={{ color: native.label, fontSize: 16, flex: 1 }}>Read replies aloud</Text>
+          <Switch
+            accessibilityLabel="Read replies aloud"
+            value={autoSpeak}
+            disabled={pending || !bot}
+            onValueChange={setAutoSpeak}
+          />
+        </View>
+        {voices === null ? null : voices.length ? (
+          [{ id: "", label: "Account default" }, ...voices].map((voice) => (
+            <Pressable
+              key={voice.id || "default"}
+              accessibilityRole="radio"
+              accessibilityLabel={`Voice: ${voice.label}`}
+              accessibilityState={{ checked: voice.id === voiceId }}
+              disabled={pending || !bot}
+              onPress={() => setVoiceId(voice.id)}
+              style={{
+                marginTop: 4,
+                padding: 14,
+                borderRadius: 12,
+                backgroundColor: voice.id === voiceId ? native.fillPressed : native.fill,
+              }}
+            >
+              <Text style={{ color: native.label, fontSize: 15 }}>{voice.label}</Text>
+            </Pressable>
+          ))
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push("/voice")}
+            style={{ marginTop: 4, padding: 14, borderRadius: 12, backgroundColor: native.fill }}
+          >
+            <Text style={{ color: native.secondaryLabel, fontSize: 15 }}>
+              {voiceId ? `${voiceLabel}. ` : ""}Connect a voice provider to choose a voice.
+            </Text>
+          </Pressable>
+        )}
         {error ? <Text style={{ color: "#EF4444", marginTop: 16 }}>{error}</Text> : null}
         <Pressable
           onPress={() => void save()}
           disabled={!name.trim() || pending || !bot}
+          accessibilityRole="button"
           style={{
             marginTop: 24,
             backgroundColor: "#F1F1EF",

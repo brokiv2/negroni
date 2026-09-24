@@ -11,6 +11,7 @@ import type { PrismaClient } from "./client.js";
 import { type ComputerMode, ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
 import { IsolationError } from "./scope.js";
+import { teamThreadOnly, teamThreadRows, withTeamThread } from "./thread-kind.js";
 import { activeRunSelection, previewFromBlocks } from "./thread-listing.js";
 
 /** Newest messages loaded for sidebar preview; enough to skip a short peer-run tail. */
@@ -116,7 +117,8 @@ export function createRepos(prisma: PrismaClient) {
         pinned: true,
         sectionId: true,
         updatedAt: true,
-        thread: {
+        threads: {
+          ...teamThreadOnly,
           select: {
             unread: true,
             messages: {
@@ -130,7 +132,7 @@ export function createRepos(prisma: PrismaClient) {
       },
       orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
     });
-    return bots.map((bot) => {
+    return bots.map(withTeamThread).map((bot) => {
       if (!bot.thread) throw new IsolationError("Bot is missing its thread");
       return {
         id: bot.id,
@@ -224,23 +226,26 @@ export function createRepos(prisma: PrismaClient) {
     },
 
     async listBots(actor: Actor, options: { archived?: boolean } = {}): Promise<Bot[]> {
-      const bots = await prisma.bot.findMany({
-        where: {
-          spaceId: actor.spaceId,
-          userId: actor.userId,
-          archivedAt: options.archived ? { not: null } : null,
-        },
-        include: {
-          thread: {
-            include: {
-              messages: { orderBy: { seq: "desc" }, take: SIDEBAR_PREVIEW_MESSAGE_WINDOW },
-            },
+      const bots = await teamThreadRows(
+        prisma.bot.findMany({
+          where: {
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            archivedAt: options.archived ? { not: null } : null,
           },
-          runs: activeRunSelection,
-          computer: { select: { scope: true } },
-        },
-        orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
-      });
+          include: {
+            threads: {
+              ...teamThreadOnly,
+              include: {
+                messages: { orderBy: { seq: "desc" }, take: SIDEBAR_PREVIEW_MESSAGE_WINDOW },
+              },
+            },
+            runs: activeRunSelection,
+            computer: { select: { scope: true } },
+          },
+          orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
+        }),
+      );
       const candidateRunIds = [
         ...new Set(
           bots.flatMap((bot) =>
@@ -315,10 +320,10 @@ export function createRepos(prisma: PrismaClient) {
           userId: actor.userId,
           ...(options.includeArchived ? {} : { archivedAt: null }),
         },
-        include: { thread: true, computer: true },
+        include: { threads: teamThreadOnly, computer: true },
       });
       if (!bot) throw new IsolationError();
-      return bot;
+      return withTeamThread(bot);
     },
 
     async createBot(
@@ -444,10 +449,10 @@ export function createRepos(prisma: PrismaClient) {
         });
         return tx.bot.findFirstOrThrow({
           where: { id: created.id },
-          include: { thread: true, computer: true },
+          include: { threads: teamThreadOnly, computer: true },
         });
       });
-      return mapBot(bot);
+      return mapBot(withTeamThread(bot));
     },
 
     async reorderBots(actor: Actor, botIds: string[]): Promise<void> {
@@ -487,9 +492,9 @@ export function createRepos(prisma: PrismaClient) {
       const updated = await prisma.bot.update({
         where: { id: botId },
         data: { computerId: computer.id },
-        include: { thread: true, computer: true },
+        include: { threads: teamThreadOnly, computer: true },
       });
-      return mapBot(updated);
+      return mapBot(withTeamThread(updated));
     },
   };
 }

@@ -14,7 +14,7 @@ import {
 } from "@playwright/test";
 import { abortableDelay } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import { createThreadMessage, type PrismaClient } from "@rakazo/db";
+import { createThreadMessage, type PrismaClient, teamThreadOnly, teamThreadRow } from "@rakazo/db";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import {
   type NumericSummary,
@@ -298,10 +298,12 @@ async function prepareAuthenticatedProfile(benchmark: BenchmarkContext, profile:
 }
 
 async function seedBenchmarkThread(prisma: PrismaClient) {
-  const bot = await prisma.bot.findFirst({
-    where: { name: "Benchmark" },
-    select: { thread: { select: { id: true } } },
-  });
+  const bot = await teamThreadRow(
+    prisma.bot.findFirst({
+      where: { name: "Benchmark" },
+      select: { threads: { ...teamThreadOnly, select: { id: true } } },
+    }),
+  );
   const threadId = bot?.thread?.id;
   if (!threadId) throw new Error("Benchmark onboarding did not create a thread");
   await prisma.$transaction([

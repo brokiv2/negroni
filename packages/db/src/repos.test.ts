@@ -29,7 +29,7 @@ const baseBot = {
   memoryScope: null as string | null,
   createdAt: new Date("2026-08-19T00:00:00.000Z"),
   updatedAt: new Date("2026-08-19T00:00:00.000Z"),
-  thread: { id: "thread-1", unread: false, messages: [] },
+  threads: [{ id: "thread-1", unread: false, messages: [] }],
   runs: [],
   computer: null,
 };
@@ -63,27 +63,29 @@ describe("createRepos.listBots", () => {
     const findMany = vi.fn(async () => [
       {
         ...baseBot,
-        thread: {
-          ...baseBot.thread,
-          messages: [
-            {
-              runId: "run-peer",
-              blocks: [{ kind: "text", text: "Echoed peer reply" }],
-            },
-            {
-              runId: "run-peer",
-              blocks: [
-                {
-                  kind: "bot_message_received",
-                  fromBotId: "bot-2",
-                  fromBotName: "Coder",
-                  text: "Peer result",
-                },
-              ],
-            },
-            { runId: "run-user", blocks: [{ kind: "text", text: "Visible answer" }] },
-          ],
-        },
+        threads: [
+          {
+            ...baseBot.threads[0],
+            messages: [
+              {
+                runId: "run-peer",
+                blocks: [{ kind: "text", text: "Echoed peer reply" }],
+              },
+              {
+                runId: "run-peer",
+                blocks: [
+                  {
+                    kind: "bot_message_received",
+                    fromBotId: "bot-2",
+                    fromBotName: "Coder",
+                    text: "Peer result",
+                  },
+                ],
+              },
+              { runId: "run-user", blocks: [{ kind: "text", text: "Visible answer" }] },
+            ],
+          },
+        ],
       },
     ]);
     const prisma = {
@@ -101,7 +103,9 @@ describe("createRepos.listBots", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         include: expect.objectContaining({
-          thread: {
+          threads: {
+            where: { kind: "team" },
+            take: 1,
             include: {
               messages: { orderBy: { seq: "desc" }, take: 16 },
             },
@@ -117,16 +121,18 @@ describe("createRepos.listBots", () => {
         findMany: vi.fn(async () => [
           {
             ...baseBot,
-            thread: {
-              ...baseBot.thread,
-              messages: [
-                {
-                  runId: "run-peer",
-                  blocks: [{ kind: "text", text: "Echoed peer reply" }],
-                },
-                { runId: "run-user", blocks: [{ kind: "text", text: "Visible answer" }] },
-              ],
-            },
+            threads: [
+              {
+                ...baseBot.threads[0],
+                messages: [
+                  {
+                    runId: "run-peer",
+                    blocks: [{ kind: "text", text: "Echoed peer reply" }],
+                  },
+                  { runId: "run-user", blocks: [{ kind: "text", text: "Visible answer" }] },
+                ],
+              },
+            ],
           },
         ]),
       },
@@ -152,16 +158,18 @@ describe("createRepos.listBots", () => {
         findMany: vi.fn(async () => [
           {
             ...baseBot,
-            thread: {
-              ...baseBot.thread,
-              messages: [
-                {
-                  seq: 20,
-                  runId: "run-peer",
-                  blocks: [{ kind: "text", text: "Echoed peer reply" }],
-                },
-              ],
-            },
+            threads: [
+              {
+                ...baseBot.threads[0],
+                messages: [
+                  {
+                    seq: 20,
+                    runId: "run-peer",
+                    blocks: [{ kind: "text", text: "Echoed peer reply" }],
+                  },
+                ],
+              },
+            ],
           },
         ]),
       },
@@ -201,10 +209,12 @@ describe("createRepos.listBots", () => {
         findMany: vi.fn(async () => [
           {
             ...baseBot,
-            thread: {
-              ...baseBot.thread,
-              messages: peerWindows[0],
-            },
+            threads: [
+              {
+                ...baseBot.threads[0],
+                messages: peerWindows[0],
+              },
+            ],
           },
         ]),
       },
@@ -236,10 +246,12 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         pinned: true,
         sectionId: null,
         updatedAt: new Date("2026-08-20T00:00:00.000Z"),
-        thread: {
-          unread: true,
-          messages: [{ blocks: [{ kind: "text", text: "Waiting for a reply" }] }],
-        },
+        threads: [
+          {
+            unread: true,
+            messages: [{ blocks: [{ kind: "text", text: "Waiting for a reply" }] }],
+          },
+        ],
         runs: [{ status: "running" }],
       },
     ]);
@@ -316,30 +328,32 @@ describe("delegated result sidebar preview", () => {
         findMany: vi.fn(async () => [
           {
             ...baseBot,
-            thread: {
-              ...baseBot.thread,
-              messages: [
-                {
-                  seq: 3,
-                  runId: "run-result",
-                  blocks: [{ kind: "text", text: "Reviewer verified 12." }],
-                },
-                {
-                  seq: 2,
-                  runId: "run-result",
-                  blocks: [
-                    {
-                      kind: "bot_message_received",
-                      intent: "result",
-                      fromBotId: "reviewer",
-                      fromBotName: "Reviewer",
-                      text: "12",
-                    },
-                  ],
-                },
-                { seq: 1, runId: "run-user", blocks: [{ kind: "text", text: "Standing by." }] },
-              ],
-            },
+            threads: [
+              {
+                ...baseBot.threads[0],
+                messages: [
+                  {
+                    seq: 3,
+                    runId: "run-result",
+                    blocks: [{ kind: "text", text: "Reviewer verified 12." }],
+                  },
+                  {
+                    seq: 2,
+                    runId: "run-result",
+                    blocks: [
+                      {
+                        kind: "bot_message_received",
+                        intent: "result",
+                        fromBotId: "reviewer",
+                        fromBotName: "Reviewer",
+                        text: "12",
+                      },
+                    ],
+                  },
+                  { seq: 1, runId: "run-user", blocks: [{ kind: "text", text: "Standing by." }] },
+                ],
+              },
+            ],
           },
         ]),
       },

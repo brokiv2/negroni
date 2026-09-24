@@ -11,6 +11,7 @@ import {
   abortableDelay,
   attachmentsForThread,
   buildComposerMentionOptions,
+  delegationChip,
   friendlyChatError,
   type ComposerMention,
   isApprovalAskBlock,
@@ -18,6 +19,7 @@ import {
   isSecretAskBlock,
   latestAnswerableAskMessageId,
   mentionChipKey,
+  personalTranscriptBlocks,
   resolveComposerSendPlan,
   SLASH_ACTIONS,
   type SlashActionId,
@@ -26,6 +28,7 @@ import {
   transcriptContentBlocks,
   truncateSlashDescription,
   userVisibleMessages,
+  workedWithLabel,
 } from "@rakazo/core";
 import {
   RecordingPresets,
@@ -242,6 +245,9 @@ function Thread() {
   }>();
   const inGroup = Boolean(groupId);
   const assistantView = view === "assistant" && !inGroup;
+  // Personal view talks to the main assistant in its own thread; Team keeps the bot's chat.
+  const threadBot = (id: string) =>
+    assistantView && id === botId ? { botId: id, threadKind: "personal" as const } : { botId: id };
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const afterAttachmentMenu = useRef<(() => void) | null>(null);
@@ -355,9 +361,11 @@ function Thread() {
   );
   const visibleMessages = useMemo(
     () =>
-      userVisibleMessages(snap?.messages ?? [], {
-        includePeerReceipts: !assistantView,
-      }).map((message) => ({ ...message, blocks: transcriptContentBlocks(message.blocks, { hideCoordination: assistantView }) }))
+      userVisibleMessages(snap?.messages ?? [], { includePeerReceipts: true })
+        .map((message) => ({
+          ...message,
+          blocks: assistantView ? personalTranscriptBlocks(message.blocks) : transcriptContentBlocks(message.blocks),
+        }))
         .filter((message) => hasVisibleMessagePresentation(message.blocks)),
     [assistantView, snap?.messages],
   );
@@ -706,7 +714,7 @@ function Thread() {
   function clearConversation() {
     if (!botId) return;
     setError(null);
-    void rpc("threads/clear", { botId })
+    void rpc("threads/clear", threadBot(botId))
       .then(() => {
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
@@ -731,7 +739,7 @@ function Thread() {
     const epoch = historyEpoch.current;
     const next = await rpc<MobileSnapshot>(
       "threads/get",
-      targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! },
+      targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!),
     );
     if (
       !shouldApplyMobileThreadRefresh({
@@ -751,7 +759,7 @@ function Thread() {
   }
 
   async function applyMessageJump(target: { botId?: string; groupId?: string; messageId: string }) {
-    const threadTarget = target.groupId ? { groupId: target.groupId } : { botId: target.botId! };
+    const threadTarget = target.groupId ? { groupId: target.groupId } : threadBot(target.botId!);
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
@@ -793,7 +801,7 @@ function Thread() {
     const epoch = historyEpoch.current;
     try {
       const page = await rpc<MobileMessagePage>("threads/messages", {
-        ...(groupId ? { groupId } : { botId: botId! }),
+        ...(groupId ? { groupId } : threadBot(botId!)),
         before: snap.olderCursor,
         includePeerReceipts: true,
       });
@@ -827,7 +835,7 @@ function Thread() {
       });
       return;
     }
-    void rpc("threads/markRead", { botId: botId! }).catch(() => {
+    void rpc("threads/markRead", threadBot(botId!)).catch(() => {
       if (readVisibleTarget.current === target) readVisibleTarget.current = null;
     });
   }, [botId, groupId, navigation]);
@@ -887,7 +895,7 @@ function Thread() {
     void (async () => {
       // Pending search jumps load the around-page separately; avoid replacing it with latest.
       const next = messageId
-        ? await rpc<MobileSnapshot>("threads/get", groupId ? { groupId } : { botId: botId! }).catch(
+        ? await rpc<MobileSnapshot>("threads/get", groupId ? { groupId } : threadBot(botId!)).catch(
             (err: Error) => {
               setError(err.message);
               return null;
@@ -903,7 +911,7 @@ function Thread() {
       while (!abort.signal.aborted) {
         try {
           await subscribeThread(
-            groupId ? { groupId } : { botId: botId! },
+            groupId ? { groupId } : threadBot(botId!),
             cursor,
             (event) => {
               cursor = Math.max(cursor, event.seq ?? -1);
@@ -1241,7 +1249,7 @@ function Thread() {
               replyToMessageId: reroutedToGroup ? undefined : replyTarget?.id,
             }
           : {
-              botId: botTarget!,
+              ...threadBot(botTarget!),
               clientNonce,
               text: trimmed || undefined,
               mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
@@ -1286,7 +1294,7 @@ function Thread() {
     try {
       await rpc(
         "threads/stop",
-        targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! },
+        targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!),
       );
     } catch (err) {
       if (isCurrentTarget(targetBotId, targetGroupId)) {
@@ -1313,7 +1321,7 @@ function Thread() {
       const targetGroupId = groupId;
       if ((!targetBotId && !targetGroupId) || !message.runId) return;
       await rpc("threads/answer", {
-        ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
+        ...(targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!)),
         runId: message.runId,
         messageId: message.id,
         answer,
@@ -1397,7 +1405,7 @@ function Thread() {
     if (!targetBotId && !targetGroupId) return;
     try {
       await rpc("threads/react", {
-        ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
+        ...(targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!)),
         messageId: message.id,
         thumbsUp: !message.thumbsUp,
       });
@@ -1513,6 +1521,7 @@ function Thread() {
             onAnswer={answerMessage}
             onOpenBot={openBot}
             onPreviewMarkdown={setMarkdownPreview}
+            compactDelegation={assistantView}
           />
         </Pressable>
       </View>
@@ -2345,6 +2354,7 @@ const MessageBubble = memo(function MessageBubble({
   onAnswer,
   onOpenBot,
   onPreviewMarkdown,
+  compactDelegation = false,
 }: {
   botId: string;
   botName?: string;
@@ -2357,6 +2367,8 @@ const MessageBubble = memo(function MessageBubble({
   onAnswer: (message: MobileMessage, answer: string) => Promise<void>;
   onOpenBot: (botId: string, name: string) => void;
   onPreviewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
+  /** Personal view: delegation blocks collapse to one "Worked with <bot>" label. */
+  compactDelegation?: boolean;
 }) {
   const appearance = useResolvedAppearance();
   const theme = mobileTokens();
@@ -2383,6 +2395,24 @@ const MessageBubble = memo(function MessageBubble({
           <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
         ))}
       </View>
+    );
+  }
+  const chip = compactDelegation
+    ? message.blocks.map(delegationChip).find((entry) => entry !== null)
+    : undefined;
+  if (chip) {
+    const peerName =
+      chip.name ??
+      memberName(members, chip.botId) ??
+      bots.find((bot) => bot.id === chip.botId)?.name ??
+      "a teammate";
+    return (
+      <AgentEventLabel
+        label={workedWithLabel(peerName)}
+        detail={chip.detail}
+        expanded={peerExpanded}
+        onToggle={() => setPeerExpanded((expanded) => !expanded)}
+      />
     );
   }
   const handoff = message.blocks.find((block) => block.kind === "handoff");

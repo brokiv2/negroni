@@ -168,7 +168,7 @@ async function mirrorChannelRun(
       });
       if (!peerIdentity) continue;
       const peerThread = await deps.prisma.thread.findFirst({
-        where: { botId: peerIdentity.botId },
+        where: { kind: "team", botId: peerIdentity.botId },
       });
       if (!peerThread) continue;
       const peerBot = await deps.prisma.bot.findUnique({

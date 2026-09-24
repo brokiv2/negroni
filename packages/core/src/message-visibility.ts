@@ -68,3 +68,38 @@ export function transcriptContentBlocks(
       ),
   );
 }
+
+/** A delegation block as the Personal view shows it: one compact "Worked with <bot>" chip. */
+export type DelegationChip = {
+  /** Resolve the name from here when the block carries only an id (handoff). */
+  botId?: string;
+  name?: string;
+  live: boolean;
+  /** Short task line shown when the chip is expanded; peer message bodies stay hidden. */
+  detail?: string;
+};
+
+export function delegationChip(block: MessageBlock): DelegationChip | null {
+  switch (block.kind) {
+    case "bot_message_sent":
+      return { botId: block.toBotId, name: block.toBotName, live: false };
+    case "subagent":
+      return { name: block.name, live: block.status === "running", detail: block.task };
+    case "child_bot":
+      return { botId: block.botId, name: block.name, live: false };
+    case "handoff":
+      return { botId: block.toBotId, live: false };
+    default:
+      return null;
+  }
+}
+
+export const workedWithLabel = (name: string) => `Worked with ${name}`;
+
+/**
+ * The Personal transcript: the assistant's own content, delegation as chips
+ * (see `delegationChip`), and no raw worker replies (the assistant sums them up).
+ */
+export function personalTranscriptBlocks(blocks: readonly MessageBlock[]): MessageBlock[] {
+  return transcriptContentBlocks(blocks).filter((block) => block.kind !== "bot_message_received");
+}

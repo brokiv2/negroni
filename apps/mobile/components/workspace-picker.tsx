@@ -48,6 +48,7 @@ export function WorkspacePicker({ visible, selected, assistantAvailable, assista
               <SheetRow label="Ideas" ios="lightbulb" android="bulb-outline" onPress={() => openPersonal("ideas")} />
               <SheetRow label="Activity" ios="waveform.path" android="pulse-outline" onPress={() => openPersonal("activity")} />
               <SheetRow label="Memory" ios="brain" android="albums-outline" onPress={() => openPersonal("memory")} />
+              <SheetRow label="Voice" ios="waveform" android="mic-outline" onPress={() => { onClose(); router.push({ pathname: "/bot-settings", params: { botId: assistantId, section: "voice" } }); }} />
             </View> : null}
           </ScrollView>
           <View style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.hairline, paddingTop: 10 }}>

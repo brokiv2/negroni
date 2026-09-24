@@ -1,12 +1,13 @@
 import type { MemoryDocument, Routine, RunActivityRow, ScratchpadItem } from "@rakazo/contracts";
 import { ArrowRight, Check, ChevronRight, Clock3, Lightbulb, MessageCircle, RefreshCw, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { personalTabExplainer } from "@rakazo/core";
 import { rpc } from "../lib/rpc";
 import "./personal-workspace.css";
 
 type Tab = "for-you" | "goals" | "ideas" | "activity" | "memory";
 type Source = "items" | "routines" | "runs" | "memory";
-type ChatTarget = { botId: string; groupId?: string; draft?: string };
+type ChatTarget = { botId: string; groupId?: string; draft?: string; team?: boolean };
 const tabs: { id: Tab; label: string }[] = [
   { id: "for-you", label: "For you" }, { id: "goals", label: "Goals" },
   { id: "ideas", label: "Ideas" }, { id: "activity", label: "Activity" },
@@ -54,6 +55,7 @@ export function PersonalWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Source, boolean>>>({});
+  const [personalThreadId, setPersonalThreadId] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const hierarchyKey = botIds.join("|");
@@ -97,6 +99,14 @@ export function PersonalWorkspace({
   }, [botId, hierarchyKey]);
 
   useEffect(() => {
+    let cancelled = false;
+    void rpc.personal.thread().then((personal) => {
+      if (!cancelled && personal.botId === botId) setPersonalThreadId(personal.threadId);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [botId]);
+
+  useEffect(() => {
     void refresh();
     return () => { controller.current?.abort(); generation.current += 1; };
   }, [refresh]);
@@ -105,7 +115,12 @@ export function PersonalWorkspace({
     onOpenChat(target ?? { botId });
     onClose();
   }, [botId, onClose, onOpenChat]);
-  const openRun = (run: RunActivityRow) => openChat({ botId: run.botId, ...(run.groupId ? { groupId: run.groupId } : {}) });
+  // A run in the Personal thread opens Personal; the assistant's Team runs open its Team chat.
+  const openRun = (run: RunActivityRow) => openChat({
+    botId: run.botId,
+    ...(run.groupId ? { groupId: run.groupId } : {}),
+    ...(run.botId === botId && personalThreadId && run.threadId !== personalThreadId ? { team: true } : {}),
+  });
 
   async function createItem(kind: "goals" | "ideas") {
     const title = drafts[kind].trim();
@@ -148,6 +163,7 @@ export function PersonalWorkspace({
   const ideas = useMemo(() => items.filter((item) => item.status === "parked"), [items]);
   const activeRoutines = useMemo(() => routines.filter((routine) => routine.active), [routines]);
   const firstMemory = memory[0];
+  const nothingYet = !needsAttention.length && !inMotion.length && !goals.length && !activeRoutines.length && !recent.length && !ideas.length && !firstMemory;
   const issueCount = Object.values(errors).filter(Boolean).length;
 
   const runCard = (run: RunActivityRow) => (
@@ -187,19 +203,20 @@ export function PersonalWorkspace({
         {issueCount ? <div className="rk-pw-error" role="status"><span>Some information couldn't refresh. Your other data is still here.</span><button type="button" onClick={() => void refresh()}>Retry</button></div> : null}
         <div id="rk-pw-panel" className="rk-pw-content" role="tabpanel">
           {loading ? <div className="rk-pw-loading" aria-label="Loading personal space"><span /><span /><span /></div> : null}
-          {!loading && tab === "for-you" ? <>
+          {!loading && tab === "for-you" && nothingYet ? <Empty title={personalTabExplainer("for-you", assistantName)} action="Talk about a goal" onAction={() => openChat({ botId, draft: "I'd like to set a goal: " })} /> : null}
+          {!loading && tab === "for-you" && !nothingYet ? <>
             {needsAttention.length ? <Section title="Needs your attention" icon={<Clock3 size={18} />} count={needsAttention.length}>{needsAttention.slice(0, 3).map(runCard)}</Section> : null}
             {inMotion.length ? <Section title="In motion" icon={<Sparkles size={18} />} count={inMotion.length}>{inMotion.slice(0, 3).map(runCard)}</Section> : null}
-            <Section title="Your goals" icon={<Sparkles size={18} />} count={goals.length} action="See all" onAction={() => setTab("goals")}>{goals.length ? goals.slice(0, 3).map(goalCard) : <Empty title="Start with something you care about" text={`Tell ${assistantName} what you'd like to work toward.`} action="Talk about a goal" onAction={() => openChat({ botId, draft: "I'd like to set a goal: " })} />}</Section>
+            <Section title="Your goals" icon={<Sparkles size={18} />} count={goals.length} action="See all" onAction={() => setTab("goals")}>{goals.length ? goals.slice(0, 3).map(goalCard) : <Empty title={personalTabExplainer("goals", assistantName)} action="Talk about a goal" onAction={() => openChat({ botId, draft: "I'd like to set a goal: " })} />}</Section>
             {activeRoutines.length ? <Section title="Keeping track" icon={<Clock3 size={18} />} count={activeRoutines.length}>{activeRoutines.slice(0, 3).map(routineCard)}</Section> : null}
             {recent.length ? <Section title="Recently" icon={<Clock3 size={18} />} action="All activity" onAction={() => setTab("activity")}>{recent.slice(0, 3).map(runCard)}</Section> : null}
             {ideas.length ? <Section title="Ideas to explore" icon={<Lightbulb size={18} />} count={ideas.length} action="See all" onAction={() => setTab("ideas")}>{ideas.slice(0, 2).map(ideaCard)}</Section> : null}
             {firstMemory ? <Section title="What I remember" icon={<Sparkles size={18} />} action="View memory" onAction={() => setTab("memory")}><button className="rk-pw-card rk-pw-run" type="button" onClick={() => { setTab("memory"); setEditing(firstMemory); setMemoryDraft(firstMemory.content); }}><span className="rk-pw-copy"><strong>{memoryTitle(firstMemory)}</strong><small>{firstMemory.content}</small></span><ChevronRight size={17} /></button></Section> : null}
           </> : null}
-          {!loading && tab === "goals" ? <><Section title="Goals in progress" icon={<Sparkles size={18} />} count={goals.length}>{goals.length ? goals.map(goalCard) : <Empty title="No goals yet" text="Add something you'd like to work toward." />}</Section><AddItem kind="goals" value={drafts.goals} disabled={busy} onChange={(value) => setDrafts((current) => ({ ...current, goals: value }))} onSubmit={() => void createItem("goals")} />{activeRoutines.length ? <Section title="Tracking" icon={<Clock3 size={18} />} count={activeRoutines.length}>{activeRoutines.map(routineCard)}</Section> : null}{items.some((item) => item.status === "done") ? <p className="rk-pw-completed">{items.filter((item) => item.status === "done").length} completed goals</p> : null}</> : null}
-          {!loading && tab === "ideas" ? <><Section title="Ideas for later" icon={<Lightbulb size={18} />} count={ideas.length} description={`Possibilities you've saved with ${assistantName}.`}>{ideas.length ? ideas.map(ideaCard) : <Empty title="A place for possibilities" text="Save an idea and return to it when you're ready." />}</Section><AddItem kind="ideas" value={drafts.ideas} disabled={busy} onChange={(value) => setDrafts((current) => ({ ...current, ideas: value }))} onSubmit={() => void createItem("ideas")} /></> : null}
-          {!loading && tab === "activity" ? <>{needsAttention.length ? <Section title="Needs your attention" icon={<Clock3 size={18} />} count={needsAttention.length}>{needsAttention.map(runCard)}</Section> : null}{inMotion.length ? <Section title="In motion" icon={<Sparkles size={18} />} count={inMotion.length}>{inMotion.map(runCard)}</Section> : null}<Section title="Recent activity" icon={<Clock3 size={18} />} count={recent.length}>{recent.length ? recent.map(runCard) : <Empty title="No recent work yet" text="Work Negroni starts will appear here." />}</Section></> : null}
-          {!loading && tab === "memory" ? <><Section title="What Negroni remembers" icon={<Sparkles size={18} />} count={memory.length} description="Open an entry to read or change it.">{memory.length ? memory.map((doc) => <button className="rk-pw-card rk-pw-memory-row" type="button" key={doc.id} onClick={() => { setEditing(doc); setMemoryDraft(doc.content); }}><small>{doc.scope === "user" ? "About you" : assistantName}</small><strong>{memoryTitle(doc)}</strong><span>{doc.content}</span><ChevronRight size={17} /></button>) : <Empty title="No memories saved yet" text={`Ask ${assistantName} to remember something important.`} />}</Section>{editing ? <div className="rk-pw-editor"><div><strong>Edit memory</strong><button type="button" aria-label="Close memory editor" onClick={() => setEditing(null)}><X size={17} /></button></div><textarea aria-label="Memory content" value={memoryDraft} onChange={(event) => setMemoryDraft(event.target.value)} /><footer><button type="button" onClick={() => setEditing(null)}>Cancel</button><button type="button" disabled={busy} onClick={() => void saveMemory()}>Save changes</button></footer></div> : null}</> : null}
+          {!loading && tab === "goals" ? <><Section title="Goals in progress" icon={<Sparkles size={18} />} count={goals.length}>{goals.length ? goals.map(goalCard) : <Empty title={personalTabExplainer("goals", assistantName)} />}</Section><AddItem kind="goals" value={drafts.goals} disabled={busy} onChange={(value) => setDrafts((current) => ({ ...current, goals: value }))} onSubmit={() => void createItem("goals")} />{activeRoutines.length ? <Section title="Tracking" icon={<Clock3 size={18} />} count={activeRoutines.length}>{activeRoutines.map(routineCard)}</Section> : null}{items.some((item) => item.status === "done") ? <p className="rk-pw-completed">{items.filter((item) => item.status === "done").length} completed goals</p> : null}</> : null}
+          {!loading && tab === "ideas" ? <><Section title="Ideas for later" icon={<Lightbulb size={18} />} count={ideas.length} description={`Possibilities you've saved with ${assistantName}.`}>{ideas.length ? ideas.map(ideaCard) : <Empty title={personalTabExplainer("ideas", assistantName)} />}</Section><AddItem kind="ideas" value={drafts.ideas} disabled={busy} onChange={(value) => setDrafts((current) => ({ ...current, ideas: value }))} onSubmit={() => void createItem("ideas")} /></> : null}
+          {!loading && tab === "activity" ? <>{needsAttention.length ? <Section title="Needs your attention" icon={<Clock3 size={18} />} count={needsAttention.length}>{needsAttention.map(runCard)}</Section> : null}{inMotion.length ? <Section title="In motion" icon={<Sparkles size={18} />} count={inMotion.length}>{inMotion.map(runCard)}</Section> : null}<Section title="Recent activity" icon={<Clock3 size={18} />} count={recent.length}>{recent.length ? recent.map(runCard) : <Empty title={personalTabExplainer("activity", assistantName)} />}</Section></> : null}
+          {!loading && tab === "memory" ? <><Section title="What Negroni remembers" icon={<Sparkles size={18} />} count={memory.length} description="Open an entry to read or change it.">{memory.length ? memory.map((doc) => <button className="rk-pw-card rk-pw-memory-row" type="button" key={doc.id} onClick={() => { setEditing(doc); setMemoryDraft(doc.content); }}><small>{doc.scope === "user" ? "About you" : assistantName}</small><strong>{memoryTitle(doc)}</strong><span>{doc.content}</span><ChevronRight size={17} /></button>) : <Empty title={personalTabExplainer("memory", assistantName)} />}</Section>{editing ? <div className="rk-pw-editor"><div><strong>Edit memory</strong><button type="button" aria-label="Close memory editor" onClick={() => setEditing(null)}><X size={17} /></button></div><textarea aria-label="Memory content" value={memoryDraft} onChange={(event) => setMemoryDraft(event.target.value)} /><footer><button type="button" onClick={() => setEditing(null)}>Cancel</button><button type="button" disabled={busy} onClick={() => void saveMemory()}>Save changes</button></footer></div> : null}</> : null}
         </div>
       </div></div>
       <footer className="rk-pw-footer"><button type="button" onClick={() => openChat()}><MessageCircle size={18} /><span>Ask {assistantName}</span><ArrowRight size={17} /></button></footer>
@@ -210,8 +227,8 @@ export function PersonalWorkspace({
 function Section({ title, icon, count, action, onAction, description, children }: { title: string; icon: ReactNode; count?: number; action?: string; onAction?: () => void; description?: string; children: ReactNode }) {
   return <section className="rk-pw-section"><div className="rk-pw-section-heading"><div><span className="rk-pw-section-icon">{icon}</span><h2>{title}</h2>{count !== undefined ? <small>{count}</small> : null}</div>{action ? <button type="button" onClick={onAction}>{action} <ArrowRight size={14} /></button> : null}</div>{description ? <p className="rk-pw-description">{description}</p> : null}<div className="rk-pw-stack">{children}</div></section>;
 }
-function Empty({ title, text, action, onAction }: { title: string; text: string; action?: string; onAction?: () => void }) {
-  return <div className="rk-pw-card rk-pw-empty"><Sparkles size={18} /><strong>{title}</strong><p>{text}</p>{action ? <button type="button" onClick={onAction}>{action} <ArrowRight size={14} /></button> : null}</div>;
+function Empty({ title, text, action, onAction }: { title: string; text?: string; action?: string; onAction?: () => void }) {
+  return <div className="rk-pw-card rk-pw-empty"><Sparkles size={18} /><strong>{title}</strong>{text ? <p>{text}</p> : null}{action ? <button type="button" onClick={onAction}>{action} <ArrowRight size={14} /></button> : null}</div>;
 }
 function AddItem({ kind, value, disabled, onChange, onSubmit }: { kind: "goals" | "ideas"; value: string; disabled: boolean; onChange: (value: string) => void; onSubmit: () => void }) {
   return <form className="rk-pw-add" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}><input aria-label={kind === "goals" ? "New goal" : "New idea"} placeholder={kind === "goals" ? "Add a goal" : "Save an idea"} value={value} onChange={(event) => onChange(event.target.value)} /><button type="submit" disabled={!value.trim() || disabled} aria-label={kind === "goals" ? "Add goal" : "Save idea"}><ArrowRight size={17} /></button></form>;

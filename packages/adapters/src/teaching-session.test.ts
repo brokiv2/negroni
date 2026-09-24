@@ -143,7 +143,7 @@ describe("expireTaughtSkillTeaching", () => {
     );
     const bot = {
       id: "bot-1",
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
       computer: {
         id: "computer-1",
         homeKey: "bot-1",
@@ -185,7 +185,7 @@ describe("expireTaughtSkillTeaching", () => {
     );
     deps.prisma.bot.findUnique = vi.fn().mockResolvedValue({
       id: "bot-1",
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
       computer: {
         id: "computer-1",
         homeKey: "bot-1",
@@ -205,7 +205,7 @@ describe("expireTaughtSkillTeaching", () => {
     const { deps, tx } = recordingDeps(skillRow({ status: "draft" }));
     deps.prisma.bot.findUnique = vi.fn().mockResolvedValue({
       id: "bot-1",
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
       computer: null,
     });
     tx.event.findMany = vi.fn().mockResolvedValue([{ payload: { skillId: "skill-1" } }]);
@@ -218,7 +218,7 @@ describe("expireTaughtSkillTeaching", () => {
 describe("completeTeachingSession", () => {
   it("publishes the stopped event atomically with finalization, once", async () => {
     const { deps, tx, current } = recordingDeps(skillRow());
-    const bot = { id: "bot-1", thread: { id: "thread-1" }, computer: null };
+    const bot = { id: "bot-1", threads: [{ id: "thread-1" }], computer: null };
     deps.prisma.bot.findUnique = vi.fn().mockResolvedValue(bot);
     tx.bot.findUnique = vi.fn().mockResolvedValue(bot);
     const actor = { spaceId: "workspace-1", userId: "user-1" } as never;

@@ -8,11 +8,14 @@ import {
   clampBotMessage,
   nextBotMessageHop,
   resolveBotAddress,
+  runInteractionModeFor,
 } from "@rakazo/core";
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
   type PrismaClient,
+  teamThreadOnly,
+  teamThreadRows,
   withTransactionRetry,
 } from "@rakazo/db";
 import type { ExecutorDeps } from "./executor.js";
@@ -91,10 +94,17 @@ export async function messageBot(
   const intent = input.intent ?? "request";
   const hop = nextBotMessageHop(sourceContext?.hop);
 
-  const candidates = await deps.prisma.bot.findMany({
-    where: { spaceId: run.spaceId, userId: run.userId, archivedAt: null },
-    select: { id: true, name: true, title: true, thread: { select: { id: true } } },
-  });
+  const candidates = await teamThreadRows(
+    deps.prisma.bot.findMany({
+      where: { spaceId: run.spaceId, userId: run.userId, archivedAt: null },
+      select: {
+        id: true,
+        name: true,
+        title: true,
+        threads: { ...teamThreadOnly, select: { id: true } },
+      },
+    }),
+  );
   const target = resolveBotAddress(candidates, {
     botId: input.bot_id,
     name: input.confirm_name,
@@ -118,7 +128,14 @@ export async function messageBot(
     };
   }
 
-  const targetThreadId = target.thread.id;
+  // A reply to the bot that asked goes back to the thread the request came
+  // from, so a result for the Personal conversation lands there, not in Team.
+  const returnThread =
+    sourceContext?.fromBotId === target.id && sourceContext.returnToMessageId
+      ? await originThreadOf(deps.prisma, target.id, sourceContext.returnToMessageId)
+      : null;
+  const targetThreadId = returnThread?.id ?? target.thread.id;
+  const targetInteractionMode = runInteractionModeFor({ threadKind: returnThread?.kind });
 
   // A tool call can be re-executed after a lease expiry, so a delivery has to be
   // replayable: without this the recipient is messaged twice and woken twice.
@@ -250,6 +267,7 @@ export async function messageBot(
             userId: run.userId,
             status: "queued",
             trigger: "bot_message",
+            interactionMode: targetInteractionMode,
             sourceMessageId: inbound.id,
           },
           select: { id: true },
@@ -311,6 +329,20 @@ export async function messageBot(
     delivered: message,
     note: `Sent to ${target.name}. Delivery is async; a reply wakes you later as a new message. Continue independent work; send another update later only if it adds something new.`,
   };
+}
+
+/** The requester's own thread that holds the message a reply should return to. */
+export async function originThreadOf(
+  prisma: PrismaClient,
+  botId: string,
+  messageId: string,
+): Promise<{ id: string; kind: "team" | "personal" } | null> {
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: { thread: { select: { id: true, botId: true, kind: true } } },
+  });
+  const thread = message?.thread;
+  return thread && thread.botId === botId ? { id: thread.id, kind: thread.kind } : null;
 }
 
 /** Return a delegated run's terminal outcome unless it already sent one explicitly. */

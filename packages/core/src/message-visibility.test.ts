@@ -1,6 +1,12 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { transcriptContentBlocks, userVisibleMessages } from "./message-visibility.js";
+import {
+  delegationChip,
+  personalTranscriptBlocks,
+  transcriptContentBlocks,
+  userVisibleMessages,
+  workedWithLabel,
+} from "./message-visibility.js";
 
 function message(id: string, runId: string, blocks: ThreadMessage["blocks"]): ThreadMessage {
   return {
@@ -112,5 +118,46 @@ describe("transcript activity removal", () => {
     ];
     expect(transcriptContentBlocks(blocks)).toEqual(blocks);
     expect(transcriptContentBlocks(blocks, { hideCoordination: true })).toEqual([blocks[2]]);
+  });
+});
+
+describe("personal delegation chips", () => {
+  it("turns each delegation block into a Worked with chip", () => {
+    expect(
+      delegationChip({ kind: "bot_message_sent", toBotId: "b1", toBotName: "Analyst", text: "x" }),
+    ).toEqual({ botId: "b1", name: "Analyst", live: false });
+    expect(
+      delegationChip({
+        kind: "subagent",
+        agentId: "a1",
+        name: "Scout",
+        task: "Compare prices",
+        status: "running",
+      }),
+    ).toEqual({ name: "Scout", live: true, detail: "Compare prices" });
+    expect(
+      delegationChip({ kind: "child_bot", botId: "b2", name: "Travel", status: "created" }),
+    ).toEqual({ botId: "b2", name: "Travel", live: false });
+    expect(
+      delegationChip({ kind: "handoff", fromBotId: "b1", toBotId: "b3", text: "over to you" }),
+    ).toEqual({ botId: "b3", live: false });
+    expect(delegationChip({ kind: "text", text: "hi" })).toBeNull();
+    expect(workedWithLabel("Analyst")).toBe("Worked with Analyst");
+  });
+
+  it("keeps delegation blocks and drops raw worker replies in the Personal transcript", () => {
+    const blocks = personalTranscriptBlocks([
+      { kind: "text", text: "Done." },
+      { kind: "bot_message_sent", toBotId: "b1", toBotName: "Analyst", text: "run it" },
+      {
+        kind: "bot_message_received",
+        fromBotId: "b1",
+        fromBotName: "Analyst",
+        text: "raw",
+        hop: 1,
+      },
+      { kind: "handoff", fromBotId: "b1", toBotId: "b3", text: "over" },
+    ]);
+    expect(blocks.map((block) => block.kind)).toEqual(["text", "bot_message_sent", "handoff"]);
   });
 });

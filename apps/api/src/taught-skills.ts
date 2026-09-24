@@ -38,7 +38,14 @@ import {
   type TeachRecordingEvent,
   teachRecordingTtlMs,
 } from "@rakazo/core";
-import { IsolationError, type PrismaClient, type ThreadEvents } from "@rakazo/db";
+import {
+  IsolationError,
+  type PrismaClient,
+  type ThreadEvents,
+  teamThreadOnly,
+  teamThreadRow,
+  withTeamThread,
+} from "@rakazo/db";
 
 type TaughtSkillRow = {
   id: string;
@@ -152,10 +159,12 @@ async function ensureGraphicalComputer(
     } finally {
       await releaseComputerExecutionLease(deps.prisma, lease);
     }
-    bot = await deps.prisma.bot.findUniqueOrThrow({
-      where: { id: bot.id },
-      include: { thread: true, computer: true },
-    });
+    bot = await deps.prisma.bot
+      .findUniqueOrThrow({
+        where: { id: bot.id },
+        include: { threads: teamThreadOnly, computer: true },
+      })
+      .then(withTeamThread);
   }
   if (!bot.computer?.providerRef || bot.computer.state !== "running") {
     throw new ORPCError("BAD_REQUEST", { message: "Computer must be running to teach" });
@@ -222,10 +231,12 @@ async function updateSkillDraftMessage(
     status?: "draft" | "saved";
   },
 ): Promise<void> {
-  const bot = await deps.prisma.bot.findUnique({
-    where: { id: skill.botId },
-    include: { thread: true },
-  });
+  const bot = await teamThreadRow(
+    deps.prisma.bot.findUnique({
+      where: { id: skill.botId },
+      include: { threads: teamThreadOnly },
+    }),
+  );
   if (!bot?.thread) return;
 
   const messages = await deps.prisma.message.findMany({
@@ -292,10 +303,12 @@ export async function stopTeachingSession(
   if (current.status !== "recording" && current.status !== "drafting") {
     throw new ORPCError("BAD_REQUEST", { message: "Teaching session is not active" });
   }
-  const bot = await deps.prisma.bot.findUnique({
-    where: { id: current.botId },
-    include: { thread: true, computer: true },
-  });
+  const bot = await teamThreadRow(
+    deps.prisma.bot.findUnique({
+      where: { id: current.botId },
+      include: { threads: teamThreadOnly, computer: true },
+    }),
+  );
   if (!bot) throw new IsolationError();
   const stopSnapshot =
     current.status === "recording" && bot.computer?.providerRef
@@ -324,10 +337,12 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
     },
 
     async start(actor: Actor, botId: string, goal: string): Promise<TaughtSkill> {
-      let bot = await deps.prisma.bot.findFirst({
-        where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
-        include: { thread: true, computer: true },
-      });
+      let bot = await teamThreadRow(
+        deps.prisma.bot.findFirst({
+          where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
+          include: { threads: teamThreadOnly, computer: true },
+        }),
+      );
       if (!bot) throw new IsolationError();
       const alreadyRecording = await deps.prisma.taughtSkill.findFirst({
         where: { botId, status: "recording" },
@@ -463,10 +478,12 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
           name: name ?? (skill.name || skill.goal.slice(0, 80)),
         },
       });
-      const bot = await deps.prisma.bot.findUnique({
-        where: { id: row.botId },
-        include: { thread: true },
-      });
+      const bot = await teamThreadRow(
+        deps.prisma.bot.findUnique({
+          where: { id: row.botId },
+          include: { threads: teamThreadOnly },
+        }),
+      );
       await updateSkillDraftMessage(deps, actor, row, {
         name: row.name,
         playbook: parsePlaybook(row.playbook),
@@ -489,10 +506,12 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       if (skill.status !== "saved" && skill.status !== "draft") {
         throw new ORPCError("BAD_REQUEST", { message: "Skill must be saved or drafted first" });
       }
-      const bot = await deps.prisma.bot.findUnique({
-        where: { id: skill.botId },
-        include: { thread: true },
-      });
+      const bot = await teamThreadRow(
+        deps.prisma.bot.findUnique({
+          where: { id: skill.botId },
+          include: { threads: teamThreadOnly },
+        }),
+      );
       if (!bot?.thread) throw new IsolationError();
       const playbook = parsePlaybook(skill.playbook);
       const taskPrompt =

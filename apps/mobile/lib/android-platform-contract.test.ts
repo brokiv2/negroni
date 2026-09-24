@@ -174,7 +174,7 @@ describe("Android mobile platform contract", () => {
     expect(stopSource).toContain("const targetBotId = botId;");
     expect(stopSource).toContain("const targetGroupId = groupId;");
     expect(stopSource).toContain(
-      "targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! },",
+      "targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!),",
     );
     expect(stopSource).toMatch(
       /if \(isCurrentTarget\(targetBotId, targetGroupId\)\) \{\s*setError\(err instanceof Error \? err\.message : "Failed to stop work"\);/,

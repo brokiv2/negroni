@@ -128,6 +128,7 @@ import {
 import { resolveConnectionCallbackUrl } from "./connection-callback.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
 import { chooseFocus, markAppConnected, startOnboarding } from "./onboarding.js";
+import { resolvePersonalThread } from "./personal-thread.js";
 import { listSpaceRuns } from "./runs.js";
 import { addScreenProxyCapability } from "./screen-proxy.js";
 import { querySpaceSearch } from "./search.js";
@@ -1177,7 +1178,9 @@ export function createRouter(deps: RouterDeps) {
         // Durable memories remain in their Space-private containers. Clear only removes
         // conversation-derived summaries from the previous generation; including the new
         // generation also covers a compaction job that began just after the clear committed.
-        if (configuredMemory && target.kind === "bot") {
+        // Compaction generations count per thread, so purging by generation after a
+        // Personal clear could drop the Team thread's summaries; leave them.
+        if (configuredMemory && target.kind === "bot" && target.threadKind === "team") {
           // Best effort: the conversation rows are already deleted, so failing the clear here
           // would help nothing — a failed purge only leaves stale summaries recallable.
           try {
@@ -2145,6 +2148,11 @@ export function createRouter(deps: RouterDeps) {
         });
         return { runId: run.id };
       }),
+    },
+    personal: {
+      thread: authed.personal.thread.handler(async ({ context }) =>
+        resolvePersonalThread(deps.prisma, context.actor),
+      ),
     },
     scratchpad: {
       list: authed.scratchpad.list.handler(async ({ context, input }) => {

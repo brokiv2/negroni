@@ -28,16 +28,26 @@ function deps(
     /** Simulate a unique (threadId, clientNonce) race after both retries miss. */
     uniqueConflictOnCommit?: boolean;
     transactionConflictOnce?: boolean;
+    /** Thread holding the requester's original message (the reply's return address). */
+    originThread?: { id: string; botId: string | null; kind: "team" | "personal" };
   } = {},
 ) {
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const notify = vi.fn().mockResolvedValue(undefined);
   const messageFindUnique = vi
     .fn()
-    .mockImplementation(async (args: { where?: { threadId_clientNonce?: unknown } }) =>
-      args?.where?.threadId_clientNonce
-        ? (options.alreadyDelivered ?? null)
-        : { blocks: options.hopBlocks ?? [] },
+    .mockImplementation(
+      async (args: {
+        where?: { threadId_clientNonce?: unknown };
+        select?: { thread?: unknown };
+      }) =>
+        args?.where?.threadId_clientNonce
+          ? (options.alreadyDelivered ?? null)
+          : args?.select?.thread
+            ? options.originThread
+              ? { thread: options.originThread }
+              : null
+            : { blocks: options.hopBlocks ?? [] },
     );
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "thread" }]),
@@ -67,7 +77,7 @@ function deps(
         .fn()
         .mockResolvedValue(
           options.bots ?? [
-            { id: "bot-target", name: "Analyst", title: "", thread: { id: "thread-target" } },
+            { id: "bot-target", name: "Analyst", title: "", threads: [{ id: "thread-target" }] },
           ],
         ),
     },
@@ -146,7 +156,9 @@ describe("messaging another bot", () => {
 
   it("refuses a bot messaging itself", async () => {
     const harness = deps({
-      bots: [{ id: "bot-sender", name: "Researcher", title: "", thread: { id: "thread-sender" } }],
+      bots: [
+        { id: "bot-sender", name: "Researcher", title: "", threads: [{ id: "thread-sender" }] },
+      ],
     });
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-sender",
@@ -247,8 +259,8 @@ describe("messaging another bot", () => {
   it("does not inherit a request reply link when messaging another bot", async () => {
     const harness = deps({
       bots: [
-        { id: "bot-target", name: "Analyst", title: "", thread: { id: "thread-target" } },
-        { id: "bot-other", name: "Writer", title: "", thread: { id: "thread-other" } },
+        { id: "bot-target", name: "Analyst", title: "", threads: [{ id: "thread-target" }] },
+        { id: "bot-other", name: "Writer", title: "", threads: [{ id: "thread-other" }] },
       ],
       hopBlocks: [
         {
@@ -331,8 +343,8 @@ describe("messaging another bot", () => {
   it("does not let a result label bypass the hop limit toward an unrelated bot", async () => {
     const harness = deps({
       bots: [
-        { id: "bot-target", name: "Analyst", title: "", thread: { id: "thread-target" } },
-        { id: "bot-other", name: "Writer", title: "", thread: { id: "thread-other" } },
+        { id: "bot-target", name: "Analyst", title: "", threads: [{ id: "thread-target" }] },
+        { id: "bot-other", name: "Writer", title: "", threads: [{ id: "thread-other" }] },
       ],
       hopBlocks: [
         {
@@ -569,5 +581,80 @@ describe("automatic outcome return", () => {
       },
       data: { botOutcomeReturnedAt: expect.any(Date) },
     });
+  });
+
+  const requestFromCoordinator = [
+    {
+      kind: "bot_message_received",
+      fromBotId: "bot-target",
+      fromBotName: "Negroni",
+      text: "find a dentist",
+      hop: 1,
+      intent: "request",
+      returnToMessageId: "message-request",
+    },
+  ];
+
+  it("returns a result to the Personal thread the request came from", async () => {
+    const harness = deps({
+      hopBlocks: requestFromCoordinator,
+      originThread: { id: "thread-personal", botId: "bot-target", kind: "personal" },
+    });
+    const returned = await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "Booked for Tuesday.",
+    );
+    expect(returned).toBe(true);
+    expect(harness.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          botId: "bot-target",
+          threadId: "thread-personal",
+          trigger: "bot_message",
+          interactionMode: "personal",
+        }),
+      }),
+    );
+    expect(harness.tx.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ threadId: "thread-personal" }) }),
+    );
+    expect(harness.notify).toHaveBeenCalledWith("thread-personal", 7);
+    expect(harness.notify).not.toHaveBeenCalledWith("thread-target", expect.anything());
+  });
+
+  it("keeps a Team request's result in the Team thread", async () => {
+    const harness = deps({
+      hopBlocks: requestFromCoordinator,
+      originThread: { id: "thread-target", botId: "bot-target", kind: "team" },
+    });
+    await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "Booked for Tuesday.",
+    );
+    expect(harness.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ threadId: "thread-target", interactionMode: "chat" }),
+      }),
+    );
+  });
+
+  it("ignores a return address in a thread the requester does not own", async () => {
+    const harness = deps({
+      hopBlocks: requestFromCoordinator,
+      originThread: { id: "thread-group", botId: null, kind: "team" },
+    });
+    await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "Booked for Tuesday.",
+    );
+    expect(harness.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ threadId: "thread-target" }) }),
+    );
   });
 });

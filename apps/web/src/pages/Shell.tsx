@@ -36,6 +36,7 @@ import {
   BOT_TITLE_MAX_LENGTH,
   canReactToThreadMessage,
   normalizeCreateBotProfile,
+  type ThreadKind,
 } from "@rakazo/contracts";
 import {
   abortableDelay,
@@ -45,6 +46,7 @@ import {
   type ComposerMention,
   clampMentionHighlightIndex,
   cronFromPreset,
+  delegationChip,
   connectedModelOptions,
   modelOptionKey,
   parseModelOptionKey,
@@ -57,6 +59,7 @@ import {
   latestAnswerableAskMessageId,
   mainAssistantBot,
   mentionChipKey,
+  personalTranscriptBlocks,
   reorderBotTo,
   resolveComposerSendPlan,
   resolveMentionPickerKey,
@@ -134,6 +137,7 @@ import {
 } from "../components/ComputersUnavailableHint";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import { PersonalWorkspace } from "../components/PersonalWorkspace";
+import { ToolActivityDisclosure } from "../components/ToolActivityDisclosure";
 import { SkillDraftCard } from "../components/teach/SkillDraftCard";
 import { TeachCaptureOverlay } from "../components/teach/TeachCaptureOverlay";
 import { TeachComputerOverlayControl } from "../components/teach/TeachComputerOverlay";
@@ -531,6 +535,21 @@ export function ShellPage() {
   const assistant = mainAssistantBot(bots);
   const assistantIds = useMemo(() => assistant ? [...assistantHierarchyIds(assistant.id, bots)] : [], [assistant?.id, bots]);
   const active = inGroup ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
+  // Personal view talks to the main assistant in its own thread; Team keeps the bot's chat.
+  const personalBotId =
+    chatView === "assistant" && !inGroup && assistant && active?.id === assistant.id
+      ? assistant.id
+      : null;
+  const botThreadKind: ThreadKind = personalBotId ? "personal" : "team";
+  const personalBotIdRef = useRef(personalBotId);
+  personalBotIdRef.current = personalBotId;
+  const botThreadTarget = useCallback(
+    (id: string) =>
+      id === personalBotIdRef.current
+        ? { botId: id, threadKind: "personal" as const }
+        : { botId: id },
+    [],
+  );
   useEffect(() => {
     if (chatView === "assistant" && assistant && !personalOpen && botId !== assistant.id) {
       navigate(`/app/${assistant.id}`, { replace: true });
@@ -544,14 +563,18 @@ export function ShellPage() {
     setMobileSidebarOpen(false);
     if (next === "assistant" && assistant) navigate(`/app/${assistant.id}`);
   }, [assistant?.id, navigate]);
-  const openPersonalChat = useCallback((target?: { botId: string; groupId?: string; draft?: string }) => {
+  const openPersonalChat = useCallback((target?: { botId: string; groupId?: string; draft?: string; team?: boolean }) => {
     if (!assistant) return;
     const targetBotId = target?.botId ?? assistant.id;
-    const isTeamTarget = Boolean(target?.groupId) || targetBotId !== assistant.id;
+    const isTeamTarget = Boolean(target?.groupId) || Boolean(target?.team) || targetBotId !== assistant.id;
     if (target?.draft !== undefined) {
       setComposerPrefill({
         nonce: ++prefillNonce.current,
-        targetKey: target?.groupId ? `group:${target.groupId}` : `bot:${targetBotId}`,
+        targetKey: target?.groupId
+          ? `group:${target.groupId}`
+          : isTeamTarget
+            ? `bot:${targetBotId}`
+            : `bot:${targetBotId}:personal`,
         text: target.draft,
       });
       setReplyTarget(null);
@@ -565,6 +588,11 @@ export function ShellPage() {
     navigate(target?.groupId ? `/app/g/${target.groupId}` : `/app/${targetBotId}`);
   }, [assistant?.id, navigate]);
   const activeGroup = groups.find((group) => group.id === groupId);
+  const composerTargetKey = inGroup
+    ? `group:${groupId}`
+    : personalBotId
+      ? `bot:${active?.id}:personal`
+      : `bot:${active?.id}`;
   const activePendingAttachments = useMemo(
     () => attachmentsForThread(pendingAttachments, inGroup ? groupId : active?.id),
     [active?.id, groupId, inGroup, pendingAttachments],
@@ -598,11 +626,13 @@ export function ShellPage() {
   }, []);
   const markBotRead = useCallback(
     async (id: string) => {
-      await rpc.threads.markRead({ botId: id });
+      const target = botThreadTarget(id);
+      await rpc.threads.markRead(target);
       manuallyUnread.current.delete(id);
-      updateBotUnread(id, false);
+      // The sidebar dot is the Team thread's; reading Personal leaves it alone.
+      if (!("threadKind" in target)) updateBotUnread(id, false);
     },
-    [updateBotUnread],
+    [botThreadTarget, updateBotUnread],
   );
   const markBotUnread = useCallback(
     async (id: string) => {
@@ -810,12 +840,13 @@ export function ShellPage() {
     const request = ++threadRefreshEpoch.current;
     // Apply threads.get as soon as it returns so stop/takeover status is not held behind
     // routines/skills/screen fetches (progress can advance the cursor meanwhile).
-    const snap = await rpc.threads.get({ botId: id }, signal ? { signal } : undefined);
+    const snap = await rpc.threads.get(botThreadTarget(id), signal ? { signal } : undefined);
     markOnce("rk:renderer:thread-response");
     if (
       activeBotId.current !== id ||
       epoch !== historyEpoch.current ||
-      request !== threadRefreshEpoch.current
+      request !== threadRefreshEpoch.current ||
+      (snap.kind ?? "team") !== (personalBotIdRef.current === id ? "personal" : "team")
     ) {
       return snap;
     }
@@ -880,7 +911,7 @@ export function ShellPage() {
     const targetGroupId = inGroup ? groupId : undefined;
     const snapshotMatchesTarget = targetGroupId
       ? snapshot?.groupId === targetGroupId
-      : snapshot?.botId === targetBotId;
+      : snapshot?.botId === targetBotId && (snapshot?.kind ?? "team") === botThreadKind;
     if (
       (!targetBotId && !targetGroupId) ||
       !snapshotMatchesTarget ||
@@ -896,7 +927,7 @@ export function ShellPage() {
     setLoadingOlder(true);
     try {
       const page = await rpc.threads.messages({
-        ...(targetGroupId ? { groupId: targetGroupId } : { botId: targetBotId! }),
+        ...(targetGroupId ? { groupId: targetGroupId } : botThreadTarget(targetBotId!)),
         before,
       });
       if (
@@ -949,7 +980,7 @@ export function ShellPage() {
           setSpaces(bootstrap.spaces);
           setInitialBotsLoaded(true);
         }
-        if (!groupId && bootstrap.thread) {
+        if (!groupId && bootstrap.thread && !personalBotIdRef.current) {
           bootstrappedThread.current = bootstrap.thread;
           commitSnapshot(bootstrap.thread);
           commitComputer(bootstrap.thread.computer ?? null);
@@ -1115,11 +1146,11 @@ export function ShellPage() {
       bootstrappedThread.current = null;
       // Pending search jumps load the around-page separately; avoid replacing it with latest.
       const snap =
-        primed?.botId === active.id
+        primed?.botId === active.id && (primed.kind ?? "team") === botThreadKind
           ? primed
           : pendingJump
             ? await rpc.threads
-                .get({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) })
+                .get(botThreadTarget(active.id), { signal: threadSnapshotSignal(abort.signal) })
                 .catch(() => null)
             : await refreshThread(active.id, threadSnapshotSignal(abort.signal)).catch(() => null);
       if (abort.signal.aborted) return;
@@ -1128,7 +1159,7 @@ export function ShellPage() {
       let headRetryMs = 250;
       while (!subscribedThreadId && !abort.signal.aborted) {
         const head = await rpc.threads
-          .head({ botId: active.id }, { signal: threadSnapshotSignal(abort.signal) })
+          .head(botThreadTarget(active.id), { signal: threadSnapshotSignal(abort.signal) })
           .catch(() => null);
         if (head) {
           subscribedThreadId = head.threadId;
@@ -1177,7 +1208,7 @@ export function ShellPage() {
       while (!abort.signal.aborted) {
         try {
           const events = await rpc.threads.subscribe(
-            { botId: active.id, cursor },
+            { ...botThreadTarget(active.id), cursor },
             { signal: abort.signal },
           );
           for await (const event of events) {
@@ -1245,7 +1276,7 @@ export function ShellPage() {
     return () => {
       abort.abort();
     };
-  }, [active?.id, markBotReadIfVisible, notifyBrowserForEvent]);
+  }, [active?.id, botThreadKind, botThreadTarget, markBotReadIfVisible, notifyBrowserForEvent]);
 
   useEffect(() => {
     if (!groupId || !activeGroup) return;
@@ -1577,9 +1608,10 @@ export function ShellPage() {
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
     const jumpId = jumpGeneration.current;
+    const threadRequest = threadTarget.botId ? botThreadTarget(threadTarget.botId) : threadTarget;
     const [snap, page] = await Promise.all([
-      rpc.threads.get(threadTarget),
-      rpc.threads.messages({ ...threadTarget, around: { messageId: target.messageId } }),
+      rpc.threads.get(threadRequest),
+      rpc.threads.messages({ ...threadRequest, around: { messageId: target.messageId } }),
     ]);
     // The epoch check drops a jump that raced a conversation clear (or a bot switch): applying
     // the fetched page would pin deleted messages that every later refresh keeps restoring.
@@ -1678,7 +1710,7 @@ export function ShellPage() {
     ? snapshot?.groupId === groupId
       ? snapshot
       : null
-    : snapshot?.botId === active?.id
+    : snapshot?.botId === active?.id && (snapshot?.kind ?? "team") === botThreadKind
       ? snapshot
       : null;
   const activeReplyTarget =
@@ -1699,10 +1731,13 @@ export function ShellPage() {
     rememberSeenRunErrorId(runId);
   }, []);
   const transcriptMessages = useMemo(
-    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: chatView === "team" })
-      .map((message) => ({ ...message, blocks: transcriptContentBlocks(message.blocks, { hideCoordination: chatView === "assistant" }) }))
+    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true })
+      .map((message) => ({
+        ...message,
+        blocks: personalBotId ? personalTranscriptBlocks(message.blocks) : transcriptContentBlocks(message.blocks),
+      }))
       .filter((message) => message.blocks.length > 0),
-    [activeSnapshot?.messages, chatView],
+    [activeSnapshot?.messages, personalBotId],
   );
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
@@ -1898,7 +1933,7 @@ export function ShellPage() {
     const groupId = activeGroupId.current;
     if (!botId && !groupId) return;
     await rpc.threads.answer({
-      ...(groupId ? { groupId } : { botId: botId! }),
+      ...(groupId ? { groupId } : botThreadTarget(botId!)),
       runId: message.runId ?? "",
       messageId: message.id,
       answer: text,
@@ -1916,7 +1951,7 @@ export function ShellPage() {
       if (!botId && !groupId) return;
       try {
         await rpc.threads.react({
-          ...(groupId ? { groupId } : { botId: botId! }),
+          ...(groupId ? { groupId } : botThreadTarget(botId!)),
           messageId: message.id,
           thumbsUp: !message.thumbsUp,
         });
@@ -2052,7 +2087,7 @@ export function ShellPage() {
           });
         } else if (botTarget) {
           await rpc.threads.send({
-            botId: botTarget,
+            ...botThreadTarget(botTarget),
             clientNonce,
             text: trimmed || undefined,
             mentions: plan.mentionPayload.length ? plan.mentionPayload : undefined,
@@ -2099,7 +2134,7 @@ export function ShellPage() {
   const followUpMessage = useCallback(async (text: string) => {
     const id = activeBotId.current;
     if (!id) return;
-    await rpc.threads.followUp({ botId: id, text });
+    await rpc.threads.followUp({ ...botThreadTarget(id), text });
     await refreshThreadRef.current(id);
   }, []);
   const stopRun = useCallback(async () => {
@@ -2130,7 +2165,7 @@ export function ShellPage() {
       if (!botTarget) return;
       setSendError(null);
       try {
-        await rpc.threads.stop({ botId: botTarget });
+        await rpc.threads.stop(botThreadTarget(botTarget));
       } catch (error) {
         if (activeBotId.current === botTarget) {
           setSendError(error instanceof Error ? error.message : t`Failed to stop`);
@@ -3094,6 +3129,7 @@ export function ShellPage() {
           voiceReady={Boolean(voiceStatus?.ready)}
           speakingMessageId={speakingMessageId}
           onSpeak={speakMessage}
+          compactDelegation={Boolean(personalBotId)}
         />
         {recordingSkill ? (
           <div className="px-6 pb-2 text-center text-[13px] text-[var(--rk-danger)]">
@@ -3101,8 +3137,8 @@ export function ShellPage() {
           </div>
         ) : null}
         <Composer
-          key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
-          prefill={composerPrefill?.targetKey === (inGroup ? `group:${groupId}` : `bot:${active?.id}`) ? composerPrefill : undefined}
+          key={composerTargetKey}
+          prefill={composerPrefill?.targetKey === composerTargetKey ? composerPrefill : undefined}
           onPrefillApplied={(nonce) => setComposerPrefill((current) => current?.nonce === nonce ? null : current)}
           activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
           running={composerRunning}
@@ -3699,7 +3735,7 @@ export function ShellPage() {
             onConfirm={async () => {
               await rpc.threads.clear(
                 clearTarget.kind === "bot"
-                  ? { botId: clearTarget.chat.id }
+                  ? botThreadTarget(clearTarget.chat.id)
                   : { groupId: clearTarget.chat.id },
               );
               if (
@@ -3999,6 +4035,7 @@ const Transcript = memo(function Transcript({
   voiceReady,
   speakingMessageId,
   onSpeak,
+  compactDelegation = false,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
   visible: boolean;
@@ -4024,6 +4061,8 @@ const Transcript = memo(function Transcript({
   voiceReady: boolean;
   speakingMessageId: string | null;
   onSpeak: (message: ThreadMessage) => void;
+  /** Personal view: delegation blocks collapse to one "Worked with <bot>" chip. */
+  compactDelegation?: boolean;
 }) {
   const { t } = useLingui();
   const [atEnd, setAtEnd] = useState(true);
@@ -4179,7 +4218,9 @@ const Transcript = memo(function Transcript({
         ) : null}
         {messages.map((message) => {
           if (transcriptContentBlocks(message.blocks).length === 0) return null;
-          const peerReceipt = isPeerReceiptBlocks(message.blocks);
+          const peerReceipt =
+            isPeerReceiptBlocks(message.blocks) ||
+            (compactDelegation && message.blocks.every((block) => delegationChip(block)));
           return (
             <div
               key={message.id}
@@ -4216,6 +4257,7 @@ const Transcript = memo(function Transcript({
                 voiceReady={voiceReady}
                 speaking={speakingMessageId === message.id}
                 onSpeak={() => onSpeak(message)}
+                compactDelegation={compactDelegation}
               />
               {!peerReceipt && message.thumbsUp ? (
                 <button
@@ -5201,6 +5243,7 @@ const MessageView = memo(function MessageView({
   voiceReady,
   speaking,
   onSpeak,
+  compactDelegation = false,
 }: {
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
@@ -5220,6 +5263,7 @@ const MessageView = memo(function MessageView({
   voiceReady: boolean;
   speaking: boolean;
   onSpeak: () => void;
+  compactDelegation?: boolean;
 }) {
   const { t } = useLingui();
   const contentBlocks = transcriptContentBlocks(message.blocks);
@@ -5291,6 +5335,26 @@ const MessageView = memo(function MessageView({
     <>
       {messageContext}
       {contentBlocks.map((block, i) => {
+        const chip = compactDelegation ? delegationChip(block) : null;
+        if (chip) {
+          const name = chip.name ?? memberName?.(chip.botId) ?? t`a teammate`;
+          const label = t`Worked with ${name}`;
+          return (
+            <div key={i} className="flex justify-start" data-testid="delegation-chip">
+              {chip.detail ? (
+                <ToolActivityDisclosure live={chip.live} label={label}>
+                  <div className="text-[13.5px] text-[var(--rk-muted)]" dir="auto">
+                    {chip.detail}
+                  </div>
+                </ToolActivityDisclosure>
+              ) : (
+                <span className="min-h-6 py-0.5 text-[13px] font-medium text-[var(--rk-muted)]" dir="auto">
+                  {label}
+                </span>
+              )}
+            </div>
+          );
+        }
         if (block.kind === "handoff") {
           const from = memberName?.(block.fromBotId) ?? t`bot`;
           const to = memberName?.(block.toBotId) ?? t`bot`;

@@ -13,7 +13,7 @@ vi.mock("./artifacts.js", () => ({
 
 import { sendThreadMessage } from "./thread-target.js";
 
-function fixture(active = false) {
+function fixture(active = false, threadKind: "team" | "personal" = "team") {
   const tx = {
     message: { findUnique: vi.fn(async () => null), update: vi.fn() },
     task: { create: vi.fn(async () => ({ id: "task" })) },
@@ -33,7 +33,7 @@ function fixture(active = false) {
     sendThreadMessage(
       deps as never,
       { userId: "user", spaceId: "space" } as never,
-      { kind: "bot", botId: "bot", threadId: "thread" } as never,
+      { kind: "bot", botId: "bot", threadId: "thread", threadKind } as never,
       { text: "Hello", ...input },
     );
   return { tx, send };
@@ -58,5 +58,18 @@ describe("voice run intent", () => {
     await expect(send({ interactionMode: "voice" })).rejects.toThrow("already working");
     expect(tx.steeringMessage.create).not.toHaveBeenCalled();
     expect(tx.run.create).not.toHaveBeenCalled();
+  });
+  it.each([
+    [{}, "personal"],
+    [{ interactionMode: "chat" as const }, "personal"],
+    [{ interactionMode: "voice" as const }, "voice"],
+  ])("runs a Personal thread turn in personal mode: %j", async (input, mode) => {
+    const { tx, send } = fixture(false, "personal");
+    await send(input);
+    expect(tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ interactionMode: mode, trigger: "user" }),
+      }),
+    );
   });
 });

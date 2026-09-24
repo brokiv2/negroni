@@ -1,8 +1,10 @@
-import type { MemoryDocument, Routine, RunActivityRow, ScratchpadItem } from "@rakazo/contracts";
-import { assistantHierarchyIds } from "@rakazo/core";
+import type { MemoryDocument, PersonalThread, Routine, RunActivityRow, ScratchpadItem } from "@rakazo/contracts";
+import { assistantHierarchyIds, type PersonalTab, personalTabExplainer } from "@rakazo/core";
+import { tokensForAppearance } from "@rakazo/ui-tokens";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ActionSheet } from "../components/action-sheet";
 import { BotAvatar } from "../components/bot-avatar";
@@ -11,7 +13,6 @@ import { NativeSymbol } from "../components/native-symbol";
 import { WorkspacePicker } from "../components/workspace-picker";
 import { activityStatusLabel, formatActivityRelativeTime } from "../lib/activity";
 import { rpc, type MobileBot } from "../lib/api";
-import { mobileTokens } from "../lib/appearance";
 import { saveChatView } from "../lib/chat-view";
 import { useResolvedAppearance } from "../lib/native";
 
@@ -32,9 +33,8 @@ export default function AssistantHub() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const appearance = useResolvedAppearance();
-  const theme = mobileTokens();
-  const card = appearance === "light" ? "#FFFFFF" : "#222225";
-  const accent = appearance === "light" ? "#EEEAF9" : "#302A42";
+  // One appearance source: every color below comes from these tokens.
+  const theme = tokensForAppearance(appearance);
   const [section, setSection] = useState<Section>(sectionFrom(initialSection));
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [items, setItems] = useState<ScratchpadItem[]>([]);
@@ -54,6 +54,10 @@ export default function AssistantHub() {
   const [notes, setNotes] = useState("");
   const [editingMemory, setEditingMemory] = useState<MemoryDocument | null>(null);
   const [memoryDraft, setMemoryDraft] = useState("");
+  const [personalThreadId, setPersonalThreadId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState(false);
   const request = useRef<AbortController | null>(null);
   const knownHierarchy = useRef<{ botId: string; ids: Set<string> } | null>(null);
   const mutationBusy = useRef(false);
@@ -67,6 +71,9 @@ export default function AssistantHub() {
     const options = { signal: controller.signal };
     let incomplete = false;
     try {
+      void rpc<PersonalThread>("personal/thread", {}, options)
+        .then((personal) => { if (!controller.signal.aborted && personal.botId === botId) setPersonalThreadId(personal.threadId); })
+        .catch(() => undefined);
       const [bots, active, recent, userDocuments, botDocuments] = await Promise.allSettled([
         rpc<MobileBot[]>("bots/list", {}, options),
         rpc<{ runs: RunActivityRow[] }>("runs/list", { filter: "active" }, options),
@@ -139,7 +146,23 @@ export default function AssistantHub() {
   const openChat = (draft?: string) => {
     if (botId) router.push({ pathname: "/thread", params: { botId, name, view: "assistant", ...(draft ? { draft } : {}) } });
   };
-  const openRun = (run: RunActivityRow) => router.push({ pathname: run.groupId ? "/group-thread" : "/thread", params: run.groupId ? { groupId: run.groupId, name: run.groupName ?? "Group" } : { botId: run.botId, name: run.botName, ...(run.botId === botId ? { view: "assistant" } : {}) } });
+  // A run in the Personal thread opens Personal; the assistant's Team runs open its Team chat.
+  const openRun = (run: RunActivityRow) => router.push({ pathname: run.groupId ? "/group-thread" : "/thread", params: run.groupId ? { groupId: run.groupId, name: run.groupName ?? "Group" } : { botId: run.botId, name: run.botName, ...(run.botId === botId && (!personalThreadId || run.threadId === personalThreadId) ? { view: "assistant" } : {}) } });
+  const sendMessage = async () => {
+    const text = message.trim();
+    if (!botId || !text || sending) return;
+    setSending(true);
+    setSendError(false);
+    try {
+      await rpc("threads/send", { botId, threadKind: "personal", text, clientNonce: newClientNonce() });
+      setMessage("");
+      router.push({ pathname: "/thread", params: { botId, name, view: "assistant" } });
+    } catch {
+      setSendError(true);
+    } finally {
+      setSending(false);
+    }
+  };
   const mutate = async (operation: () => Promise<void>) => {
     if (mutationBusy.current) return;
     mutationBusy.current = true; setSaving(true); setSaveError(false);
@@ -168,104 +191,133 @@ export default function AssistantHub() {
   const working = runs.filter((run) => ["queued", "leased", "running"].includes(run.status));
   const finished = runs.filter((run) => ["completed", "failed", "cancelled"].includes(run.status));
   const title = tabs.find((tab) => tab.id === section)!.label;
-  const descriptions: Record<Section, string> = { today: "Your plans, progress and possibilities.", goals: "What we're working toward.", ideas: "A place for the things that could be next.", activity: "What your assistant and its team have been doing.", memory: "What your assistant remembers. You're in control." };
+  const activeRoutines = routines.filter((routine) => routine.active);
+  const nothingYet = !waiting.length && !working.length && !activeGoals.length && !activeRoutines.length && !ideas.length && !finished.length;
+  const explainer = (tab: PersonalTab) => personalTabExplainer(tab, name);
   const text = { color: theme.ink };
   const muted = { color: theme.muted };
-  const button = (label: string, action: () => void, filled = false) => <Pressable accessibilityRole="button" disabled={saving} onPress={action} style={[styles.pill, { backgroundColor: filled ? theme.ink : theme.surface2 }]}><Text style={{ color: filled ? theme.page : theme.ink, fontSize: 14, fontWeight: "600" }}>{label}</Text></Pressable>;
+  const surface = { backgroundColor: theme.surface, borderColor: theme.hairline };
+  const button = (label: string, action: () => void, filled = false, wide = false) => <Pressable accessibilityRole="button" disabled={saving} onPress={action} style={[styles.pill, wide && styles.pillWide, { backgroundColor: filled ? theme.ink : theme.surface2 }]}><Text style={{ color: filled ? theme.page : theme.ink, fontSize: 15, fontWeight: "600" }}>{label}</Text></Pressable>;
   const heading = (label: string, action?: () => void) => <View style={styles.sectionHeading}><Text style={[styles.sectionTitle, text]}>{label}</Text>{action ? <Pressable accessibilityRole="button" onPress={action} hitSlop={12}><Text style={[styles.link, muted]}>View all</Text></Pressable> : null}</View>;
-  const empty = (message: string) => <Text style={[styles.empty, muted]}>{message}</Text>;
-  const goalCard = (item: ScratchpadItem) => <View key={item.id} style={[styles.card, { backgroundColor: card }]}>
+  const empty = (line: string, action?: ReactNode) => <View style={[styles.card, surface]}><Text style={[styles.empty, muted]}>{line}</Text>{action}</View>;
+  const goalCard = (item: ScratchpadItem) => <View key={item.id} style={[styles.card, surface]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.title}`} onPress={() => { setEditItem(item); setItemKind(item.status === "parked" ? "ideas" : "goals"); setEditTitle(item.title); setNotes(item.notes); setSaveError(false); }}><Text style={[styles.cardTitle, text]}>{item.title}</Text>{item.notes ? <Text numberOfLines={3} style={[styles.copy, muted]}>{item.notes}</Text> : null}</Pressable>
     <View style={styles.actions}>{button("Discuss", () => openChat(`Let's work on this ${item.status === "parked" ? "idea" : "goal"}: ${item.title}${item.notes ? `\n${item.notes}` : ""}`))}{button(item.status === "parked" ? "Make a goal" : "Mark done", () => changeStatus(item, item.status === "parked" ? "open" : "done"))}</View>
   </View>;
-  const runCard = (run: RunActivityRow) => <Pressable accessibilityRole="button" key={run.runId} onPress={() => openRun(run)} style={[styles.card, { backgroundColor: waiting.includes(run) ? accent : card }]}>
+  const runCard = (run: RunActivityRow) => <Pressable accessibilityRole="button" key={run.runId} onPress={() => openRun(run)} style={[styles.card, surface, waiting.includes(run) && { borderColor: theme.accent }]}>
     <View style={styles.row}><Text style={[styles.meta, muted]}>{run.botName}</Text><Text style={[styles.meta, muted]}>{formatActivityRelativeTime(run.updatedAt)}</Text></View>
     <Text numberOfLines={3} style={[styles.cardTitle, text]}>{run.promptSnippet || "Conversation"}</Text>
-    <View style={[styles.row, { marginTop: 14 }]}><Text style={[styles.status, text]}>{waiting.includes(run) ? "Needs your answer" : activityStatusLabel(run.status)}</Text><NativeSymbol ios="arrow.up.right" android="arrow-forward-outline" size={17} /></View>
+    <View style={[styles.row, { marginTop: 12 }]}><Text style={[styles.status, text]}>{waiting.includes(run) ? "Needs your answer" : activityStatusLabel(run.status)}</Text><NativeSymbol ios="arrow.up.right" android="arrow-forward-outline" size={17} color={theme.muted} /></View>
   </Pressable>;
+  const column = { width: "100%" as const, maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center" as const };
+  const canSend = Boolean(message.trim()) && !sending;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.page }}>
       <Stack.Screen options={{ headerShown: false }} />
-      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
-        <Pressable accessibilityLabel="Open navigation" onPress={() => setNavigationOpen(true)} style={[styles.circle, { backgroundColor: card }]}><NativeSymbol ios="line.3.horizontal" android="menu" size={21} /></Pressable>
-        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><BotAvatar identity={botId ?? "negroni"} color={assistant?.color ?? "#2DB69B"} size={30} /><Text style={[styles.brand, text]}>Personal</Text></View>
-        <Pressable accessibilityLabel="Settings" onPress={() => router.push("/account")} style={[styles.circle, { backgroundColor: card }]}><NativeSymbol ios="gearshape" android="settings-outline" size={20} /></Pressable>
+      <View style={{ backgroundColor: theme.page, paddingTop: insets.top, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.hairline }}>
+        <View style={[styles.header, column]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Open navigation" onPress={() => setNavigationOpen(true)} style={[styles.circle, surface]}><NativeSymbol ios="line.3.horizontal" android="menu" size={20} color={theme.ink} /></Pressable>
+          <View style={styles.brandRow}><BotAvatar identity={botId ?? "negroni"} color={assistant?.color ?? "#2DB69B"} size={28} /><Text style={[styles.brand, text]}>Personal</Text></View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Settings" onPress={() => router.push("/account")} style={[styles.circle, surface]}><NativeSymbol ios="gearshape" android="settings-outline" size={19} color={theme.ink} /></Pressable>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[{ flexGrow: 0 }, column]} contentContainerStyle={styles.tabs}>
+          {tabs.map((tab) => <Pressable key={tab.id} accessibilityRole="tab" accessibilityState={{ selected: section === tab.id }} onPress={() => setSection(tab.id)} style={[styles.tab, { borderBottomColor: section === tab.id ? theme.ink : "transparent" }]}><Text style={{ color: section === tab.id ? theme.ink : theme.muted, fontSize: 15, fontWeight: section === tab.id ? "600" : "400" }}>{tab.label}</Text></Pressable>)}
+        </ScrollView>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.tabs}>
-        {tabs.map((tab) => <Pressable key={tab.id} accessibilityRole="tab" accessibilityState={{ selected: section === tab.id }} onPress={() => setSection(tab.id)} style={{ paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: section === tab.id ? theme.ink : "transparent" }}><Text style={{ color: section === tab.id ? theme.ink : theme.muted, fontSize: 15, fontWeight: section === tab.id ? "600" : "400" }}>{tab.label}</Text></Pressable>)}
-      </ScrollView>
-      <ScrollView keyboardDismissMode="on-drag" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />} contentContainerStyle={{ paddingHorizontal: 22, paddingTop: 24, paddingBottom: 24, gap: 12 }}>
-        <View style={{ marginBottom: 12 }}>
+      <ScrollView keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} />} contentContainerStyle={[styles.content, column]}>
+        <View style={{ marginBottom: 4 }}>
           {section === "today" ? <Text style={[styles.date, muted]}>{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</Text> : null}
-          <Text style={[styles.heroTitle, text]}>{title}</Text><Text style={[styles.intro, muted]}>{descriptions[section]}</Text>
+          <Text style={[styles.heroTitle, text]}>{title}</Text>
         </View>
         {loadError ? <Pressable onPress={() => void load()} accessibilityRole="button"><Text style={[styles.copy, muted]}>Some updates couldn't load. Tap to retry.</Text></Pressable> : null}
         {saveError && !editItem && !editingMemory ? <Text style={[styles.copy, { color: theme.danger }]}>Couldn't save that change. Please try again.</Text> : null}
-        {loading ? <View style={{ gap: 12 }}>{[110, 150, 110].map((height, index) => <View key={index} style={{ height, borderRadius: 24, backgroundColor: theme.surface2 }} />)}</View> : null}
+        {loading ? <View style={{ gap: 12 }}>{[110, 150, 110].map((height, index) => <View key={index} style={{ height, borderRadius: 22, backgroundColor: theme.surface2 }} />)}</View> : null}
         {!loading && section === "today" ? <>
+          {nothingYet ? empty(explainer("for-you"), button("Add a goal", () => createItem("goals"), true, true)) : null}
           {waiting.length ? <>{heading("Needs your answer")}{waiting.map(runCard)}</> : null}
           {working.length ? <>{heading("Working on it")}{working.map(runCard)}</> : null}
-          <Pressable accessibilityRole="button" onPress={() => openChat()} style={[styles.card, { backgroundColor: accent, padding: 24 }]}>
-            <NativeSymbol ios="sparkles" android="sparkles-outline" size={25} />
-            <Text style={[styles.welcomeTitle, text]}>A little room to think.</Text>
-            <Text style={[styles.copy, muted]}>Bring a question, a plan or something on your mind. We can pick up where we left off.</Text>
-            <View style={[styles.row, { marginTop: 20 }]}><Text style={[styles.status, text]}>Continue our conversation</Text><NativeSymbol ios="arrow.up.right" android="arrow-forward-outline" size={19} /></View>
-          </Pressable>
-          {heading("Your goals", () => setSection("goals"))}{activeGoals.length ? activeGoals.slice(0, 3).map(goalCard) : <View style={[styles.card, { backgroundColor: card }]}>{empty("Give us something to work toward.")}{button("Add a goal", () => createItem("goals"))}</View>}
-          {routines.some((routine) => routine.active) ? <>{heading("Keeping an eye on")}{routines.filter((routine) => routine.active).slice(0, 3).map((routine) => <Pressable key={routine.id} onPress={() => router.push({ pathname: "/routine", params: { botId: routine.botId, routineId: routine.id, botName: name } })} style={[styles.card, { backgroundColor: card }]}><Text style={[styles.cardTitle, text]}>{routine.name}</Text><Text style={[styles.copy, muted]}>{routine.nextRunAt ? `Next check ${new Date(routine.nextRunAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "Tracking is on"}</Text></Pressable>)}</> : null}
+          {!nothingYet ? <>{heading("Your goals", () => setSection("goals"))}{activeGoals.length ? activeGoals.slice(0, 3).map(goalCard) : empty(explainer("goals"), button("Add a goal", () => createItem("goals"), false, true))}</> : null}
+          {activeRoutines.length ? <>{heading("Keeping an eye on")}{activeRoutines.slice(0, 3).map((routine) => <Pressable key={routine.id} accessibilityRole="button" onPress={() => router.push({ pathname: "/routine", params: { botId: routine.botId, routineId: routine.id, botName: name } })} style={[styles.card, surface]}><Text style={[styles.cardTitle, text]}>{routine.name}</Text><Text style={[styles.copy, muted]}>{routine.nextRunAt ? `Next check ${new Date(routine.nextRunAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "Tracking is on"}</Text></Pressable>)}</> : null}
           {ideas.length ? <>{heading("Ideas for later", () => setSection("ideas"))}{ideas.slice(0, 2).map(goalCard)}</> : null}
           {finished.length ? <>{heading("Latest activity", () => setSection("activity"))}{finished.slice(0, 3).map(runCard)}</> : null}
         </> : null}
         {!loading && (section === "goals" || section === "ideas") ? <>
-          {button(section === "goals" ? "+ Add a goal" : "+ Save an idea", () => createItem(section), true)}
+          {button(section === "goals" ? "Add a goal" : "Save an idea", () => createItem(section), true, true)}
           {(section === "goals" ? activeGoals : ideas).map(goalCard)}
-          {!(section === "goals" ? activeGoals : ideas).length ? empty(section === "goals" ? "No active goals yet. Add one here or talk it through with your assistant." : "Save possibilities here. Turn an idea into a goal whenever you're ready.") : null}
-          {section === "goals" && items.some((item) => item.status === "done") ? <>{heading("Completed")}{items.filter((item) => item.status === "done").map((item) => <View key={item.id} style={[styles.card, { backgroundColor: card }]}><Text style={[styles.cardTitle, muted]}>{item.title}</Text><View style={styles.actions}>{button("Reopen", () => changeStatus(item, "open"))}</View></View>)}</> : null}
+          {!(section === "goals" ? activeGoals : ideas).length ? empty(explainer(section)) : null}
+          {section === "goals" && items.some((item) => item.status === "done") ? <>{heading("Completed")}{items.filter((item) => item.status === "done").map((item) => <View key={item.id} style={[styles.card, surface]}><Text style={[styles.cardTitle, muted]}>{item.title}</Text><View style={styles.actions}>{button("Reopen", () => changeStatus(item, "open"))}</View></View>)}</> : null}
         </> : null}
-        {!loading && section === "activity" ? <>{runs.map(runCard)}{!runs.length ? empty("Work and requests for your input will appear here as your assistant gets started.") : null}</> : null}
+        {!loading && section === "activity" ? <>{runs.map(runCard)}{!runs.length ? empty(explainer("activity")) : null}</> : null}
         {!loading && section === "memory" ? <>
-          {memory.map((document) => <Pressable key={document.id} onPress={() => { setEditingMemory(document); setMemoryDraft(document.content); setSaveError(false); }} style={[styles.card, { backgroundColor: card }]}><Text style={[styles.cardTitle, text]}>{memoryTitle(document)}</Text><Text numberOfLines={4} style={[styles.copy, muted]}>{document.content}</Text><Text style={[styles.link, text, { marginTop: 14 }]}>Edit memory</Text></Pressable>)}
-          {!memory.length ? empty("As we get to know each other, saved memories will appear here.") : null}
-          {button("Connected apps", () => router.push("/integrations"))}
+          {memory.map((document) => <Pressable key={document.id} accessibilityRole="button" onPress={() => { setEditingMemory(document); setMemoryDraft(document.content); setSaveError(false); }} style={[styles.card, surface]}><Text style={[styles.cardTitle, text]}>{memoryTitle(document)}</Text><Text numberOfLines={4} style={[styles.copy, muted]}>{document.content}</Text><Text style={[styles.link, text, { marginTop: 12 }]}>Edit memory</Text></Pressable>)}
+          {!memory.length ? empty(explainer("memory")) : null}
+          {button("Connected apps", () => router.push("/integrations"), false, true)}
         </> : null}
       </ScrollView>
-      <View style={{ paddingHorizontal: 18, paddingTop: 8, paddingBottom: Math.max(insets.bottom, 12) }}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`Message ${name}`} onPress={() => { if (botId) router.push({ pathname: "/thread", params: { botId, name, view: "assistant", focus: "1" } }); }}>
-          <GlassSurface appearance={appearance} style={styles.composer} fallbackStyle={{ backgroundColor: card, borderWidth: 1, borderColor: theme.hairline }}><Text style={{ color: theme.muted, fontSize: 18, flex: 1 }}>Message {name}</Text><View style={[styles.send, { backgroundColor: theme.ink }]}><NativeSymbol ios="arrow.up" android="arrow-up" size={20} color={theme.page} /></View></GlassSurface>
-        </Pressable>
-      </View>
+      <KeyboardStickyView offset={{ opened: insets.bottom }}>
+        <View style={[column, { paddingHorizontal: 16, paddingTop: 8, paddingBottom: Math.max(insets.bottom, 12) }]}>
+          {sendError ? <Text style={[styles.copy, { color: theme.danger, marginBottom: 6, marginTop: 0 }]}>Couldn't send. Please try again.</Text> : null}
+          <GlassSurface appearance={appearance} style={styles.composer} fallbackStyle={{ backgroundColor: theme.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: theme.hairlineStrong }}>
+            <TextInput
+              value={message}
+              onChangeText={setMessage}
+              accessibilityLabel={`Message ${name}`}
+              placeholder={`Message ${name}`}
+              placeholderTextColor={theme.muted}
+              keyboardAppearance={appearance}
+              multiline
+              textAlignVertical="center"
+              style={[styles.composerInput, { color: theme.ink }]}
+            />
+            <Pressable accessibilityRole="button" accessibilityLabel="Send" disabled={!canSend} onPress={() => void sendMessage()} style={[styles.send, { backgroundColor: theme.ink, opacity: canSend ? 1 : 0.35 }]}>
+              {sending ? <ActivityIndicator color={theme.page} /> : <NativeSymbol ios="arrow.up" android="arrow-up" size={20} color={theme.page} />}
+            </Pressable>
+          </GlassSurface>
+        </View>
+      </KeyboardStickyView>
       <WorkspacePicker visible={navigationOpen} selected="assistant" assistantAvailable assistantId={botId} assistantName={name} onClose={() => setNavigationOpen(false)} onSelect={(next) => { if (next === "team") void saveChatView("team").then(() => router.replace("/")); else setSection("today"); }} onOpenPersonalSection={setSection} onOpenConversation={() => openChat()} />
       <ActionSheet visible={Boolean(editItem)} title={editItem === "new" ? itemKind === "goals" ? "A new goal" : "Save an idea" : "Edit"} onClose={() => setEditItem(null)}>
         <View style={{ padding: 12, gap: 12 }}><TextInput autoFocus value={editItem === "new" ? drafts[itemKind] : editTitle} onChangeText={(value) => editItem === "new" ? setDrafts((current) => ({ ...current, [itemKind]: value })) : setEditTitle(value)} placeholder={itemKind === "goals" ? "What would you like to work toward?" : "What's on your mind?"} placeholderTextColor={theme.muted} multiline style={[styles.input, text, { backgroundColor: theme.surface2 }]} /><TextInput value={notes} onChangeText={setNotes} placeholder="A little context (optional)" placeholderTextColor={theme.muted} multiline style={[styles.input, text, { backgroundColor: theme.surface2, minHeight: 90 }]} />{saveError ? <Text style={{ color: theme.danger }}>Couldn't save. Please try again.</Text> : null}<Pressable disabled={saving || !(editItem === "new" ? drafts[itemKind] : editTitle).trim()} onPress={saveItem} style={[styles.save, { backgroundColor: theme.ink, opacity: saving || !(editItem === "new" ? drafts[itemKind] : editTitle).trim() ? 0.4 : 1 }]}>{saving ? <ActivityIndicator color={theme.page} /> : <Text style={{ color: theme.page, fontSize: 16, fontWeight: "600" }}>Save</Text>}</Pressable></View>
       </ActionSheet>
-      <ActionSheet visible={Boolean(editingMemory)} title="Edit memory" onClose={() => setEditingMemory(null)}><View style={{ padding: 12, gap: 12 }}><TextInput multiline value={memoryDraft} onChangeText={setMemoryDraft} textAlignVertical="top" style={[styles.input, text, { minHeight: 180, maxHeight: 320, backgroundColor: theme.surface2 }]} />{saveError ? <Text style={{ color: theme.danger }}>Couldn't save. Please try again.</Text> : null}{button(saving ? "Saving…" : "Save memory", () => void mutate(async () => { if (!editingMemory) return; const next = await rpc<MemoryDocument>("memory/update", { documentId: editingMemory.id, content: memoryDraft }); setMemory((current) => current.map((document) => document.id === next.id ? next : document)); setEditingMemory(null); }), true)}</View></ActionSheet>
+      <ActionSheet visible={Boolean(editingMemory)} title="Edit memory" onClose={() => setEditingMemory(null)}><View style={{ padding: 12, gap: 12 }}><TextInput multiline value={memoryDraft} onChangeText={setMemoryDraft} textAlignVertical="top" style={[styles.input, text, { minHeight: 180, maxHeight: 320, backgroundColor: theme.surface2 }]} />{saveError ? <Text style={{ color: theme.danger }}>Couldn't save. Please try again.</Text> : null}{button(saving ? "Saving…" : "Save memory", () => void mutate(async () => { if (!editingMemory) return; const next = await rpc<MemoryDocument>("memory/update", { documentId: editingMemory.id, content: memoryDraft }); setMemory((current) => current.map((document) => document.id === next.id ? next : document)); setEditingMemory(null); }), true, true)}</View></ActionSheet>
     </View>
   );
 }
 
+const CONTENT_MAX_WIDTH = 760;
+
+function newClientNonce(): string {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto && typeof webCrypto.randomUUID === "function") return webCrypto.randomUUID();
+  return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const styles = StyleSheet.create({
-  header: { paddingHorizontal: 18, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  circle: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  brand: { fontSize: 18, fontWeight: "600", letterSpacing: -0.4 },
-  tabs: { paddingHorizontal: 24, gap: 26 },
-  date: { fontSize: 13, marginBottom: 8 },
-  heroTitle: { fontSize: 36, fontWeight: "600", letterSpacing: -1.3 },
-  intro: { fontSize: 15, lineHeight: 23, marginTop: 7 },
-  sectionHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 16, marginBottom: 1 },
-  sectionTitle: { fontSize: 21, fontWeight: "600", letterSpacing: -0.5 },
-  card: { borderRadius: 24, padding: 20, gap: 4 },
-  cardTitle: { fontSize: 17, lineHeight: 24, fontWeight: "500", letterSpacing: -0.2 },
-  welcomeTitle: { fontSize: 27, fontWeight: "600", letterSpacing: -0.7, marginTop: 13 },
-  copy: { fontSize: 14, lineHeight: 21, marginTop: 5 },
-  meta: { fontSize: 12, marginBottom: 6 },
+  header: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  circle: { width: 40, height: 40, borderRadius: 20, borderWidth: StyleSheet.hairlineWidth, alignItems: "center", justifyContent: "center" },
+  brandRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+  brand: { fontSize: 17, fontWeight: "600", letterSpacing: -0.3 },
+  tabs: { paddingHorizontal: 20, gap: 20 },
+  tab: { paddingTop: 8, paddingBottom: 10, borderBottomWidth: 2 },
+  content: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 24, gap: 10 },
+  date: { fontSize: 13, marginBottom: 6 },
+  heroTitle: { fontSize: 32, fontWeight: "600", letterSpacing: -1.1 },
+  sectionHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 14 },
+  sectionTitle: { fontSize: 19, fontWeight: "600", letterSpacing: -0.4 },
+  card: { borderRadius: 20, borderWidth: StyleSheet.hairlineWidth, padding: 18, gap: 4 },
+  cardTitle: { fontSize: 16, lineHeight: 23, fontWeight: "500", letterSpacing: -0.2 },
+  copy: { fontSize: 14, lineHeight: 21, marginTop: 4 },
+  meta: { fontSize: 12, marginBottom: 4 },
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   status: { fontSize: 14, fontWeight: "500" },
   link: { fontSize: 13, fontWeight: "500" },
-  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 13 },
-  pill: { alignSelf: "flex-start", minHeight: 38, borderRadius: 19, paddingHorizontal: 16, justifyContent: "center" },
-  empty: { fontSize: 15, lineHeight: 23, paddingVertical: 14 },
-  composer: { minHeight: 56, borderRadius: 28, paddingLeft: 20, paddingRight: 6, flexDirection: "row", alignItems: "center", gap: 12 },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
+  pill: { alignSelf: "flex-start", minHeight: 38, borderRadius: 19, paddingHorizontal: 16, justifyContent: "center", alignItems: "center" },
+  pillWide: { alignSelf: "stretch", minHeight: 46, borderRadius: 23, marginTop: 4 },
+  empty: { fontSize: 15, lineHeight: 22 },
+  composer: { minHeight: 54, borderRadius: 27, paddingLeft: 18, paddingRight: 5, paddingVertical: 5, flexDirection: "row", alignItems: "center", gap: 8 },
+  composerInput: { flex: 1, minWidth: 0, fontSize: 17, lineHeight: 23, paddingVertical: 6, maxHeight: 120 },
   send: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
   input: { borderRadius: 18, padding: 16, minHeight: 56, fontSize: 17, lineHeight: 24 },
   save: { height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },

@@ -6,6 +6,8 @@ import {
   IsolationError,
   type PrismaClient,
   type ThreadEvents,
+  teamThreadOnly,
+  teamThreadRow,
 } from "@rakazo/db";
 
 /**
@@ -78,10 +80,12 @@ const APP_NAMES: Record<string, string> = {
 };
 
 async function requireBotThread(deps: OnboardingDeps, actor: Actor, botId: string) {
-  const bot = await deps.prisma.bot.findFirst({
-    where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
-    include: { thread: true },
-  });
+  const bot = await teamThreadRow(
+    deps.prisma.bot.findFirst({
+      where: { id: botId, spaceId: actor.spaceId, userId: actor.userId },
+      include: { threads: teamThreadOnly },
+    }),
+  );
   if (!bot?.thread) throw new IsolationError();
   return { bot, thread: bot.thread };
 }

@@ -680,7 +680,7 @@ function takeMobileLiveMessage(
 }
 
 export async function subscribeThread(
-  target: { botId: string } | { groupId: string },
+  target: { botId: string; threadKind?: "team" | "personal" } | { groupId: string },
   cursor: number,
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,

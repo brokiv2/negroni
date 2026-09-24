@@ -15,6 +15,8 @@ import {
   createThreadMessageInTransaction,
   type Prisma,
   type PrismaClient,
+  teamThreadOnly,
+  teamThreadRow,
   withTransactionRetry,
 } from "@rakazo/db";
 import { toComputerRef } from "./computer-support.js";
@@ -78,15 +80,17 @@ export async function spawnBot(
       },
     });
   } catch (error) {
-    const existing = await deps.prisma.bot.findUnique({
-      where: {
-        spaceId_spawnKey: {
-          spaceId: input.spawnedBy.spaceId,
-          spawnKey: input.spawnKey,
+    const existing = await teamThreadRow(
+      deps.prisma.bot.findUnique({
+        where: {
+          spaceId_spawnKey: {
+            spaceId: input.spawnedBy.spaceId,
+            spawnKey: input.spawnKey,
+          },
         },
-      },
-      include: { thread: true },
-    });
+        include: { threads: teamThreadOnly },
+      }),
+    );
     if (!existing) throw error;
     if (!existing.thread) throw new Error(`Spawned bot ${existing.id} is missing its thread`);
     duplicate = true;

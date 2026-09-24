@@ -6,7 +6,7 @@ import {
   type SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { type PrismaClient, type ThreadEvents, teamThreadOnly, teamThreadRows } from "@rakazo/db";
 import { expireComputerControl, hasActiveComputerControl } from "./computer-control.js";
 import { toComputerRef } from "./computer-lifecycle.js";
 import { checkpointComputerWorkspace } from "./computer-workspace.js";
@@ -182,10 +182,12 @@ export async function sleepComputerIfIdle(
       controlRunId: null,
     },
   });
-  const bots = await deps.prisma.bot.findMany({
-    where: { computerId },
-    select: { id: true, thread: { select: { id: true } } },
-  });
+  const bots = await teamThreadRows(
+    deps.prisma.bot.findMany({
+      where: { computerId },
+      select: { id: true, threads: { ...teamThreadOnly, select: { id: true } } },
+    }),
+  );
   for (const bot of bots) {
     if (!bot.thread) continue;
     await deps.events.append({

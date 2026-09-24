@@ -105,7 +105,7 @@ describe("thread answer delivery", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: null,
         }),
       },
@@ -504,7 +504,7 @@ describe("computer screen url", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: computerRow,
         }),
       },

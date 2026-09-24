@@ -3,7 +3,7 @@ import type { JobPublisher } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { EncryptedSecretStore } from "@rakazo/adapters";
 import { hasValidBearerToken } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import { type PrismaClient, teamThreadOnly, teamThreadRow } from "@rakazo/db";
 import type { Hono } from "hono";
 
 export const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
@@ -101,16 +101,18 @@ export function mountWebhookHttpRoutes(app: Hono, deps: WebhookDeps) {
     const botId = c.req.param("botId");
     const authorization = c.req.header("authorization");
 
-    const bot = await deps.prisma.bot.findUnique({
-      where: { id: botId, archivedAt: null },
-      select: {
-        id: true,
-        spaceId: true,
-        userId: true,
-        webhookSecretId: true,
-        thread: { select: { id: true } },
-      },
-    });
+    const bot = await teamThreadRow(
+      deps.prisma.bot.findUnique({
+        where: { id: botId, archivedAt: null },
+        select: {
+          id: true,
+          spaceId: true,
+          userId: true,
+          webhookSecretId: true,
+          threads: { ...teamThreadOnly, select: { id: true } },
+        },
+      }),
+    );
 
     // Same 401 for missing bot, missing secret, and bad bearer so bot ids are not enumerable.
     if (!bot?.thread || !bot.webhookSecretId) {

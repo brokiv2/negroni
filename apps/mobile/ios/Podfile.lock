@@ -109,6 +109,8 @@ PODS:
     - ExpoModulesCore
     - ExpoModulesWorklets
     - React-RCTFabric
+  - ExpoWebBrowser (57.0.3):
+    - ExpoModulesCore
   - FBLazyVector (0.86.3)
   - hermes-engine (250829098.0.17):
     - hermes-engine/Pre-built (= 250829098.0.17)
@@ -2408,6 +2410,7 @@ DEPENDENCIES:
   - "ExpoSplashScreen (from `../../../node_modules/.pnpm/expo-splash-screen@57.0.8_expo@57.0.19_typescript@6.0.3/node_modules/expo-splash-screen/ios`)"
   - "ExpoSymbols (from `../../../node_modules/.pnpm/expo-symbols@57.0.2_expo-font@57.0.3_expo@57.0.19_react-native@0.86.3_@babel+core@7.29.7_@rea_hlu3txtzlyflizhuwbnnqbpf5u/node_modules/expo-symbols/ios`)"
   - "ExpoUI (from `../../../node_modules/.pnpm/@expo+ui@57.0.15_@babel+core@7.29.7_@types+react-dom@19.2.4_@types+react@19.2.18__@types+reac_pi6jczeh26agl7da4mdndmvelq/node_modules/@expo/ui/ios`)"
+  - "ExpoWebBrowser (from `../../../node_modules/.pnpm/expo-web-browser@57.0.3_expo@57.0.19_react-native@0.86.3_@babel+core@7.29.7_@react-native+met_zdyopwu3y3wmyn3i647s5qvcqa/node_modules/expo-web-browser/ios`)"
   - "FBLazyVector (from `../../../node_modules/.pnpm/react-native@0.86.3_@babel+core@7.29.7_@react-native+metro-config@0.86.3_@babel+core@7.29.7___2flzmb4gdc3yglamscyavzlnay/node_modules/react-native/Libraries/FBLazyVector`)"
   - "hermes-engine (from `../../../node_modules/.pnpm/react-native@0.86.3_@babel+core@7.29.7_@react-native+metro-config@0.86.3_@babel+core@7.29.7___2flzmb4gdc3yglamscyavzlnay/node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)"
   - "RCTDeprecation (from `../../../node_modules/.pnpm/react-native@0.86.3_@babel+core@7.29.7_@react-native+metro-config@0.86.3_@babel+core@7.29.7___2flzmb4gdc3yglamscyavzlnay/node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)"
@@ -2553,6 +2556,8 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/.pnpm/expo-symbols@57.0.2_expo-font@57.0.3_expo@57.0.19_react-native@0.86.3_@babel+core@7.29.7_@rea_hlu3txtzlyflizhuwbnnqbpf5u/node_modules/expo-symbols/ios"
   ExpoUI:
     :path: "../../../node_modules/.pnpm/@expo+ui@57.0.15_@babel+core@7.29.7_@types+react-dom@19.2.4_@types+react@19.2.18__@types+reac_pi6jczeh26agl7da4mdndmvelq/node_modules/@expo/ui/ios"
+  ExpoWebBrowser:
+    :path: "../../../node_modules/.pnpm/expo-web-browser@57.0.3_expo@57.0.19_react-native@0.86.3_@babel+core@7.29.7_@react-native+met_zdyopwu3y3wmyn3i647s5qvcqa/node_modules/expo-web-browser/ios"
   FBLazyVector:
     :path: "../../../node_modules/.pnpm/react-native@0.86.3_@babel+core@7.29.7_@react-native+metro-config@0.86.3_@babel+core@7.29.7___2flzmb4gdc3yglamscyavzlnay/node_modules/react-native/Libraries/FBLazyVector"
   hermes-engine:
@@ -2756,6 +2761,7 @@ SPEC CHECKSUMS:
   ExpoSplashScreen: 6f422fd595600d78520c6b7dcf8a908fb8a7fec0
   ExpoSymbols: 0efd93edf0f825bf3c762582b0769dd3b296235c
   ExpoUI: 3a63ce87d7d2d2a565fd1eabba08ed5ecdae7991
+  ExpoWebBrowser: a4d7c382116fbe33c1ec7f60293f02b7e97042e4
   FBLazyVector: 2138c6c2ab66c31bf5754dc18097fbc498a49c7f
   hermes-engine: f950618e994e43d007f013c66a7666906b11ed29
   RCTDeprecation: 96f68ebf33f8762466b01d57d6e873c4f30efb07

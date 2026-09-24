@@ -54,6 +54,7 @@ import {
   promptInvokesSkill,
   redactSecrets,
   renderBotDirectory,
+  coordinationInstructionFor,
   mainAssistantBot,
   resolveActionApprovalDetail,
   sandboxCommandTimeoutMs,
@@ -77,6 +78,8 @@ import {
   parseComputerMode,
   SpaceLimitError,
   type ThreadEvents,
+  teamThreadOnly,
+  teamThreadRow,
 } from "@rakazo/db";
 import { parse as parseShellCommand } from "shell-quote";
 import {
@@ -548,10 +551,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const routine = await deps.prisma.routine.findUnique({ where: { id: routineId } });
       if (!routine?.active || routine.nextRunAt?.getTime() !== scheduledAt.getTime()) return;
       if (await deferFutureRoutine(deps.jobs, routineId, scheduledAt)) return;
-      const bot = await deps.prisma.bot.findUnique({
+      const bot = await teamThreadRow(deps.prisma.bot.findUnique({
         where: { id: routine.botId },
-        include: { thread: true },
-      });
+        include: { threads: teamThreadOnly },
+      }));
       if (!bot?.thread) return;
       const targetThread = routine.threadId
         ? await deps.prisma.thread.findFirst({
@@ -2682,7 +2685,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     userId: run.userId,
                     archivedAt: null,
                     id: { not: bot.id },
-                    thread: { isNot: null },
+                    threads: { some: { kind: "team" } },
                   },
                   select: { id: true, name: true, title: true, description: true, parentBotId: true, pinned: true, createdAt: true },
                   orderBy: { createdAt: "asc" },
@@ -2698,13 +2701,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 createdAt: peer.createdAt.toISOString(),
               })),
             ])?.id;
-        const coordinationInstruction = thread.groupId
-          ? undefined
-          : bot.id === mainAssistantId
-            ? "You are the user's main assistant in a persistent conversation. Answer directly when you can. For a distinct specialist task, send one clear request to an existing relevant teammate or use a short subagent. Keep ownership of the user's request, report meaningful progress in this conversation, and summarize the specialist's result here. Never ask the user to move to another bot chat just to finish this request. Do not surface tool names, run IDs, routing metadata, or raw peer messages in your answer."
-            : bot.parentBotId
-              ? `You are a specialist in the user's agent team. Your parent bot id is ${bot.parentBotId}. Complete delegated work in your own context, then return a concise result with evidence to the requester. Do not redirect the user between chats.`
-              : undefined;
+        // Runs in the Personal thread take the owner role even when they were
+        // queued by a path that predates the personal interaction mode.
+        const personalRun = run.interactionMode === "personal" || thread.kind === "personal";
+        const coordinationInstruction = coordinationInstructionFor({
+          interactionMode: personalRun ? "personal" : run.interactionMode,
+          inGroup: Boolean(thread.groupId),
+          isMainAssistant: bot.id === mainAssistantId,
+          parentBotId: bot.parentBotId,
+        });
 
         try {
           for await (const event of deps.runtime.run(

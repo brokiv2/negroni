@@ -41,6 +41,7 @@ import {
   ModelConnectInputSchema,
   ModelCredentialSchema,
   ModelOAuthBeginSchema,
+  PersonalThreadSchema,
   ReorderBotsInput,
   RoutineSchema,
   ScratchpadItemSchema,
@@ -54,6 +55,7 @@ import {
   SpaceNavigationSchema,
   SpaceSchema,
   TaughtSkillSchema,
+  ThreadKindSchema,
   TeachRecordingEventSchema,
   ThreadMessagePageSchema,
   ThreadSnapshotSchema,
@@ -78,6 +80,8 @@ const threadTarget = z
   .object({
     botId: Id.optional(),
     groupId: Id.optional(),
+    /** Only with botId: "personal" addresses the main assistant's Personal thread. */
+    threadKind: ThreadKindSchema.optional(),
   })
   .superRefine((input, ctx) => {
     const hasBot = Boolean(input.botId);
@@ -87,6 +91,13 @@ const threadTarget = z
         code: "custom",
         message: "Provide exactly one of botId or groupId",
         path: ["botId"],
+      });
+    }
+    if (hasGroup && input.threadKind === "personal") {
+      ctx.addIssue({
+        code: "custom",
+        message: "A group has no personal thread",
+        path: ["threadKind"],
       });
     }
   });
@@ -412,6 +423,10 @@ export const appContract = {
         }),
       )
       .output(z.object({ runId: Id })),
+  },
+  personal: {
+    /** The main assistant's Personal thread, created on first use. */
+    thread: oc.output(PersonalThreadSchema),
   },
   scratchpad: {
     list: oc

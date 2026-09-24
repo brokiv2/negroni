@@ -337,7 +337,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       thread: {
@@ -409,7 +409,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "dm-thread-1" },
+          threads: [{ id: "dm-thread-1" }],
         })),
       },
       thread: { findFirst },
@@ -474,7 +474,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "dm-thread-1" },
+          threads: [{ id: "dm-thread-1" }],
         })),
       },
       thread: { findFirst },
@@ -547,7 +547,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {
@@ -608,7 +608,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {
@@ -664,7 +664,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {

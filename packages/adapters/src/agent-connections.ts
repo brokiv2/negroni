@@ -9,7 +9,12 @@ import {
   sanitizeMessagingLabel,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  createThreadMessageInTransaction,
+  teamThreadOnly,
+  teamThreadRow,
+} from "@rakazo/db";
 import { currentBotMessageHop } from "./bot-messages.js";
 
 export interface AgentConnectionDeps {
@@ -247,10 +252,17 @@ export async function messageConnectedAgent(
     };
   }
 
-  const target = await deps.prisma.bot.findUnique({
-    where: { id: targetIdentity.botId },
-    select: { id: true, name: true, archivedAt: true, thread: { select: { id: true } } },
-  });
+  const target = await teamThreadRow(
+    deps.prisma.bot.findUnique({
+      where: { id: targetIdentity.botId },
+      select: {
+        id: true,
+        name: true,
+        archivedAt: true,
+        threads: { ...teamThreadOnly, select: { id: true } },
+      },
+    }),
+  );
   if (!target || target.archivedAt || !target.thread) {
     return { ok: false, error: "that agent is not available" };
   }

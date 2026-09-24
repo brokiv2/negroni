@@ -701,8 +701,20 @@ export const ThreadMessagePageSchema = z.object({
 });
 export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 
+/** Team: a bot's everyday chat. Personal: the main assistant's own conversation with you. */
+export const ThreadKindSchema = z.enum(["team", "personal"]);
+export type ThreadKind = z.infer<typeof ThreadKindSchema>;
+
+export const PersonalThreadSchema = z.object({
+  botId: Id,
+  threadId: Id,
+  unread: z.boolean(),
+});
+export type PersonalThread = z.infer<typeof PersonalThreadSchema>;
+
 export const ThreadSnapshotSchema = z.object({
   threadId: Id,
+  kind: ThreadKindSchema.optional(),
   cursor: z.number().int().min(-1),
   messages: z.array(ThreadMessageSchema),
   olderCursor: z.number().int().nonnegative().nullable(),

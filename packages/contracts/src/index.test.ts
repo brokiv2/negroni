@@ -153,12 +153,29 @@ describe("contracts", () => {
     expect(appContract.botSections.create).toBeTruthy();
     expect(appContract.threads.subscribe).toBeTruthy();
     expect(appContract.threads.clear).toBeTruthy();
+    expect(appContract.personal.thread).toBeTruthy();
     expect(appContract.voice.prepare).toBeTruthy();
     expect(appContract.notifications.registerPush).toBeTruthy();
     expect(ProductEventType.options).toContain("thread.message.created");
     expect(ProductEventType.options).toContain("thread.cleared");
     expect(ProductEventType.options).toContain("thread.subagent");
     expect(ProductEventType.options).toContain("bot.spawned");
+  });
+
+  it("addresses a Personal thread only through a bot", () => {
+    const input = appContract.threads.get["~orpc"].inputSchema!;
+    expect(input["~standard"].validate({ botId: "bot-1", threadKind: "personal" })).toMatchObject({
+      value: { botId: "bot-1", threadKind: "personal" },
+    });
+    expect(input["~standard"].validate({ botId: "bot-1" })).toMatchObject({
+      value: { botId: "bot-1" },
+    });
+    expect(
+      input["~standard"].validate({ groupId: "group-1", threadKind: "personal" }),
+    ).toHaveProperty("issues");
+    expect(input["~standard"].validate({ botId: "bot-1", threadKind: "other" })).toHaveProperty(
+      "issues",
+    );
   });
 
   it("requires a distinct, non-empty bot order", () => {

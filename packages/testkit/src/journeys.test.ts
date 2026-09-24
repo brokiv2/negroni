@@ -279,6 +279,59 @@ describeJourneys("required product journeys", () => {
     expect(bobBot.id).not.toBe(chief.id);
   });
 
+  it("keeps the Personal conversation in its own thread with personal runs", async () => {
+    const cookie = await signup(app, `personal-j-${stamp}@rakazo.test`, "Personal Journey");
+    await rpc<Bot>(app, cookie, "bots/create", {
+      name: "Chief",
+      title: "Main assistant",
+      description: "",
+      instructions: "",
+      notifyOnFinish: true,
+    });
+    const personal = await rpc<{ botId: string; threadId: string; unread: boolean }>(
+      app,
+      cookie,
+      "personal/thread",
+    );
+    const again = await rpc<{ threadId: string }>(app, cookie, "personal/thread");
+    expect(again.threadId).toBe(personal.threadId);
+
+    const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+      botId: personal.botId,
+      threadKind: "personal",
+      text: "personal hello",
+    });
+    await waitForDatabase(async () => {
+      const run = await prisma.run.findUnique({ where: { id: runId }, select: { status: true } });
+      return Boolean(run && ["completed", "failed", "cancelled"].includes(run.status));
+    });
+    const run = await prisma.run.findUniqueOrThrow({ where: { id: runId } });
+    expect(run).toMatchObject({ threadId: personal.threadId, interactionMode: "personal" });
+
+    const personalSnap = await rpc<Snap & { threadId: string; kind?: string }>(
+      app,
+      cookie,
+      "threads/get",
+      { botId: personal.botId, threadKind: "personal" },
+    );
+    const teamSnap = await rpc<Snap & { threadId: string; kind?: string }>(
+      app,
+      cookie,
+      "threads/get",
+      { botId: personal.botId },
+    );
+    expect(personalSnap).toMatchObject({ threadId: personal.threadId, kind: "personal" });
+    expect(teamSnap.kind).toBe("team");
+    expect(teamSnap.threadId).not.toBe(personal.threadId);
+    const hasHello = (snap: Snap) =>
+      snap.messages.some((message) => JSON.stringify(message.blocks).includes("personal hello"));
+    expect(hasHello(personalSnap)).toBe(true);
+    expect(hasHello(teamSnap)).toBe(false);
+
+    const bots = await rpc<Array<{ id: string; threadId: string }>>(app, cookie, "bots/list");
+    expect(bots.find((bot) => bot.id === personal.botId)?.threadId).toBe(teamSnap.threadId);
+  });
+
   it("clears a conversation without removing the bot, computer, memory, or routines", async () => {
     const cookie = await signup(app, `clear-j-${stamp}@rakazo.test`, "Clear Journey");
     const bot = await rpc<Bot>(app, cookie, "bots/create", {
@@ -310,7 +363,9 @@ describeJourneys("required product journeys", () => {
       notify: false,
       active: false,
     });
-    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await prisma.thread.findUniqueOrThrow({
+      where: { botId_kind: { botId: bot.id, kind: "team" } },
+    });
     const task = await prisma.task.create({
       data: {
         spaceId: thread.spaceId,
@@ -937,7 +992,9 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const dmThread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const dmThread = await prisma.thread.findUniqueOrThrow({
+      where: { botId_kind: { botId: bot.id, kind: "team" } },
+    });
     const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
       name: "Schedule room",
       botIds: [bot.id, peer.id],
@@ -1052,7 +1109,9 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await prisma.thread.findUniqueOrThrow({
+      where: { botId_kind: { botId: bot.id, kind: "team" } },
+    });
 
     await Promise.all(
       Array.from({ length: 40 }, (_, index) =>

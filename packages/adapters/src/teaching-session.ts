@@ -21,6 +21,8 @@ import {
   type Prisma,
   type PrismaClient,
   type ThreadEvents,
+  teamThreadOnly,
+  teamThreadRow,
 } from "@rakazo/db";
 import { scheduleComputerSleep } from "./computer-idle.js";
 import { toComputerRef } from "./computer-support.js";
@@ -225,10 +227,12 @@ async function finalizeTeachingRecording(
     });
     // The stopped event must commit with the status flip; appended afterwards it is lost for
     // good when the process dies in between, because retries see a draft and skip it.
-    const bot = await tx.bot.findUnique({
-      where: { id: skill.botId },
-      include: { thread: true },
-    });
+    const bot = await teamThreadRow(
+      tx.bot.findUnique({
+        where: { id: skill.botId },
+        include: { threads: teamThreadOnly },
+      }),
+    );
     let stopped: { threadId: string; seq: number } | null = null;
     if (bot?.thread) {
       const event = await appendEventInTransaction(tx, {
@@ -437,10 +441,12 @@ export async function completeTeachingSession(
     reason,
     stopSnapshot,
   );
-  const bot = await deps.prisma.bot.findUnique({
-    where: { id: finalized.botId },
-    include: { thread: true, computer: true },
-  });
+  const bot = await teamThreadRow(
+    deps.prisma.bot.findUnique({
+      where: { id: finalized.botId },
+      include: { threads: teamThreadOnly, computer: true },
+    }),
+  );
   if (!bot) throw new IsolationError();
   await releaseTeachingComputerControlForBot(
     deps,
@@ -466,10 +472,12 @@ export async function expireTaughtSkillTeaching(
     const leaseId = parseRecording(skill.recording).controlLeaseId;
     if (leaseId) await releaseTeachingComputerControlForBot(deps, actor, skill.botId, leaseId);
     if (skill.status === "draft") {
-      const bot = await deps.prisma.bot.findUnique({
-        where: { id: skill.botId },
-        include: { thread: true },
-      });
+      const bot = await teamThreadRow(
+        deps.prisma.bot.findUnique({
+          where: { id: skill.botId },
+          include: { threads: teamThreadOnly },
+        }),
+      );
       if (bot) await emitSkillDraftMessages(deps, actor, skill, bot);
     }
     return skill;
@@ -477,10 +485,12 @@ export async function expireTaughtSkillTeaching(
   if (!skill.expiresAt || skill.expiresAt.getTime() > Date.now()) {
     return skill;
   }
-  const bot = await deps.prisma.bot.findUnique({
-    where: { id: skill.botId },
-    include: { thread: true, computer: true },
-  });
+  const bot = await teamThreadRow(
+    deps.prisma.bot.findUnique({
+      where: { id: skill.botId },
+      include: { threads: teamThreadOnly, computer: true },
+    }),
+  );
   if (!bot) return skill;
   const stopSnapshot = bot.computer?.providerRef
     ? await observeStopSnapshot(deps, actor, bot)

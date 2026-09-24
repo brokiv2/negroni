@@ -6,6 +6,7 @@ import {
   GROUP_MEMBER_MIN,
   type GroupMember,
   type RunStatus,
+  type ThreadKind,
   type ThreadSnapshot,
 } from "@rakazo/contracts";
 import {
@@ -14,12 +15,14 @@ import {
   projectMessages,
   resolveGroupTargetBotIds,
   runFailureError,
+  runInteractionModeFor,
 } from "@rakazo/core";
 import {
   appendEventInTransaction,
   createGroupRepos,
   createRepos,
   createThreadMessageInTransaction,
+  ensurePersonalThread,
   IsolationError,
   lockOwnedGroup,
   type Prisma,
@@ -42,6 +45,7 @@ export type ThreadTarget =
       kind: "bot";
       botId: string;
       threadId: string;
+      threadKind: ThreadKind;
       bot: Awaited<ReturnType<ReturnType<typeof createRepos>["getBot"]>>;
     }
   | {
@@ -259,17 +263,26 @@ async function lockAndLoadGroupMembers(
 export async function resolveThreadTarget(
   prisma: PrismaClient,
   actor: Actor,
-  input: { botId?: string; groupId?: string },
+  input: { botId?: string; groupId?: string; threadKind?: ThreadKind },
 ): Promise<ThreadTarget> {
   const repos = createRepos(prisma);
   const groupRepos = createGroupRepos(prisma);
   if (input.botId) {
     const bot = await repos.getBot(actor, input.botId);
+    if (input.threadKind === "personal") {
+      const personal = await ensurePersonalThread(prisma, {
+        spaceId: bot.spaceId,
+        userId: bot.userId,
+        botId: bot.id,
+      });
+      return { kind: "bot", botId: bot.id, threadId: personal.id, threadKind: "personal", bot };
+    }
     if (!bot.thread) throw new IsolationError();
     return {
       kind: "bot",
       botId: bot.id,
       threadId: bot.thread.id,
+      threadKind: "team",
       bot,
     };
   }
@@ -377,6 +390,7 @@ export async function threadSnapshot(
     return {
       botId: target.botId,
       threadId: target.threadId,
+      kind: target.threadKind,
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
@@ -541,7 +555,11 @@ export async function sendThreadMessage(
   },
 ) {
   // Build 19 sent a call nonce before the explicit mode field existed.
-  const interactionMode = input.interactionMode ?? (input.clientNonce?.startsWith("call-") ? "voice" : "chat");
+  const interactionMode = runInteractionModeFor({
+    requested:
+      input.interactionMode ?? (input.clientNonce?.startsWith("call-") ? "voice" : "chat"),
+    threadKind: target.kind === "bot" ? target.threadKind : "team",
+  });
   const existing = await replayExistingSend(deps, target.threadId, input.clientNonce);
   if (existing) return existing;
 

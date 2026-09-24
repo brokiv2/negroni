@@ -333,7 +333,7 @@ model Bot {
   children          Bot[]             @relation("BotChildren")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
-  thread            Thread?
+  threads           Thread[]
   computerId        String?
   computer          Computer?         @relation(fields: [computerId], references: [id], onDelete: SetNull)
   computerSwitching Boolean           @default(false)
@@ -434,8 +434,9 @@ model Thread {
   id                          String     @id @default(cuid())
   spaceId                     String
   space                       Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  botId                       String?    @unique
+  botId                       String?
   bot                         Bot?       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  kind                        ThreadKind @default(team)
   groupId                     String?    @unique
   group                       ChatGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
   userId                      String
@@ -452,8 +453,15 @@ model Thread {
   runs                        Run[]
   routines                    Routine[]
 
+  @@unique([botId, kind])
   @@index([spaceId])
   @@map("threads")
+}
+
+/// A bot has one Team thread; the main assistant may also have one Personal thread.
+enum ThreadKind {
+  team
+  personal
 }
 
 model Message {

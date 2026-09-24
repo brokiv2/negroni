@@ -17,7 +17,7 @@ function createDeps(
       spaceId: string;
       userId: string;
       webhookSecretId: string | null;
-      thread: { id: string } | null;
+      threads: { id: string }[];
     } | null;
     secret?: { ciphertext: string; kind: string; userId: string; spaceId: string } | null;
     load?: (ciphertext: string) => string;
@@ -33,7 +33,7 @@ function createDeps(
           spaceId: "ws-1",
           userId: "user-1",
           webhookSecretId: "secret-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         }
       : overrides.bot;
   const secret =
@@ -144,7 +144,7 @@ describe("inbound webhook HTTP route", () => {
         spaceId: "ws-1",
         userId: "user-1",
         webhookSecretId: null,
-        thread: { id: "thread-1" },
+        threads: [{ id: "thread-1" }],
       },
     });
     const app = mount(deps);
