@@ -21,6 +21,7 @@ export interface BotAddress {
   name: string;
   title?: string;
   description?: string;
+  parentBotId?: string | null;
 }
 
 export function clampBotMessage(text: string): string {
@@ -88,7 +89,7 @@ export function formatBotRosterLines(bots: readonly BotAddress[]): string[] {
         description = escaped;
       }
     }
-    return `- ${name} (id: ${bot.id})${title ? ` — ${title}` : ""}${description ? `: ${description}` : ""}`;
+    return `- ${name} (id: ${bot.id})${bot.parentBotId ? ` (parent id: ${escapeDirectoryField(bot.parentBotId)})` : ""}${title ? ` — ${title}` : ""}${description ? `: ${description}` : ""}`;
   });
 }
 

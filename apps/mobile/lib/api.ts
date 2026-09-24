@@ -21,7 +21,13 @@ import {
   upsertMessageById,
 } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
-import { defaultApiBase, type EndpointResult, normalizeApiBase } from "./endpoint";
+import {
+  defaultApiBase,
+  displayApiHost,
+  migrateLegacyApiBase,
+  type EndpointResult,
+  normalizeApiBase,
+} from "./endpoint";
 import { resumeLiveNotifications } from "./live-notifications";
 import {
   clearSessionToken,
@@ -31,14 +37,39 @@ import {
   snapshotSessionToken,
   tokenFromAuthResponse,
 } from "./session";
+import { tunnelHeaders } from "./tunnel";
 
 const ENDPOINT_KEY = "rakazo.api_base";
 const SPACE_KEY = "rakazo.space_id";
 const SPACE_ROLLBACK_KEY = "rakazo.space_rollback";
 const RPC_TIMEOUT_MS = 8_000;
+const CONNECTION_TIMEOUT_MS = 12_000;
 
 let cachedApiBase: string | undefined;
 let cachedSpaceId = "";
+
+async function serverFetch(
+  apiBase: string,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const callerSignal = init?.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timer = setTimeout(() => controller.abort(), CONNECTION_TIMEOUT_MS);
+  try {
+    return await fetch(`${apiBase}${path}`, { ...init, signal: controller.signal });
+  } catch {
+    throw new Error(
+      `Could not connect to ${displayApiHost(apiBase)}. Keep Negroni running on the Mac and check Wi-Fi or VPN local-network access.`,
+    );
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
+}
 
 function responseErrorMessage(body: unknown, fallback: string): string {
   return typeof body === "object" && body && "message" in body
@@ -57,9 +88,15 @@ export async function loadApiBase() {
   try {
     const stored = await SecureStore.getItemAsync(ENDPOINT_KEY);
     if (stored) {
-      const parsed = normalizeApiBase(stored);
+      const migrated = migrateLegacyApiBase(
+        stored,
+        apiBase,
+        typeof __DEV__ === "boolean" && __DEV__,
+      );
+      const parsed = normalizeApiBase(migrated);
       if (parsed.ok) {
         apiBase = parsed.url;
+        if (migrated !== stored) await SecureStore.deleteItemAsync(ENDPOINT_KEY).catch(() => undefined);
       }
     }
   } catch {
@@ -269,6 +306,7 @@ export async function authHeaders(
 ): Promise<Record<string, string>> {
   const token = await loadSessionToken();
   return {
+    ...tunnelHeaders(),
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
   };
@@ -292,9 +330,10 @@ async function authenticateWithEmail(
   action: "sign-in" | "sign-up",
   input: { email: string; password: string; name?: string },
 ) {
-  const res = await fetch(`${currentApiBase()}/api/auth/${action}/email`, {
+  const apiBase = currentApiBase();
+  const res = await serverFetch(apiBase, `/api/auth/${action}/email`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://" },
+    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
     body: JSON.stringify(input),
   });
   const body = await res.json().catch(() => ({}));
@@ -316,20 +355,71 @@ export function signUp(email: string, password: string, name: string) {
   return authenticateWithEmail("sign-up", { email, password, name });
 }
 
+export async function signInWithApple(identityToken: string, nonce: string): Promise<void> {
+  const apiBase = currentApiBase();
+  const res = await serverFetch(apiBase, "/api/auth/sign-in/social", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
+    body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = responseErrorMessage(body, "").toLowerCase();
+    if (message.includes("signup disabled") || message.includes("account not linked")) {
+      throw new Error("Connect this Apple ID first: sign in with email, then open Account.");
+    }
+    throw new Error("Apple sign-in couldn't be verified. Try again.");
+  }
+  const token = tokenFromAuthResponse(res, body);
+  if (!token) throw new Error("Apple sign-in did not return a session");
+  if (!(await clearSpace())) throw new Error("Could not clear the previous space");
+  await saveSessionToken(token);
+}
+
+export async function linkAppleId(identityToken: string, nonce: string): Promise<void> {
+  const apiBase = currentApiBase();
+  const headers = await authHeaders();
+  if (!headers.authorization) throw new Error("Sign in to Negroni before connecting Apple ID");
+  const res = await serverFetch(apiBase, "/api/auth/link-social", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
+    body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = responseErrorMessage(body, "").toLowerCase();
+    if (message.includes("unable to create account") || message.includes("linking_failed")) {
+      throw new Error("This Apple ID may already be connected to another Negroni account.");
+    }
+    throw new Error("Couldn't connect this Apple ID. Try again.");
+  }
+}
+
+export async function linkedAppleIds(): Promise<number> {
+  const res = await serverFetch(currentApiBase(), "/api/auth/list-accounts", {
+    headers: { origin: "rakazo://", ...(await authHeaders()) },
+  });
+  if (!res.ok) throw new Error("Could not load linked Apple IDs");
+  const accounts = await res.json() as Array<{ providerId?: string }>;
+  return accounts.filter((account) => account.providerId === "apple").length;
+}
+
 export type PasswordResetCapabilities = { passwordReset: boolean; resetUrl: string | null };
 
 export async function passwordResetCapabilities(): Promise<PasswordResetCapabilities> {
-  const response = await fetch(`${currentApiBase()}/api/auth/capabilities`, {
-    headers: { origin: "rakazo://" },
+  const apiBase = currentApiBase();
+  const response = await serverFetch(apiBase, "/api/auth/capabilities", {
+    headers: { origin: "rakazo://", ...tunnelHeaders() },
   });
   if (!response.ok) throw new Error("Could not load password recovery settings");
   return (await response.json()) as PasswordResetCapabilities;
 }
 
 export async function requestPasswordReset(email: string, redirectTo: string): Promise<void> {
-  const response = await fetch(`${currentApiBase()}/api/auth/request-password-reset`, {
+  const apiBase = currentApiBase();
+  const response = await serverFetch(apiBase, "/api/auth/request-password-reset", {
     method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://" },
+    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
     body: JSON.stringify({ email, redirectTo }),
   });
   const body = await response.json().catch(() => ({}));
@@ -337,7 +427,8 @@ export async function requestPasswordReset(email: string, redirectTo: string): P
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const response = await fetch(`${currentApiBase()}/api/auth/change-password`, {
+  const apiBase = currentApiBase();
+  const response = await serverFetch(apiBase, "/api/auth/change-password", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "rakazo://", ...(await authHeaders()) },
     body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
@@ -349,7 +440,8 @@ export async function changePassword(currentPassword: string, newPassword: strin
 export async function signOut() {
   await rpc("notifications/unregisterPush").catch(() => undefined);
   const headers = await authHeaders();
-  await fetch(`${currentApiBase()}/api/auth/sign-out`, {
+  const apiBase = currentApiBase();
+  await serverFetch(apiBase, "/api/auth/sign-out", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
   }).catch(() => undefined);
@@ -360,7 +452,8 @@ export async function signOut() {
 
 export async function deleteAccount(password: string) {
   await rpc("notifications/unregisterPush").catch(() => undefined);
-  const res = await fetch(`${currentApiBase()}/api/auth/delete-user`, {
+  const apiBase = currentApiBase();
+  const res = await serverFetch(apiBase, "/api/auth/delete-user", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "rakazo://", ...(await authHeaders()) },
     body: JSON.stringify({ password }),
@@ -389,7 +482,8 @@ export async function rpc<T>(
   const timer =
     options.timeoutMs === null ? undefined : setTimeout(abort, options.timeoutMs ?? RPC_TIMEOUT_MS);
   try {
-    const res = await fetch(`${options.requestContext?.apiBase ?? currentApiBase()}/rpc/${proc}`, {
+    const apiBase = options.requestContext?.apiBase ?? currentApiBase();
+    const res = await serverFetch(apiBase, `/rpc/${proc}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -399,6 +493,7 @@ export async function rpc<T>(
       body: JSON.stringify({ json: body }),
       signal: controller.signal,
     });
+    if (res.status === 401) throw new Error("SESSION_EXPIRED");
     const parsed = (await res.json()) as { json?: T; error?: { message?: string } };
     if (!res.ok || parsed.error) throw new Error(parsed.error?.message ?? `rpc ${proc} failed`);
     return parsed.json as T;
@@ -423,6 +518,7 @@ export type MobileBot = Pick<
   | "archivedAt"
   | "unread"
   | "updatedAt"
+  | "createdAt"
   | "computerMode"
 > &
   Partial<Pick<Bot, "parentBotId" | "spaceId">>;
@@ -589,7 +685,8 @@ export async function subscribeThread(
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
 ) {
-  const res = await fetch(`${currentApiBase()}/rpc/threads/subscribe`, {
+  const apiBase = currentApiBase();
+  const res = await serverFetch(apiBase, "/rpc/threads/subscribe", {
     method: "POST",
     headers: {
       "content-type": "application/json",

@@ -10,3 +10,8 @@
 - PR descriptions say why the change exists, what changed, and how it was tested.
 - For UI changes, link the CI E2E screenshot that shows the change on the PR; add the web test that opens that screen if it is missing. For native-only mobile UI that CI cannot capture, say so in the PR instead of linking an unrelated web screenshot.
 - For UI work, check Beautiful UI first (https://www.beautifului.dev/, source: github.com/TurboKach/ai-native-react-components, MIT) before building anything by hand. It names the AI-native surfaces this product needs (loading/thinking states, streaming text, approval cards, tool chips, task rows, composer, tables). Hand-port from source into `apps/web/src/components/beautiful-ui/` — read the component and adapt its tokens; never `shadcn add` from the live registry (supply-chain risk). Reuse the ported primitives (`LoadingState`, `Shimmer`, `SuccessPop`, `BuiCard`, `BuiButton`) before inventing new ones.
+
+## Negroni (this fork)
+
+- Local setup, backend/launchd, mobile tunnel and UI rebuild notes: `NEGRONI-HOWTO.md`.
+- Never commit `.env`, `.run/`, `secrets.nosync/`, or the ngrok/tunnel hostname.

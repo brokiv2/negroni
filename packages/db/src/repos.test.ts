@@ -308,3 +308,52 @@ describe("createRepos.reorderBots", () => {
     expect(update).not.toHaveBeenCalled();
   });
 });
+
+describe("delegated result sidebar preview", () => {
+  it("uses the coordinator's final result instead of its earlier waiting message", async () => {
+    const prisma = {
+      bot: {
+        findMany: vi.fn(async () => [
+          {
+            ...baseBot,
+            thread: {
+              ...baseBot.thread,
+              messages: [
+                {
+                  seq: 3,
+                  runId: "run-result",
+                  blocks: [{ kind: "text", text: "Reviewer verified 12." }],
+                },
+                {
+                  seq: 2,
+                  runId: "run-result",
+                  blocks: [
+                    {
+                      kind: "bot_message_received",
+                      intent: "result",
+                      fromBotId: "reviewer",
+                      fromBotName: "Reviewer",
+                      text: "12",
+                    },
+                  ],
+                },
+                { seq: 1, runId: "run-user", blocks: [{ kind: "text", text: "Standing by." }] },
+              ],
+            },
+          },
+        ]),
+      },
+      run: {
+        findMany: vi.fn(async () => [
+          {
+            id: "run-result",
+            sourceMessage: { blocks: [{ kind: "bot_message_received", intent: "result" }] },
+          },
+        ]),
+      },
+    } as unknown as PrismaClient;
+    await expect(createRepos(prisma).listBots(actor)).resolves.toEqual([
+      expect.objectContaining({ preview: "Reviewer verified 12." }),
+    ]);
+  });
+});

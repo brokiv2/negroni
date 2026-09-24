@@ -672,13 +672,34 @@ async function* walkDesktopWorkspace(home: string, directory: string): AsyncIter
     const info = await stat(child);
     if (info.isDirectory()) yield* walkDesktopWorkspace(home, relative);
     else if (info.isFile()) {
+      const content = await readDesktopWorkspaceFile(child);
+      if (!content) continue;
       yield {
         path: relative,
-        content: new Uint8Array(await readFile(child)),
+        content,
         executable: Boolean(info.mode & 0o100),
       };
     }
   }
+}
+
+async function readDesktopWorkspaceFile(child: string): Promise<Uint8Array | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return new Uint8Array(await readFile(child));
+    } catch (error) {
+      if (!isTransientDesktopWorkspaceReadError(error)) throw error;
+      if (attempt === 2) return null;
+      await new Promise<void>((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+    }
+  }
+  return null;
+}
+
+function isTransientDesktopWorkspaceReadError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const errno = "errno" in error && typeof error.errno === "number" ? error.errno : undefined;
+  return errno === -11 || hasErrorCode(error, "EAGAIN");
 }
 
 function resolveExecuteCwd(requestCwd: string | undefined, home: string) {

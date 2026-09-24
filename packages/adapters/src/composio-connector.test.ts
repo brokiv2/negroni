@@ -16,13 +16,19 @@ import {
   needsLivePluginSync,
   planLiveConnectionSync,
   sanitizeComposioError,
+  selectComposioAccount,
 } from "./composio-connector.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 
 const composioSdkState = vi.hoisted(() => ({
   created: [] as Array<{ userId: string; config: Record<string, unknown> }>,
   directoryFails: false,
-  executions: [] as Array<{ tool: string; args: Record<string, unknown> }>,
+  accounts: [{ id: "ca-github", toolkit: { slug: "github" }, status: "ACTIVE" }],
+  executions: [] as Array<{
+    tool: string;
+    args: Record<string, unknown>;
+    options?: { account: string };
+  }>,
   sessions: new Map<
     string,
     {
@@ -52,6 +58,9 @@ const composioSdkState = vi.hoisted(() => ({
 
 vi.mock("@composio/core", () => ({
   Composio: class {
+    readonly connectedAccounts = {
+      list: async () => ({ items: composioSdkState.accounts }),
+    };
     readonly sessions = {
       use: async (sessionId: string) => {
         const session = composioSdkState.sessions.get(sessionId);
@@ -77,6 +86,7 @@ vi.mock("@composio/core", () => ({
                   isNoAuth: false,
                   connection: { isActive: true, connectedAccount: { id: "ca-github" } },
                 },
+                { slug: "GOOGLE_MAPS", name: "Google Maps", logo: null, isNoAuth: true },
               ],
             };
           },
@@ -101,8 +111,12 @@ vi.mock("@composio/core", () => ({
                 },
               ]
             : [],
-        execute: async (tool: string, args: Record<string, unknown>) => {
-          composioSdkState.executions.push({ tool, args });
+        execute: async (
+          tool: string,
+          args: Record<string, unknown>,
+          options?: { account: string },
+        ) => {
+          composioSdkState.executions.push({ tool, args, ...(options ? { options } : {}) });
           return { data: { ok: true }, error: null, logId: "log-github" };
         },
       };
@@ -241,6 +255,202 @@ describe("composio tool mapping", () => {
     expect(executeSessionKey([])).toBe("");
   });
 
+  it("requires a choice among three Gmail accounts and isolates Drive and other providers", () => {
+    const context: AdapterContext = {
+      operationId: "accounts",
+      traceId: "accounts",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+      connectedConnections: [
+        ...[1, 2, 3].map((i) => ({
+          id: `gmail-${i}`,
+          connectorId: "composio",
+          externalId: "gmail",
+          displayName: `Mail ${i}`,
+          providerRef: `ca-mail-${i}`,
+        })),
+        {
+          id: "drive",
+          connectorId: "composio",
+          externalId: "googledrive",
+          displayName: "Drive",
+          providerRef: "ca-drive",
+        },
+        {
+          id: "other",
+          connectorId: "other",
+          externalId: "gmail",
+          displayName: "Other",
+          providerRef: "ca-other",
+        },
+      ],
+    };
+    expect(() => selectComposioAccount("GMAIL_FETCH_EMAILS", undefined, context)).toThrow(
+      "Choose an account",
+    );
+    expect(selectComposioAccount("GMAIL_FETCH_EMAILS", "gmail-2", context)).toBe("ca-mail-2");
+    expect(selectComposioAccount("GOOGLEDRIVE_LIST_FILES", undefined, context)).toBe("ca-drive");
+    expect(() => selectComposioAccount("GMAIL_FETCH_EMAILS", "drive", context)).toThrow(
+      "not authorized",
+    );
+    expect(() => selectComposioAccount("GMAIL_FETCH_EMAILS", "ca-other", context)).toThrow(
+      "not authorized",
+    );
+    expect(() => selectComposioAccount("SLACK_FETCH", undefined, context)).toThrow(
+      "not authorized",
+    );
+  });
+
+  it("fails closed for unresolved account identity", () => {
+    const context: AdapterContext = {
+      operationId: "missing",
+      traceId: "missing",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+      connectedConnections: [
+        { id: "missing", connectorId: "composio", externalId: "gmail", displayName: "Mail" },
+      ],
+    };
+    expect(() => selectComposioAccount("GMAIL_FETCH_EMAILS", undefined, context)).toThrow(
+      "reconnect",
+    );
+  });
+
+  it("does not execute a legacy connection when multiple remote accounts exist", async () => {
+    const saved = composioSdkState.accounts;
+    composioSdkState.accounts = [1, 2].map((i) => ({
+      id: `ca-github-${i}`,
+      toolkit: { slug: "github" },
+      status: "ACTIVE",
+    }));
+    try {
+      const connector = new ComposioConnector();
+      const context: AdapterContext = {
+        operationId: "legacy",
+        traceId: "legacy",
+        spaceId: "space",
+        userId: "user",
+        signal: new AbortController().signal,
+        connectedConnections: [
+          {
+            id: "legacy",
+            connectorId: "composio",
+            externalId: "github",
+            providerRef: "github",
+            displayName: "GitHub",
+          },
+        ],
+      };
+      const before = composioSdkState.executions.length;
+      const events = [];
+      for await (const event of connector.execute(
+        { tool: "GITHUB_GET_REPOS", args: {}, executionId: "legacy" },
+        context,
+      ))
+        events.push(event);
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "error", message: expect.stringContaining("reconnect") }),
+      );
+      expect(composioSdkState.executions.length).toBe(before);
+    } finally {
+      composioSdkState.accounts = saved;
+    }
+  });
+
+  it("does not bind no-auth toolkit references as connected account ids", async () => {
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "noauth",
+      traceId: "noauth",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+      connectedConnections: [
+        {
+          id: "maps",
+          connectorId: "composio",
+          externalId: "google_maps",
+          providerRef: "google_maps",
+          displayName: "Maps",
+        },
+      ],
+    };
+    await connector.discoverTools(context);
+    expect(composioSdkState.created.at(-1)?.config.connectedAccounts).toBeUndefined();
+    expect(
+      selectComposioAccount("GOOGLE_MAPS_SEARCH", undefined, {
+        ...context,
+        connectedConnections: [
+          { ...context.connectedConnections![0]!, providerRef: undefined, noAuth: true },
+        ],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("does not complete a second account merely because the first account is active", async () => {
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "oauth",
+      traceId: "oauth",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+    };
+    await expect(connector.connectionReady(context, "github", "ca-pending")).resolves.toBe(false);
+    await expect(connector.connectionReady(context, "github", "ca-github")).resolves.toBe(true);
+  });
+
+  it("binds sessions to allowed accounts and sends the chosen account without leaking the selector into tool args", async () => {
+    composioSdkState.created.length = 0;
+    composioSdkState.executions.length = 0;
+    composioSdkState.sessions.clear();
+    composioToolkitDirectory.invalidate();
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "selection",
+      traceId: "selection",
+      spaceId: "space",
+      userId: "user",
+      signal: new AbortController().signal,
+      connectedConnections: [1, 2, 3].map((i) => ({
+        id: `github-${i}`,
+        connectorId: "composio",
+        externalId: "github",
+        displayName: `Account ${i}`,
+        providerRef: `ca-github-${i}`,
+      })),
+    };
+    const events = [];
+    for await (const event of connector.execute(
+      {
+        tool: "GITHUB_GET_REPOS",
+        args: { owner: "example", _account: "github-3" },
+        executionId: "chosen",
+      },
+      context,
+    ))
+      events.push(event);
+    expect(events).toContainEqual(expect.objectContaining({ type: "result" }));
+    expect(composioSdkState.executions).toEqual([
+      { tool: "GITHUB_GET_REPOS", args: { owner: "example" }, options: { account: "ca-github-3" } },
+    ]);
+    expect(composioSdkState.created.at(-1)?.config).toMatchObject({
+      connectedAccounts: { GITHUB: ["ca-github-1", "ca-github-2", "ca-github-3"] },
+      multiAccount: { requireExplicitSelection: true },
+    });
+    const before = composioSdkState.created.length;
+    await connector.discoverTools({
+      ...context,
+      connectedConnections: context.connectedConnections?.slice(0, 1),
+    });
+    expect(composioSdkState.created.length).toBe(before + 1);
+    expect(composioSdkState.created.at(-1)?.config.connectedAccounts).toEqual({
+      GITHUB: ["ca-github-1"],
+    });
+  });
+
   it("uses catalog-canonical toolkit slugs without preloading every tool", async () => {
     composioSdkState.created.length = 0;
     composioSdkState.executions.length = 0;
@@ -291,7 +501,7 @@ describe("composio tool mapping", () => {
     }
     expect(events).toContainEqual(expect.objectContaining({ type: "result" }));
     expect(composioSdkState.executions).toEqual([
-      { tool: "GITHUB_GET_REPOS", args: { owner: "composio" } },
+      { tool: "GITHUB_GET_REPOS", args: { owner: "composio" }, options: { account: "ca-github" } },
     ]);
     await expect(connector.connectionReady(context, "github")).resolves.toBe(true);
     await expect(connector.connectedAccountId("user-1", "github")).resolves.toBe("ca-github");

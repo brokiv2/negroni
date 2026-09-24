@@ -7,13 +7,11 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { rpc } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
 import { native, useThemedStyles } from "../lib/native";
-import { speakText } from "../lib/voice";
 
 type VoiceCatalogEntry = {
   id: string;
@@ -24,25 +22,17 @@ type VoiceCatalogEntry = {
 type VoiceCredential = {
   id: string;
   provider: string;
-  voiceId: string;
 };
 type VoiceStatus = {
-  configured: boolean;
-  ready: boolean;
   provider: string | null;
-  voiceId: string;
 };
-type VoiceInfo = { id: string; label: string; description?: string };
 
 export default function VoiceSettings() {
   const styles = useThemedStyles(createVoiceStyles);
   const [catalog, setCatalog] = useState<VoiceCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<VoiceCredential[]>([]);
-  const [status, setStatus] = useState<VoiceStatus | null>(null);
-  const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [voiceId, setVoiceId] = useState("");
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,18 +44,11 @@ export default function VoiceSettings() {
       rpc<VoiceCredential[]>("voice/credentials"),
       rpc<VoiceStatus>("voice/status"),
     ]);
-    const selected = nextProvider || nextStatus.provider || nextCatalog[0]?.id || "";
-    setCatalog(nextCatalog);
+    const transcriptionCatalog = nextCatalog.filter((entry) => entry.transcribe);
+    const selected = nextProvider || nextStatus.provider || transcriptionCatalog[0]?.id || "";
+    setCatalog(transcriptionCatalog);
     setCredentials(nextCredentials);
-    setStatus(nextStatus);
     setProvider(selected);
-    const cred = nextCredentials.find((entry) => entry.provider === selected);
-    setVoiceId(cred?.voiceId ?? "");
-    if (cred) {
-      setVoices(await rpc<VoiceInfo[]>("voice/voices", { provider: selected }));
-    } else {
-      setVoices([]);
-    }
   }, []);
 
   useFocusEffect(
@@ -90,7 +73,6 @@ export default function VoiceSettings() {
       await rpc("voice/connect", {
         provider: selected.id,
         apiKey: apiKey.trim(),
-        voiceId: voiceId || undefined,
       });
       setApiKey("");
       await load(selected.id);
@@ -102,44 +84,13 @@ export default function VoiceSettings() {
     }
   }
 
-  async function chooseVoice(nextVoiceId: string) {
-    setVoiceId(nextVoiceId);
-    setPending(true);
-    try {
-      await rpc("voice/setVoice", { voiceId: nextVoiceId, provider: selected?.id });
-      await load(selected?.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save that voice");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function testVoice() {
-    setPending(true);
-    setError(null);
-    try {
-      const ready = await speakText("Hi, this is how I'll sound when I read replies out loud.");
-      if (!ready) {
-        throw new Error("Connect a voice provider first.");
-      }
-      setNotice("If you heard that, voice is ready.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not play a sample");
-    } finally {
-      setPending(false);
-    }
-  }
-
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
         {loading ? <ActivityIndicator color="#ECECEE" /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-        <Text style={styles.lede}>
-          Bring your own key. ElevenLabs, OpenAI, and Cartesia all plug into the same speak buttons.
-        </Text>
+        <Text style={styles.lede}>Connect a voice provider for dictation and voice calls.</Text>
         {catalog.map((entry) => {
           const connected = credentials.some((cred) => cred.provider === entry.id);
           return (
@@ -147,14 +98,14 @@ export default function VoiceSettings() {
               key={entry.id}
               onPress={() => {
                 setProvider(entry.id);
-                void load(entry.id);
+                void load(entry.id).catch((err: unknown) =>
+                  setError(err instanceof Error ? err.message : "Could not load voice settings"),
+                );
               }}
               style={[styles.card, provider === entry.id && styles.cardActive]}
             >
               <Text style={styles.cardTitle}>{entry.name}</Text>
-              <Text style={styles.cardMeta}>
-                {connected ? "Connected" : entry.transcribe ? "Speak + transcribe" : "Speak only"}
-              </Text>
+              <Text style={styles.cardMeta}>{connected ? "Connected" : "Speech to text"}</Text>
             </Pressable>
           );
         })}
@@ -182,29 +133,6 @@ export default function VoiceSettings() {
             >
               <Text style={styles.buttonLabel}>{credential ? "Replace key" : "Connect"}</Text>
             </Pressable>
-            {voices.length ? (
-              <View style={styles.voices}>
-                {voices.map((voice) => (
-                  <Pressable
-                    key={voice.id}
-                    onPress={() => void chooseVoice(voice.id)}
-                    style={styles.voiceRow}
-                  >
-                    <Text style={styles.voiceLabel}>{voice.label}</Text>
-                    {voiceId === voice.id ? <Text style={styles.check}>✓</Text> : null}
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
-            {status?.ready ? (
-              <Pressable
-                disabled={pending}
-                onPress={() => void testVoice()}
-                style={styles.secondary}
-              >
-                <Text style={styles.secondaryLabel}>Hear a sample</Text>
-              </Pressable>
-            ) : null}
           </>
         ) : null}
       </ScrollView>
@@ -249,18 +177,5 @@ function createVoiceStyles() {
     },
     disabled: { opacity: 0.4 },
     buttonLabel: { color: tokens.creamInk, fontWeight: "600" },
-    voices: { marginTop: 12, borderRadius: 12, borderWidth: 1, borderColor: tokens.border },
-    voiceRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      paddingHorizontal: 14,
-      paddingVertical: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: tokens.hairlineStrong,
-    },
-    voiceLabel: { color: native.label },
-    check: { color: tokens.successSoft },
-    secondary: { marginTop: 16, alignItems: "center" },
-    secondaryLabel: { color: native.secondaryLabel, fontSize: 15 },
   });
 }

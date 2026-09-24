@@ -47,6 +47,7 @@ vi.mock("./live-notifications.js", () => ({
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("mobile API authentication", () => {
@@ -57,6 +58,27 @@ describe("mobile API authentication", () => {
     vi.mocked(SecureStore.deleteItemAsync).mockReset();
     vi.mocked(resumeLiveNotifications).mockClear();
     await restoreSessionToken("");
+  });
+
+  it("migrates the retired simulator endpoint in development without clearing credentials", async () => {
+    const storage = new Map([
+      ["rakazo.api_base", "http://127.0.0.1:3199"],
+      ["rakazo.session_token", "existing-session"],
+      ["rakazo.space_id", "existing-space"],
+    ]);
+    vi.mocked(SecureStore.getItemAsync).mockImplementation(async (key) => storage.get(key) ?? null);
+    vi.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key) => {
+      storage.delete(key);
+    });
+    vi.stubEnv("EXPO_PUBLIC_API_URL", "https://assigned-name.ngrok-free.dev");
+    vi.stubGlobal("__DEV__", true);
+    vi.resetModules();
+    const restartedApi = await import("./api.js");
+
+    await expect(restartedApi.loadApiBase()).resolves.toBe("https://assigned-name.ngrok-free.dev");
+    expect(storage.has("rakazo.api_base")).toBe(false);
+    expect(storage.get("rakazo.session_token")).toBe("existing-session");
+    expect(storage.get("rakazo.space_id")).toBe("existing-space");
   });
 
   it("persists a successful sign-in token and sends the native origin", async () => {

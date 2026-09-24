@@ -30,6 +30,8 @@ export default function Integrations() {
   const { width } = useWindowDimensions();
   const catalogColumns = width >= 480 ? 2 : 1;
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [accountLabel, setAccountLabel] = useState("");
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
   const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -56,8 +58,12 @@ export default function Integrations() {
   );
 
   async function refresh() {
-    const catalogResult = await rpc<ConnectionCatalogItem[]>("connections/catalog");
+    const [catalogResult, rows] = await Promise.all([
+      rpc<ConnectionCatalogItem[]>("connections/catalog"),
+      rpc<Connection[]>("connections/list"),
+    ]);
     setCatalog(catalogResult);
+    setConnections(rows.filter((row) => row.status === "connected" || row.status === "pending"));
     setCatalogReady(true);
     try {
       const installs = await rpc<CapabilityInstall[]>("capabilities/list");
@@ -106,7 +112,11 @@ export default function Integrations() {
         {
           connectorId: item.connectorId,
           provider: item.slug,
-          displayName: item.name,
+          displayName:
+            accountLabel.trim() ||
+            (item.connected
+              ? `${item.name} ${connections.filter((row) => row.connectorId === item.connectorId && row.provider === item.slug).length + 1}`
+              : item.name),
         },
       );
       if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
@@ -119,6 +129,7 @@ export default function Integrations() {
           if (controller.signal.aborted) return;
           void notifyAppConnected(item);
           await refresh();
+          setAccountLabel("");
           return;
         }
         await abortableDelay(2_000, controller.signal);
@@ -139,22 +150,12 @@ export default function Integrations() {
     }
   }
 
-  async function revoke(item: ConnectionCatalogItem) {
-    const key = `${item.connectorId}:${item.slug}`;
+  async function revoke(connection: Connection) {
+    const key = connection.id;
     setPending(key);
     setCatalogError(null);
-    const connections = await rpc<Connection[]>("connections/list").catch(() => []);
-    const matches = connections.filter(
-      (connection) =>
-        connection.connectorId === item.connectorId && connection.provider === item.slug,
-    );
     try {
-      const row =
-        matches.find((connection) => connection.status === "connected") ??
-        matches.find((connection) => connection.status === "pending") ??
-        matches.find((connection) => connection.status === "error");
-      if (!row) throw new Error(`No connection record found for ${item.name}.`);
-      await rpc("connections/revoke", { connectionId: row.id });
+      await rpc("connections/revoke", { connectionId: connection.id });
       await refresh();
     } catch (reason) {
       setCatalogError(reason instanceof Error ? reason.message : "Could not revoke connection");
@@ -216,6 +217,15 @@ export default function Integrations() {
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.explanation}>Connect apps.</Text>
+        <TextInput
+          accessibilityLabel="Account label"
+          placeholder="Account label · Personal / Work"
+          placeholderTextColor={native.secondaryLabel}
+          value={accountLabel}
+          onChangeText={setAccountLabel}
+          autoCapitalize="words"
+          style={styles.input}
+        />
 
         {catalogError ? <Text style={styles.error}>{catalogError}</Text> : null}
 
@@ -252,12 +262,14 @@ export default function Integrations() {
                   {disabled || !item ? null : (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={connected ? `Remove ${tile.label}` : `Add ${tile.label}`}
+                      accessibilityLabel={
+                        connected ? `Add another ${tile.label}` : `Add ${tile.label}`
+                      }
                       disabled={pending === key}
-                      onPress={() => void (connected ? revoke(item) : connect(item))}
+                      onPress={() => void connect(item)}
                     >
                       <Text style={styles.link}>
-                        {pending === key ? "Working…" : connected ? "Remove" : "Add"}
+                        {pending === key ? "Working…" : connected ? "Add account" : "Add"}
                       </Text>
                     </Pressable>
                   )}
@@ -280,10 +292,10 @@ export default function Integrations() {
                     accessibilityRole="button"
                     accessibilityLabel={item.connected ? `Remove ${item.name}` : `Add ${item.name}`}
                     disabled={pending === key}
-                    onPress={() => void (item.connected ? revoke(item) : connect(item))}
+                    onPress={() => void connect(item)}
                   >
                     <Text style={styles.link}>
-                      {pending === key ? "Working…" : item.connected ? "Remove" : "Add"}
+                      {pending === key ? "Working…" : item.connected ? "Add account" : "Add"}
                     </Text>
                   </Pressable>
                 </View>
@@ -291,6 +303,25 @@ export default function Integrations() {
             })}
           </View>
         ) : null}
+
+        {connections.map((connection) => (
+          <View key={connection.id} style={styles.row}>
+            <View style={styles.grow}>
+              <Text style={styles.title}>{connection.displayName}</Text>
+              <Text style={styles.secondary}>
+                {connection.provider} · {connection.status}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${connection.displayName}`}
+              disabled={pending !== null}
+              onPress={() => void revoke(connection)}
+            >
+              <Text style={styles.link}>{pending === connection.id ? "Removing…" : "Remove"}</Text>
+            </Pressable>
+          </View>
+        ))}
 
         <Pressable
           accessibilityRole="button"

@@ -1,5 +1,5 @@
 import type { RunActivityRow, SearchHit, SpaceBot, SpaceGroup } from "@rakazo/contracts";
-import { groupBotsForSidebar } from "@rakazo/core";
+import { friendlyChatError, groupBotsForSidebar, mainAssistantBot } from "@rakazo/core";
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -15,7 +15,10 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ActionSheet } from "../components/action-sheet";
 import { BotAvatar } from "../components/bot-avatar";
+import { WorkspacePicker } from "../components/workspace-picker";
+import { GlassSurface } from "../components/glass-surface";
 import { BotOrganizeModal } from "../components/bot-organize-modal";
 import { GroupAvatar } from "../components/group-avatar";
 import { NativeSymbol } from "../components/native-symbol";
@@ -39,9 +42,10 @@ import {
   selectInitialSpace,
   selectSpace,
 } from "../lib/api";
-import { botTag, filterBots, formatThreadTime, userInitials } from "../lib/inbox";
+import { botTag, filterBots, formatThreadTime } from "../lib/inbox";
+import { loadChatView, saveChatView, type ChatView } from "../lib/chat-view";
 import { dismissThreadNotifications, resumeLiveNotifications } from "../lib/live-notifications";
-import { native, useThemedStyles } from "../lib/native";
+import { native, useResolvedAppearance, useThemedStyles } from "../lib/native";
 import { previewSnippet } from "../lib/preview";
 import { registerPushToken } from "../lib/push";
 import { querySpaceSearch } from "../lib/search";
@@ -65,6 +69,7 @@ async function openMobileSpace(spaceId: string | undefined, open: () => void) {
 
 export default function Home() {
   const styles = useThemedStyles(createHomeStyles);
+  const appearance = useResolvedAppearance();
   const [bots, setBots] = useState<MobileBot[]>([]);
   const [groups, setGroups] = useState<MobileGroup[]>([]);
   const [botSections, setBotSections] = useState<MobileBotSection[]>([]);
@@ -73,6 +78,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
+  const [botsLoaded, setBotsLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -83,6 +89,10 @@ export default function Home() {
     id: string;
   } | null>(null);
   const [activityMode, setActivityMode] = useState(false);
+  const [chatView, setChatView] = useState<ChatView>("team");
+  const [viewReady, setViewReady] = useState(false);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [activity, setActivity] = useState<{ active: RunActivityRow[]; recent: RunActivityRow[] }>({
     active: [],
     recent: [],
@@ -92,6 +102,10 @@ export default function Home() {
 
   useEffect(() => {
     void loadActivityMode().then(setActivityMode);
+    void loadChatView().then((view) => {
+      setChatView(view);
+      setViewReady(true);
+    });
   }, []);
 
   const toggleActivityMode = useCallback(() => {
@@ -120,9 +134,11 @@ export default function Home() {
       setGroups(navigation.current.groups);
       setSpaces(navigation.spaces);
       setMe(nextMe);
+      setBotsLoaded(true);
     } catch (err) {
       if (requestId !== inboxRequestId.current) return;
       setError(err instanceof Error ? err.message : "Could not load bots");
+      setBotsLoaded(true);
     }
   }, []);
 
@@ -144,7 +160,9 @@ export default function Home() {
 
   useEffect(() => {
     if (!hasSession) return;
-    void registerPushToken().catch(() => undefined);
+    void registerPushToken().catch((error) => {
+      console.error("push registration failed", error);
+    });
   }, [hasSession]);
 
   useFocusEffect(
@@ -291,7 +309,7 @@ export default function Home() {
       ]);
     });
   }, [botSections, me, spaces, query, searching, searchHits, visible, visibleGroups]);
-  const initials = userInitials(me?.name ?? "");
+  const assistant = mainAssistantBot(bots);
   const organizeChat = organizeTarget
     ? organizeTarget.kind === "bot"
       ? bots.find((bot) => bot.id === organizeTarget.id)
@@ -299,6 +317,15 @@ export default function Home() {
     : null;
   const insets = useSafeAreaInsets();
   const router = useRouter();
+
+  useEffect(() => {
+    if (viewReady && chatView === "assistant" && assistant && !searching) {
+      router.replace({
+        pathname: "/assistant-hub",
+        params: { botId: assistant.id, name: assistant.name },
+      });
+    }
+  }, [assistant?.id, chatView, router, searching, viewReady]);
 
   if (!ready) {
     return (
@@ -312,9 +339,10 @@ export default function Home() {
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 20) }]}>
       <View style={styles.header}>
-        <CircleButton accessibilityLabel="Account" onPress={() => router.push("/account")}>
-          <Text style={styles.profileInitials}>{initials}</Text>
+        <CircleButton accessibilityLabel="Open navigation" onPress={() => setWorkspacePickerOpen(true)}>
+          <NativeSymbol ios="line.3.horizontal" android="menu" size={21} />
         </CircleButton>
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]}><Text style={styles.pageTitle}>Team</Text></View>
         <View style={styles.headerActions}>
           <CircleButton
             accessibilityLabel="Activity"
@@ -330,50 +358,40 @@ export default function Home() {
             />
           </CircleButton>
           <CircleButton
-            accessibilityLabel="Search"
-            active={searching}
-            onPress={() =>
-              setSearching((open) => {
-                if (open) setQuery("");
-                return !open;
-              })
-            }
-          >
-            <NativeSymbol ios="magnifyingglass" android="search" size={17} />
-          </CircleButton>
-          <CircleButton
             accessibilityLabel="Create"
-            onPress={() =>
-              Alert.alert("Create", undefined, [
-                { text: "New bot", onPress: () => router.push("/new") },
-                { text: "New group", onPress: () => router.push("/new-group") },
-                { text: "New space", onPress: () => router.push("/new-space") },
-                { text: "Cancel", style: "cancel" },
-              ])
-            }
+            onPress={() => setCreateOpen(true)}
           >
             <NativeSymbol ios="plus" android="add" size={18} />
           </CircleButton>
         </View>
       </View>
 
-      {searching ? (
+      <GlassSurface
+        appearance={appearance}
+        style={{ marginHorizontal: 16, marginBottom: 10, borderRadius: 22, minHeight: 44, justifyContent: "center" }}
+        fallbackStyle={{
+          backgroundColor: appearance === "light" ? "rgba(255,255,255,0.84)" : "rgba(38,38,40,0.86)",
+          borderWidth: 1,
+          borderColor: appearance === "light" ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.1)",
+        }}
+      >
         <TextInput
-          autoFocus
           value={query}
-          onChangeText={setQuery}
-          placeholder="Search"
-          placeholderTextColor="#6C6C70"
+          onChangeText={(value) => { setQuery(value); setSearching(Boolean(value.trim())); }}
+          placeholder="Search conversations"
+          placeholderTextColor={native.secondaryLabel}
           autoCorrect={false}
           autoCapitalize="none"
           returnKeyType="search"
-          keyboardAppearance="dark"
+          keyboardAppearance={appearance}
           clearButtonMode="while-editing"
-          style={styles.searchField}
+          style={[styles.searchField, { marginHorizontal: 0, marginBottom: 0, backgroundColor: "transparent", height: 44, borderRadius: 22, paddingHorizontal: 16 }]}
         />
-      ) : null}
+      </GlassSurface>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? <View><Text style={styles.error}>{friendlyChatError(error)}</Text>
+        {error === "SESSION_EXPIRED" ? <Pressable accessibilityRole="button" onPress={() => router.push({ pathname: "/sign-in", params: { reauthenticate: "1" } })} style={{ alignSelf: "flex-start", marginHorizontal: 20, paddingVertical: 12 }}><Text style={{ color: native.label, fontSize: 17, fontWeight: "600" }}>Sign in again</Text></Pressable> : null}
+      </View> : null}
 
       <FlatList<InboxItem>
         data={listData}
@@ -386,7 +404,7 @@ export default function Home() {
         }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
-        indicatorStyle="white"
+        indicatorStyle={appearance === "light" ? "black" : "white"}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
@@ -397,7 +415,7 @@ export default function Home() {
             }}
             tintColor={native.secondaryLabel}
             colors={["#8E8E93"]}
-            progressBackgroundColor="#1C1C1E"
+            progressBackgroundColor={native.page}
           />
         }
         ListHeaderComponent={
@@ -409,8 +427,16 @@ export default function Home() {
           ) : null
         }
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {query.trim() && searching
+          !botsLoaded ? (
+            <View style={{ gap: 14, paddingHorizontal: 16, paddingTop: 12 }}>
+              {[0, 1, 2].map((item) => (
+                <View key={item} style={{ height: 66, borderRadius: 18, backgroundColor: native.fill }} />
+              ))}
+            </View>
+          ) : <Text style={styles.empty}>
+            {error
+              ? "Pull down to retry"
+              : query.trim() && searching
               ? searchLoading
                 ? "Searching…"
                 : "No results"
@@ -427,6 +453,7 @@ export default function Home() {
               hit={item.hit}
               onPress={() => {
                 setQuery("");
+                setSearching(false);
                 setSearchHits([]);
                 router.push(mobileSearchDestination(item.hit));
               }}
@@ -470,6 +497,28 @@ export default function Home() {
           )
         }
       />
+      <WorkspacePicker
+        visible={workspacePickerOpen}
+        selected="team"
+        assistantAvailable={Boolean(assistant)}
+        assistantId={assistant?.id}
+        assistantName={assistant?.name}
+        onClose={() => setWorkspacePickerOpen(false)}
+        onSelect={(view) => {
+          if (view === "team" || !assistant) return;
+          setChatView(view);
+          void saveChatView(view);
+          router.replace({
+            pathname: "/assistant-hub",
+            params: { botId: assistant.id, name: assistant.name },
+          });
+        }}
+      />
+      <ActionSheet visible={createOpen} title="Start something new" onClose={() => setCreateOpen(false)} actions={[
+        { label: "New agent", detail: "Give an agent a role and a conversation", ios: "person.crop.circle.badge.plus", android: "person-add-outline", onPress: () => { setCreateOpen(false); router.push("/new"); } },
+        { label: "Group conversation", detail: "Bring agents together in one chat", ios: "bubble.left.and.bubble.right", android: "chatbubbles-outline", onPress: () => { setCreateOpen(false); router.push("/new-group"); } },
+        { label: "New space", ios: "square.stack.3d.up", android: "layers-outline", onPress: () => { setCreateOpen(false); router.push("/new-space"); } },
+      ]} />
       {organizeChat && organizeTarget ? (
         <BotOrganizeModal
           bot={organizeChat}
@@ -761,6 +810,12 @@ function createHomeStyles() {
       paddingHorizontal: 16,
       paddingTop: 8,
       paddingBottom: 10,
+    },
+    pageTitle: {
+      color: native.label,
+      fontSize: 19,
+      fontWeight: "600",
+      letterSpacing: -0.3,
     },
     headerActions: {
       flexDirection: "row",

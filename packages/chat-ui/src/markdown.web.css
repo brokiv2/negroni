@@ -30,8 +30,12 @@
 .rk-chat-markdown h6 {
   margin: 0.9em 0 0.35em;
   color: #f3f3f4;
-  font-weight: 650;
+  font-weight: 700;
   line-height: 1.25;
+}
+
+.rk-chat-markdown strong {
+  font-weight: 700;
 }
 
 .rk-chat-markdown h1 {
@@ -90,6 +94,7 @@
   border: 1px solid #34343a;
   border-radius: 0.35em;
   background: #101012;
+  color: #ececf0;
   padding: 0.08em 0.32em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;

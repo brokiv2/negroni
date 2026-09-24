@@ -78,6 +78,7 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({
 }));
 
 vi.mock("./pi-local-provider.js", () => ({
+  LOCAL_PROVIDER_ID: "local",
   registerLocalProvider: (models: unknown) => models,
 }));
 
@@ -94,6 +95,7 @@ async function runWithModel(
   provider = "test",
   signal = new AbortController().signal,
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null,
+  interactionMode?: "chat" | "voice",
 ) {
   const runtime = new PiAgentRuntime();
   for await (const _event of runtime.run(
@@ -105,7 +107,7 @@ async function runWithModel(
       instructions: "",
       history: [],
       tools: [],
-      model: { provider, id: modelId, thinkingLevel },
+      model: { provider, id: modelId, thinkingLevel, interactionMode },
       executeTool: vi.fn(async () => ({ ok: true })),
     },
     {
@@ -128,6 +130,7 @@ describe("Pi agent thinking level", () => {
     fakeAgentState.sessionIds = [];
     fakeAgentState.failPrompt = false;
     vi.unstubAllEnvs();
+    vi.stubEnv("DATA_DIR", "/nonexistent-negroni-test-catalog");
   });
 
   it("uses medium reasoning for the main agent and subagent", async () => {
@@ -136,6 +139,36 @@ describe("Pi agent thinking level", () => {
     const levels = await runWithModel("reasoning-model");
     expect(levels).toEqual(["medium", "medium"]);
     expect(levels.every((level) => level !== "off")).toBe(true);
+  });
+
+  it("uses the lowest supported voice effort for main and nested agents without changing chat effort", async () => {
+    expect(
+      await runWithModel("grok-4.6", "xai", new AbortController().signal, "high", "voice"),
+    ).toEqual(["low", "low"]);
+    fakeAgentState.thinkingLevels = [];
+    expect(
+      await runWithModel("grok-4.6", "xai", new AbortController().signal, "high", "chat"),
+    ).toEqual(["high", "high"]);
+  });
+
+  it("turns reasoning off for voice when supported", async () => {
+    expect(
+      await runWithModel("reasoning-model", "test", new AbortController().signal, "high", "voice"),
+    ).toEqual(["off", "off"]);
+  });
+
+  it("keeps a positive minimum for unknown OpenRouter reasoning endpoints", async () => {
+    vi.stubEnv("PI_DEFAULT_PROVIDER", "openrouter");
+    vi.stubEnv("PI_DEFAULT_MODEL", "stealth/ox-alpha");
+    expect(
+      await runWithModel(
+        "stealth/ox-alpha",
+        "openrouter",
+        new AbortController().signal,
+        "high",
+        "voice",
+      ),
+    ).toEqual(["minimal", "minimal"]);
   });
 
   it("uses a stable provider session for each bot thread", async () => {

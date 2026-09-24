@@ -30,6 +30,8 @@ describe("featured connectors", () => {
     expect(matchFeaturedConnectorId("googlecalendar")).toBe("google-calendar");
     expect(matchFeaturedConnectorId("google_drive")).toBe("google-drive");
     expect(matchFeaturedConnectorId("googledrive")).toBe("google-drive");
+    expect(matchFeaturedConnectorId("googlesheets")).toBe("google-sheets");
+    expect(matchFeaturedConnectorId("Google Sheets")).toBe("google-sheets");
   });
 
   it("maps slack and notion catalog aliases", () => {

@@ -488,6 +488,8 @@ function ScreenWebView({
       overScrollMode="never"
       onError={onError}
       onHttpError={onError}
+      onContentProcessDidTerminate={onError}
+      onRenderProcessGone={onError}
     />
   );
 }

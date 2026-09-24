@@ -72,7 +72,7 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     vi.restoreAllMocks();
   });
 
-  it("reconciles one scoped row per provider under concurrent catalog fetches", async () => {
+  it("does not finish or revoke account OAuth from toolkit connectivity under concurrent catalog fetches", async () => {
     const ownerCookie = await signup(app, `owner-connections-${stamp}@rakazo.test`, "Owner");
     const otherCookie = await signup(app, `other-connections-${stamp}@rakazo.test`, "Other");
     const owner = await rpc<Actor>(app, ownerCookie, "me");
@@ -101,8 +101,8 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     }
 
     await expect(statuses([first.id, duplicate.id])).resolves.toEqual([
-      { id: first.id, status: "connected" },
-      { id: duplicate.id, status: "revoked" },
+      { id: first.id, status: "pending" },
+      { id: duplicate.id, status: "pending" },
     ]);
     await expect(statuses([otherProvider.id, otherUser.id, otherWorkspace.id])).resolves.toEqual([
       { id: otherProvider.id, status: "pending" },
@@ -112,8 +112,8 @@ describeWithDatabase("Composio catalog reconciliation", () => {
 
     await rpc(app, ownerCookie, "connections/catalog");
     await expect(statuses([first.id, duplicate.id])).resolves.toEqual([
-      { id: first.id, status: "connected" },
-      { id: duplicate.id, status: "revoked" },
+      { id: first.id, status: "pending" },
+      { id: duplicate.id, status: "pending" },
     ]);
   });
 
@@ -141,6 +141,30 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     );
     failure.mockRestore();
     log.mockRestore();
+  });
+
+  it("does not resurrect a revoked account or lose a concurrent disconnect during OAuth completion", async () => {
+    const cookie = await signup(app, `oauth-revoke-${stamp}@rakazo.test`, "OAuth Revoke");
+    const actor = await rpc<Actor>(app, cookie, "me");
+    const revoked = await createConnection(actor, "GMAIL");
+    await handles.prisma.connection.update({
+      where: { id: revoked.id },
+      data: { status: "revoked" },
+    });
+    await expect(
+      rpc<{ status: string }>(app, cookie, "connections/complete", { connectionId: revoked.id }),
+    ).resolves.toMatchObject({ status: "revoked" });
+    const pending = await createConnection(actor, "GMAIL");
+    vi.spyOn(composio, "connectionReady").mockImplementationOnce(async () => {
+      await handles.prisma.connection.update({
+        where: { id: pending.id },
+        data: { status: "revoked" },
+      });
+      return true;
+    });
+    await expect(
+      rpc<{ status: string }>(app, cookie, "connections/complete", { connectionId: pending.id }),
+    ).resolves.toMatchObject({ status: "revoked" });
   });
 
   it("does not mutate local state when the provider catalog fails", async () => {

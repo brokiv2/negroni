@@ -1,6 +1,6 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { userVisibleMessages } from "./message-visibility.js";
+import { transcriptContentBlocks, userVisibleMessages } from "./message-visibility.js";
 
 function message(id: string, runId: string, blocks: ThreadMessage["blocks"]): ThreadMessage {
   return {
@@ -52,5 +52,65 @@ describe("user-visible messages", () => {
     expect(
       userVisibleMessages(messages, { knownPeerRunIds: ["run-peer"] }).map((item) => item.id),
     ).toEqual(["answer"]);
+  });
+});
+
+describe("delegated result summaries", () => {
+  it.each(["result", "status"] as const)(
+    "shows the coordinator's %s follow-up on web and mobile",
+    (intent) => {
+      const rows = [
+        message("receipt", "run-result", [
+          {
+            kind: "bot_message_received",
+            fromBotId: "reviewer",
+            fromBotName: "Reviewer",
+            text: "Verified 12",
+            intent,
+          },
+        ]),
+        message("summary", "run-result", [
+          { kind: "text", text: "Reviewer verified 144 / 12 = 12." },
+        ]),
+      ];
+      expect(userVisibleMessages(rows).map((row) => row.id)).toEqual(["summary"]);
+      expect(userVisibleMessages(rows, { includePeerReceipts: true }).map((row) => row.id)).toEqual(
+        ["receipt", "summary"],
+      );
+    },
+  );
+});
+
+describe("transcript activity removal", () => {
+  it("drops tool history and live tool metadata without losing actual response text", () => {
+    const blocks: ThreadMessage["blocks"] = [
+      { kind: "text", text: "Checking the request." },
+      { kind: "steps", steps: [{ label: "Read file", count: 1 }], durationMs: 1000 },
+      { kind: "progress", text: "Using browser", pendingToolNames: ["browser"] },
+      { kind: "progress", text: "The result is ready." },
+      { kind: "text", text: "Answer: 12." },
+    ];
+    expect(transcriptContentBlocks(blocks)).toEqual([blocks[0], blocks[3], blocks[4]]);
+    expect(blocks).toHaveLength(5);
+  });
+
+  it("keeps interactive blocks and peer receipts", () => {
+    const receipt = peerExchange[1]!.blocks[0]!;
+    const ask: ThreadMessage["blocks"][number] = {
+      kind: "ask",
+      text: "Approve this action?",
+      approvalEffectId: "effect-1",
+    };
+    expect(transcriptContentBlocks([receipt, ask])).toEqual([receipt, ask]);
+  });
+
+  it("keeps coordination visible in team chats and hides it in the assistant view", () => {
+    const blocks: ThreadMessage["blocks"] = [
+      { kind: "handoff", fromBotId: "chief", toBotId: "coder", text: "Check this" },
+      { kind: "subagent", status: "running", subagentId: "helper", label: "Research" },
+      { kind: "text", text: "Here is the answer." },
+    ];
+    expect(transcriptContentBlocks(blocks)).toEqual(blocks);
+    expect(transcriptContentBlocks(blocks, { hideCoordination: true })).toEqual([blocks[2]]);
   });
 });

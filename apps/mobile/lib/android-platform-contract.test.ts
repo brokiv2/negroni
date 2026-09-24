@@ -23,14 +23,14 @@ describe("Android mobile platform contract", () => {
     expect(packageJson.dependencies["react-native-keyboard-controller"]).toBeTruthy();
     expect(layout).toContain("KeyboardProvider");
     expect(thread).toContain('from "react-native-keyboard-controller"');
-    expect(thread).toContain("KeyboardAvoidingView");
-    expect(thread).toContain('behavior="height"');
-    expect(thread).toContain("useHeaderHeight");
-    expect(thread).toContain("keyboardVerticalOffset={headerHeight}");
-    expect(thread).not.toContain("automaticOffset");
-    expect(thread).not.toContain("KeyboardStickyView");
+    expect(thread).toContain("KeyboardChatScrollView");
+    expect(thread).toContain("KeyboardGestureArea");
+    expect(thread).toContain("KeyboardStickyView");
+    expect(thread).toContain('keyboardDismissMode="on-drag"');
+    expect(thread).not.toContain("KeyboardAvoidingView");
+    expect(thread).not.toContain("keyboardVerticalOffset");
     expect(thread).toContain("useSafeAreaInsets");
-    expect(thread).toContain("Math.max(insets.bottom + 12, 24)");
+    expect(thread).toContain("offset={insets.bottom}");
   });
 
   it("requests live-update promotion and exposes its Android settings", () => {
@@ -102,7 +102,8 @@ describe("Android mobile platform contract", () => {
     expect(service).toContain('putString("rakazo.spaceId", run.spaceId)');
     expect(thread).toContain("export default function ThreadRoute()");
     expect(thread).toContain("selectSpace(requestedSpaceId)");
-    expect(thread).toContain("routeMatchesSelectedSpace) return <Thread />");
+    expect(thread).toContain("routeMatchesSelectedSpace");
+    expect(thread).toContain("<Thread key=");
     expect(service).toContain('if (run.groupId != null) put("groupId", run.groupId)');
     expect(service).toContain('if (message.optString("runId") != run.runId) continue');
     expect(service).toContain('if (block.optString("kind") == "handoff") return null');
@@ -188,8 +189,8 @@ describe("Android mobile platform contract", () => {
     const thread = readFileSync(resolve(mobileRoot, "app/thread.tsx"), "utf8");
     const avatar = readFileSync(resolve(mobileRoot, "components/bot-avatar.tsx"), "utf8");
     const menu = readFileSync(resolve(mobileRoot, "components/bot-organize-modal.tsx"), "utf8");
-    expect(menu).toContain("Silence notifications");
-    expect(menu).toContain("Resume notifications");
+    expect(menu).toContain("Mute notifications");
+    expect(menu).toContain("Unmute notifications");
     expect(index).toContain("muted={!bot.notifyOnFinish}");
     expect(thread).toContain("muted={!currentBot.notifyOnFinish}");
     expect(avatar).toContain('accessibilityLabel="Notifications silenced"');

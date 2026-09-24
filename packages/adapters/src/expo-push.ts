@@ -1,16 +1,59 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   AdapterContext,
   NotificationMessage,
   NotificationProvider,
 } from "@rakazo/adapter-kit";
+import {
+  type ApnsConfig,
+  type ApnsEnvironment,
+  isInvalidApnsToken,
+  sendApnsNotification,
+} from "./apns-push.js";
+
+export type PushRegistration =
+  | { provider: "expo"; token: string; updatedAt: string }
+  | { provider: "apns"; token: string; environment: ApnsEnvironment; updatedAt: string };
+
+type PushProviderOptions = {
+  apns?: ApnsConfig;
+  sendApns?: typeof sendApnsNotification;
+};
 
 export function pushTokenPath(dataDir: string, userId: string) {
   return path.join(dataDir, "push-tokens", `${userId}.txt`);
 }
 
-export async function loadPushToken(dataDir: string, userId: string): Promise<string | undefined> {
+export function pushRegistrationsPath(dataDir: string, userId: string) {
+  return path.join(dataDir, "push-tokens", `${userId}.json`);
+}
+
+export async function loadPushRegistrations(
+  dataDir: string,
+  userId: string,
+): Promise<PushRegistration[]> {
+  try {
+    const parsed = JSON.parse(await readFile(pushRegistrationsPath(dataDir, userId), "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is PushRegistration => {
+      if (!item || typeof item !== "object" || typeof item.token !== "string") return false;
+      if (item.provider === "expo") return true;
+      return (
+        item.provider === "apns" &&
+        (item.environment === "development" || item.environment === "production")
+      );
+    });
+  } catch {
+    const legacy = await loadLegacyPushToken(dataDir, userId);
+    return legacy
+      ? [{ provider: "expo", token: legacy, updatedAt: new Date(0).toISOString() }]
+      : [];
+  }
+}
+
+async function loadLegacyPushToken(dataDir: string, userId: string) {
   try {
     const token = (await readFile(pushTokenPath(dataDir, userId), "utf8")).trim();
     return token || undefined;
@@ -19,15 +62,69 @@ export async function loadPushToken(dataDir: string, userId: string): Promise<st
   }
 }
 
+export async function loadPushToken(dataDir: string, userId: string): Promise<string | undefined> {
+  return (await loadPushRegistrations(dataDir, userId)).at(-1)?.token;
+}
+
 export async function savePushToken(dataDir: string, userId: string, token: string): Promise<void> {
-  await mkdir(path.dirname(pushTokenPath(dataDir, userId)), { recursive: true });
-  await writeFile(pushTokenPath(dataDir, userId), token.trim(), "utf8");
+  await savePushRegistration(dataDir, userId, { provider: "expo", token });
+}
+
+export async function savePushRegistration(
+  dataDir: string,
+  userId: string,
+  registration:
+    | { provider: "expo"; token: string }
+    | { provider: "apns"; token: string; environment: ApnsEnvironment },
+): Promise<void> {
+  const token = registration.token.trim();
+  if (!token) throw new Error("Push token is empty");
+  const existing = await loadPushRegistrations(dataDir, userId);
+  const next = [
+    ...existing.filter(
+      (item) => !(item.provider === registration.provider && item.token === token),
+    ),
+    { ...registration, token, updatedAt: new Date().toISOString() },
+  ].slice(-8) as PushRegistration[];
+  await writePushRegistrations(dataDir, userId, next);
+  await unlink(pushTokenPath(dataDir, userId)).catch(() => undefined);
+}
+
+async function writePushRegistrations(
+  dataDir: string,
+  userId: string,
+  registrations: PushRegistration[],
+): Promise<void> {
+  const target = pushRegistrationsPath(dataDir, userId);
+  await mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(registrations, null, 2)}\n`, "utf8");
+  await rename(temporary, target);
+}
+
+export async function deletePushRegistration(
+  dataDir: string,
+  userId: string,
+  token: string,
+): Promise<void> {
+  const existing = await loadPushRegistrations(dataDir, userId);
+  const next = existing.filter((item) => item.token !== token);
+  if (next.length === existing.length) return;
+  if (next.length === 0) {
+    await unlink(pushRegistrationsPath(dataDir, userId)).catch(() => undefined);
+    return;
+  }
+  await writePushRegistrations(dataDir, userId, next);
 }
 
 export async function deletePushToken(dataDir: string, userId: string): Promise<void> {
-  await unlink(pushTokenPath(dataDir, userId)).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-  });
+  await Promise.all(
+    [pushTokenPath(dataDir, userId), pushRegistrationsPath(dataDir, userId)].map((target) =>
+      unlink(target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      }),
+    ),
+  );
 }
 
 export type ExpoPushTicket = {
@@ -64,11 +161,18 @@ export function expoPushErrorMessage(body: unknown, status: number): string | un
 }
 
 export class ExpoPushProvider implements NotificationProvider {
-  constructor(private readonly dataDir: string) {}
+  private readonly sendApns: typeof sendApnsNotification;
+
+  constructor(
+    private readonly dataDir: string,
+    private readonly options: PushProviderOptions = {},
+  ) {
+    this.sendApns = options.sendApns ?? sendApnsNotification;
+  }
 
   describe() {
     return {
-      id: "expo-push",
+      id: "push",
       contractVersion: "1",
       adapterVersion: "0.1.0",
       capabilities: { push: true, email: false },
@@ -76,8 +180,47 @@ export class ExpoPushProvider implements NotificationProvider {
   }
 
   async send(message: NotificationMessage, context: AdapterContext): Promise<void> {
-    const token = await loadPushToken(this.dataDir, context.userId);
-    if (!token) return;
+    const registrations = await loadPushRegistrations(this.dataDir, context.userId);
+    if (registrations.length === 0) return;
+    const results = await Promise.allSettled(
+      registrations.map((registration) =>
+        registration.provider === "apns"
+          ? this.sendToApns(registration, message, context)
+          : this.sendToExpo(registration.token, message),
+      ),
+    );
+    if (results.some((result) => result.status === "fulfilled")) return;
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    throw failed?.reason ?? new Error("Push notification delivery failed");
+  }
+
+  private async sendToApns(
+    registration: Extract<PushRegistration, { provider: "apns" }>,
+    message: NotificationMessage,
+    context: AdapterContext,
+  ) {
+    if (!this.options.apns) {
+      throw new Error("APNs is not configured on this server");
+    }
+    try {
+      await this.sendApns(
+        this.options.apns,
+        registration.token,
+        registration.environment,
+        message,
+        context.signal,
+      );
+    } catch (error) {
+      if (isInvalidApnsToken(error)) {
+        await deletePushRegistration(this.dataDir, context.userId, registration.token);
+      }
+      throw error;
+    }
+  }
+
+  private async sendToExpo(token: string, message: NotificationMessage): Promise<void> {
     let response: Response;
     try {
       response = await fetch("https://exp.host/--/api/v2/push/send", {

@@ -17,6 +17,8 @@ export interface AppEnv {
   webOrigin: string;
   apiUrl: string;
   apiHost: string;
+  publicTunnelHost: string | undefined;
+  publicTunnelKey: string | undefined;
   signupsEnabled: string | undefined;
   signupAllowlist: string | undefined;
   encryptionKey: string;
@@ -85,6 +87,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     webOrigin: source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
     apiUrl: source.API_URL ?? "http://127.0.0.1:3100",
     apiHost: source.API_HOST ?? "127.0.0.1",
+    publicTunnelHost: optional(source.NEGRONI_PUBLIC_TUNNEL_HOST),
+    publicTunnelKey: optional(source.NEGRONI_PUBLIC_TUNNEL_KEY),
     signupsEnabled: source.SIGNUPS_ENABLED,
     signupAllowlist: source.SIGNUP_ALLOWLIST,
     encryptionKey: resolveEncryptionKey(source),

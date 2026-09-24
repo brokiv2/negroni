@@ -1,5 +1,5 @@
 import type { MessageBlock, ThreadMessage, ThreadMessagePage } from "@rakazo/contracts";
-import { isPeerReceiptBlocks } from "@rakazo/core";
+import { isPeerReceiptBlocks, peerMessageReportsToUser } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 
 type MessageDb = PrismaClient | Prisma.TransactionClient;
@@ -101,9 +101,15 @@ async function withoutPeerRunMessages<T extends { runId: string | null; blocks: 
   if (runIds.length === 0) return rows;
   const peerRuns = await prisma.run.findMany({
     where: { id: { in: runIds }, trigger: "bot_message" },
-    select: { id: true },
+    select: { id: true, sourceMessage: { select: { blocks: true } } },
   });
-  const peerRunIds = new Set(peerRuns.map((run) => run.id));
+  const peerRunIds = new Set(
+    peerRuns
+      .filter(
+        (run) => !peerMessageReportsToUser((run.sourceMessage?.blocks ?? []) as MessageBlock[]),
+      )
+      .map((run) => run.id),
+  );
   return rows.filter((row) => {
     if (!row.runId || !peerRunIds.has(row.runId)) return true;
     // Keep compact sent/received receipts; clients render them as chips.
@@ -114,6 +120,7 @@ async function withoutPeerRunMessages<T extends { runId: string | null; blocks: 
   });
 }
 
+/** True only for internal peer work; delegated result/status reports pass through. */
 export async function isPeerRun(
   prisma: MessageDb,
   runId: string | undefined,
@@ -123,8 +130,15 @@ export async function isPeerRun(
   let peerRun = cache.get(runId);
   if (!peerRun) {
     peerRun = prisma.run
-      .findUnique({ where: { id: runId }, select: { trigger: true } })
-      .then((run) => run?.trigger === "bot_message");
+      .findUnique({
+        where: { id: runId },
+        select: { trigger: true, sourceMessage: { select: { blocks: true } } },
+      })
+      .then(
+        (run) =>
+          run?.trigger === "bot_message" &&
+          !peerMessageReportsToUser((run.sourceMessage?.blocks ?? []) as MessageBlock[]),
+      );
     cache.set(runId, peerRun);
   }
   return peerRun;

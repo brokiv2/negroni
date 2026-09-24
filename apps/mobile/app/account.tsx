@@ -14,6 +14,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { ActionSheet } from "../components/action-sheet";
 import { useAvatarStyle } from "../components/avatar-style";
 import { BotAvatar } from "../components/bot-avatar";
 import type { MobileBot } from "../lib/api";
@@ -21,6 +22,8 @@ import {
   changePassword as changeAccountPassword,
   currentApiBase,
   deleteAccount,
+  linkAppleId,
+  linkedAppleIds,
   loadSessionToken,
   type MobileMe,
   rpc,
@@ -44,12 +47,15 @@ import {
 } from "../lib/live-notifications";
 import { native, useThemedStyles } from "../lib/native";
 import { registerPushToken } from "../lib/push";
+import { appleSignInAvailable, requestAppleIdentity } from "../lib/apple-auth";
 
 export default function Account() {
   const router = useRouter();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
   const [me, setMe] = useState<MobileMe | null>(null);
   const [password, setPassword] = useState("");
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [avatarPending, setAvatarPending] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
@@ -65,6 +71,10 @@ export default function Account() {
   const [passwordConfirmation, setPasswordConfirmation] = useState("");
   const [passwordPending, setPasswordPending] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [appleCount, setAppleCount] = useState<number | null>(null);
+  const [applePending, setApplePending] = useState(false);
+  const [appleMessage, setAppleMessage] = useState<string | null>(null);
   const [archivedBots, setArchivedBots] = useState<MobileBot[]>([]);
   const [usage, setUsage] = useState<{
     runs: number;
@@ -80,6 +90,8 @@ export default function Account() {
   const styles = useThemedStyles(createAccountStyles);
 
   useEffect(() => {
+    void appleSignInAvailable().then(setAppleAvailable).catch(() => undefined);
+    void linkedAppleIds().then(setAppleCount).catch(() => undefined);
     void rpc<MobileMe>("me")
       .then(setMe)
       .catch(() => undefined);
@@ -160,10 +172,29 @@ export default function Account() {
       setNewPassword("");
       setPasswordConfirmation("");
       setPasswordMessage("Password updated");
+      setPasswordOpen(false);
     } catch (cause) {
       setPasswordMessage(cause instanceof Error ? cause.message : "Could not change password");
     } finally {
       setPasswordPending(false);
+    }
+  }
+
+  async function handleAppleLink() {
+    if (applePending) return;
+    setApplePending(true);
+    setAppleMessage(null);
+    try {
+      const identity = await requestAppleIdentity();
+      if (!identity) return;
+      await linkAppleId(identity.token, identity.nonce);
+      const count = await linkedAppleIds();
+      setAppleCount(count);
+      setAppleMessage("Apple ID connected to this Negroni account");
+    } catch (cause) {
+      setAppleMessage(cause instanceof Error ? cause.message : "Could not connect Apple ID");
+    } finally {
+      setApplePending(false);
     }
   }
 
@@ -214,6 +245,7 @@ export default function Account() {
     setError(null);
     try {
       await deleteAccount(password);
+      setPassword("");
       router.dismissAll();
       router.replace("/sign-in");
     } catch (err) {
@@ -221,6 +253,22 @@ export default function Account() {
     } finally {
       setPending(false);
     }
+  }
+
+  function closePasswordSheet() {
+    if (passwordPending) return;
+    setPasswordOpen(false);
+    setCurrentPassword("");
+    setNewPassword("");
+    setPasswordConfirmation("");
+    setPasswordMessage(null);
+  }
+
+  function closeDeleteSheet() {
+    if (pending) return;
+    setDeleteOpen(false);
+    setPassword("");
+    setError(null);
   }
 
   return (
@@ -233,44 +281,28 @@ export default function Account() {
         </View>
         {focus !== "usage" ? usageBlock : null}
 
-        <View accessibilityLabel="Password" style={styles.profile}>
-          <Text style={styles.settingsTitle}>Password</Text>
-          <AccountPasswordInput
-            label="Current password"
-            value={currentPassword}
-            onChange={setCurrentPassword}
-            autoComplete="current-password"
-          />
-          <AccountPasswordInput
-            label="New password"
-            value={newPassword}
-            onChange={setNewPassword}
-            autoComplete="new-password"
-          />
-          <AccountPasswordInput
-            label="Confirm password"
-            value={passwordConfirmation}
-            onChange={setPasswordConfirmation}
-            autoComplete="new-password"
-          />
-          {passwordMessage ? <Text style={styles.passwordMessage}>{passwordMessage}</Text> : null}
-          <Pressable
-            accessibilityRole="button"
-            disabled={passwordPending || !currentPassword || newPassword.length < 8}
-            onPress={() => void handlePasswordChange()}
-            style={({ pressed }) => [
-              styles.changePasswordButton,
-              (passwordPending || !currentPassword || newPassword.length < 8) && styles.disabled,
-              pressed && styles.pressed,
-            ]}
-          >
-            {passwordPending ? (
-              <ActivityIndicator color={native.label} />
-            ) : (
-              <Text style={styles.changePasswordLabel}>Change password</Text>
-            )}
-          </Pressable>
-        </View>
+        <Text style={styles.groupLabel}>ACCOUNT</Text>
+
+        {appleAvailable ? (
+          <>
+            <Pressable accessibilityRole="button" accessibilityLabel="Connect this Apple ID" disabled={applePending} onPress={() => void handleAppleLink()} style={({ pressed }) => [styles.settingsButton, applePending && styles.disabled, pressed && styles.pressed]}>
+              <View style={styles.rowCopy}>
+                <Text style={styles.settingsTitle}>Apple ID</Text>
+                <Text style={styles.settingsExplanation}>{appleCount === null ? "Connect each Apple ID here to share chats and bots" : `${appleCount} connected · One account, shared chats and bots`}</Text>
+              </View>
+              {applePending ? <ActivityIndicator color={native.label} /> : <Text style={styles.rowAction}>Connect</Text>}
+            </Pressable>
+            {appleMessage ? <Text style={styles.inlineMessage}>{appleMessage}</Text> : null}
+          </>
+        ) : null}
+
+        <Pressable accessibilityRole="button" accessibilityLabel="Change password" onPress={() => { setPasswordMessage(null); setPasswordOpen(true); }} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}>
+          <View style={styles.rowCopy}><Text style={styles.settingsTitle}>Password</Text><Text style={styles.settingsExplanation}>Change your sign-in password</Text></View>
+          <Text style={styles.chevron}>›</Text>
+        </Pressable>
+        {passwordMessage ? <Text style={styles.inlineMessage}>{passwordMessage}</Text> : null}
+
+        <Text style={styles.groupLabel}>PREFERENCES</Text>
 
         <View accessibilityLabel="Appearance" style={styles.avatarSection}>
           <Text style={styles.settingsTitle}>Appearance</Text>
@@ -391,6 +423,8 @@ export default function Account() {
           </View>
         ) : null}
 
+        <Text style={styles.groupLabel}>WORKSPACE</Text>
+
         <Pressable
           accessibilityRole="button"
           disabled={pending}
@@ -411,9 +445,9 @@ export default function Account() {
           style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
         >
           <View>
-            <Text style={styles.settingsTitle}>Voice</Text>
+            <Text style={styles.settingsTitle}>Dictation</Text>
             <Text style={styles.settingsExplanation}>
-              Speak replies aloud with ElevenLabs, OpenAI, or Cartesia
+              Transcribe messages with ElevenLabs or OpenAI
             </Text>
           </View>
           <Text style={styles.chevron}>›</Text>
@@ -432,14 +466,7 @@ export default function Account() {
           <Text style={styles.chevron}>›</Text>
         </Pressable>
 
-        <Pressable
-          accessibilityRole="button"
-          disabled={pending}
-          onPress={() => void handleSignOut()}
-          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
-        >
-          <Text style={styles.buttonLabel}>Sign out</Text>
-        </Pressable>
+        <Text style={styles.groupLabel}>DATA & ACCESS</Text>
 
         {archivedBots.length > 0 ? (
           <View style={styles.archivedSection}>
@@ -467,47 +494,41 @@ export default function Account() {
           </View>
         ) : null}
 
-        <View style={styles.dangerZone}>
-          <Text style={styles.dangerTitle}>Delete account</Text>
-          <Text style={styles.explanation}>
-            Enter your current password, then confirm permanent deletion of your account and all
-            associated data.
-          </Text>
-          <TextInput
-            accessibilityLabel="Current password"
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!pending}
-            onChangeText={(value) => {
-              setPassword(value);
-              setError(null);
-            }}
-            placeholder="Current password"
-            placeholderTextColor={native.tertiaryLabel}
-            secureTextEntry
-            style={styles.password}
-            textContentType="password"
-            value={password}
-          />
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Pressable
-            accessibilityRole="button"
-            disabled={pending || !password}
-            onPress={confirmDeletion}
-            style={({ pressed }) => [
-              styles.deleteButton,
-              (pending || !password) && styles.disabled,
-              pressed && styles.pressed,
-            ]}
-          >
-            {pending ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.deleteLabel}>Delete account</Text>
-            )}
+        <Pressable
+          accessibilityRole="button"
+          disabled={pending}
+          onPress={() => void handleSignOut()}
+          style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+        >
+          <Text style={styles.buttonLabel}>Sign out</Text>
+        </Pressable>
+        {error && !deleteOpen ? <Text style={styles.error}>{error}</Text> : null}
+
+        <Pressable accessibilityRole="button" accessibilityLabel="Delete account" disabled={pending} onPress={() => { setError(null); setDeleteOpen(true); }} style={({ pressed }) => [styles.settingsButton, styles.deleteRow, pressed && styles.pressed]}>
+          <View style={styles.rowCopy}><Text style={styles.dangerTitle}>Delete account</Text><Text style={styles.settingsExplanation}>Permanently remove your data</Text></View>
+          <Text style={styles.chevron}>›</Text>
+        </Pressable>
+      </ScrollView>
+      <ActionSheet visible={passwordOpen} title="Change password" subtitle="Use the password for this Negroni account." onClose={closePasswordSheet}>
+        <View style={styles.sheetBody}>
+          <AccountPasswordInput label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+          <AccountPasswordInput label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+          <AccountPasswordInput label="Confirm password" value={passwordConfirmation} onChange={setPasswordConfirmation} autoComplete="new-password" />
+          {passwordMessage ? <Text style={styles.error}>{passwordMessage}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={passwordPending || !currentPassword || newPassword.length < 8} onPress={() => void handlePasswordChange()} style={({ pressed }) => [styles.sheetPrimary, (passwordPending || !currentPassword || newPassword.length < 8) && styles.disabled, pressed && styles.pressed]}>
+            {passwordPending ? <ActivityIndicator color={native.page} /> : <Text style={styles.sheetPrimaryLabel}>Update password</Text>}
           </Pressable>
         </View>
-      </ScrollView>
+      </ActionSheet>
+      <ActionSheet visible={deleteOpen} title="Delete account" subtitle="This permanently removes your bots, conversations, memories, files, and connections." onClose={closeDeleteSheet}>
+        <View style={styles.sheetBody}>
+          <AccountPasswordInput label="Current password" value={password} onChange={(value) => { setPassword(value); setError(null); }} autoComplete="current-password" />
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={pending || !password} onPress={confirmDeletion} style={({ pressed }) => [styles.deleteButton, (pending || !password) && styles.disabled, pressed && styles.pressed]}>
+            {pending ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.deleteLabel}>Delete account</Text>}
+          </Pressable>
+        </View>
+      </ActionSheet>
     </SafeAreaView>
   );
 }
@@ -585,13 +606,15 @@ function createAccountStyles() {
     },
     content: {
       flexGrow: 1,
-      padding: 20,
-      gap: 20,
+      paddingHorizontal: 18,
+      paddingTop: 16,
+      paddingBottom: 34,
+      gap: 10,
     },
     profile: {
-      borderRadius: 16,
+      borderRadius: 18,
       backgroundColor: native.fill,
-      padding: 18,
+      padding: 17,
       gap: 4,
     },
     name: {
@@ -646,15 +669,20 @@ function createAccountStyles() {
       fontSize: 14,
     },
     settingsButton: {
-      minHeight: 62,
-      borderRadius: 14,
+      minHeight: 60,
+      borderRadius: 16,
       backgroundColor: native.fill,
       paddingHorizontal: 16,
       paddingVertical: 12,
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+      gap: 12,
     },
+    rowCopy: { flex: 1 },
+    rowAction: { color: native.label, fontSize: 13, fontWeight: "600" },
+    groupLabel: { color: native.secondaryLabel, fontSize: 11, fontWeight: "700", letterSpacing: 1.1, marginTop: 18, marginBottom: 2, marginLeft: 8 },
+    inlineMessage: { color: native.secondaryLabel, fontSize: 13, marginHorizontal: 8, marginTop: 2 },
     avatarSection: {
       borderRadius: 16,
       backgroundColor: native.fill,
@@ -724,56 +752,20 @@ function createAccountStyles() {
       paddingHorizontal: 14,
       marginTop: 8,
     },
-    passwordMessage: {
-      color: native.secondaryLabel,
-      fontSize: 13,
-      marginTop: 8,
-    },
-    changePasswordButton: {
-      minHeight: 44,
-      borderRadius: 12,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: native.fillPressed,
-      marginTop: 10,
-    },
-    changePasswordLabel: {
-      color: native.label,
-      fontSize: 15,
-      fontWeight: "600",
-    },
     chevron: {
       color: native.secondaryLabel,
       fontSize: 28,
       fontWeight: "300",
     },
-    dangerZone: {
-      marginTop: 12,
-      borderRadius: 16,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: "#5A2426",
-      padding: 18,
-    },
+    deleteRow: { marginTop: 16 },
     dangerTitle: {
       color: "#FF6961",
-      fontSize: 17,
+      fontSize: 15,
       fontWeight: "600",
     },
-    explanation: {
-      color: native.secondaryLabel,
-      fontSize: 14,
-      lineHeight: 20,
-      marginTop: 8,
-    },
-    password: {
-      height: 48,
-      borderRadius: 12,
-      backgroundColor: native.fill,
-      color: native.label,
-      paddingHorizontal: 14,
-      marginTop: 16,
-      fontSize: 16,
-    },
+    sheetBody: { paddingHorizontal: 12, paddingBottom: 12, gap: 9 },
+    sheetPrimary: { minHeight: 48, marginTop: 8, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: native.label },
+    sheetPrimaryLabel: { color: native.page, fontSize: 15, fontWeight: "700" },
     error: {
       color: "#FF6961",
       fontSize: 14,
@@ -785,7 +777,7 @@ function createAccountStyles() {
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: "#C9363E",
-      marginTop: 14,
+      marginTop: 8,
     },
     deleteLabel: {
       color: "#FFFFFF",

@@ -17,6 +17,7 @@ import {
 } from "@rakazo/adapter-kit";
 import {
   acquireComputerExecutionLease,
+  appendOverride,
   applyTeachingDesktopInput,
   archiveBot,
   buildMcpCredentialBlob,
@@ -50,6 +51,8 @@ import {
   prepareApiInstall,
   prepareMemoryProviderConnection,
   probeOpenAiCompatibleModels,
+  providerBaseUrl,
+  providerCatalogModelIds,
   provisionComputer,
   type RemoteConnectorDependencies,
   releaseComputerExecutionLease,
@@ -57,7 +60,7 @@ import {
   resolveAutoReviewChecker,
   resolveBotWorkspacePath,
   sanitizeComposioError,
-  savePushToken,
+  savePushRegistration,
   scheduleComputerControlExpiry,
   scheduleComputerSleep,
   screenLeaseIdForRun,
@@ -563,6 +566,58 @@ export function createRouter(deps: RouterDeps) {
           }
         },
       ),
+      probeProvider: authed.models.probeProvider.handler(async ({ context, input }) => {
+        const baseUrl = providerBaseUrl(input.provider);
+        if (!baseUrl) {
+          throw new ORPCError("NOT_FOUND", { message: `Unknown provider ${input.provider}` });
+        }
+        const credential = await deps.prisma.userModelCredential.findFirst({
+          where: { userId: context.actor.userId, provider: input.provider },
+          orderBy: newestModelCredentialOrder,
+        });
+        if (!credential) {
+          throw new ORPCError("NOT_FOUND", {
+            message: `No model credential is connected for ${input.provider}.`,
+          });
+        }
+        const secret = await deps.prisma.secret.findFirst({
+          where: { id: credential.secretId, userId: context.actor.userId, spaceId: null },
+          select: { id: true, ciphertext: true },
+        });
+        if (!secret) {
+          throw new ORPCError("NOT_FOUND", { message: "Credential secret is missing" });
+        }
+        let apiKey: string;
+        try {
+          apiKey = deps.secrets.load(secret.ciphertext, secret.id);
+        } catch {
+          throw new ORPCError("BAD_REQUEST", { message: "Could not decrypt the stored API key" });
+        }
+        try {
+          const models = await probeOpenAiCompatibleModels(
+            { baseUrl, apiKey },
+            fetch,
+            context.signal,
+          );
+          return {
+            models,
+            catalogIds: providerCatalogModelIds(input.provider),
+            baseUrl,
+          };
+        } catch (error) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: error instanceof Error ? error.message : "Could not list models",
+          });
+        }
+      }),
+      addModelOverride: authed.models.addModelOverride.handler(async ({ input }) => {
+        await appendOverride(input.provider, {
+          id: input.id,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.basedOn ? { basedOn: input.basedOn } : {}),
+        });
+        return { ok: true as const };
+      }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {
         return deps.oauthLogins.begin({
           userId: context.actor.userId,
@@ -2753,7 +2808,40 @@ export function createRouter(deps: RouterDeps) {
             try {
               const items = await provider.catalog(adapterContext, input.query);
               const nowConnected = items.filter((item) => item.connected).map((item) => item.slug);
-              if (nowConnected.length > 0) {
+              if (provider.describe().id === "composio") {
+                try {
+                  const pending = await deps.prisma.connection.findMany({
+                    where: {
+                      spaceId: context.actor.spaceId,
+                      userId: context.actor.userId,
+                      connectorId: "composio",
+                      status: "pending",
+                      providerRef: { not: null },
+                    },
+                  });
+                  for (const row of pending) {
+                    if (row.providerRef === row.provider) continue;
+                    if (
+                      await provider.connectionReady(adapterContext, row.provider, row.providerRef!)
+                    ) {
+                      await deps.prisma.connection.updateMany({
+                        where: {
+                          id: row.id,
+                          status: "pending",
+                          spaceId: context.actor.spaceId,
+                          userId: context.actor.userId,
+                        },
+                        data: { status: "connected" },
+                      });
+                    }
+                  }
+                } catch (error) {
+                  console.error("composio pending-connection reconciliation failed", error);
+                }
+              }
+              // Account OAuth state must be verified by its exact connection reference.
+              // A connected toolkit does not mean a second account has finished OAuth.
+              if (nowConnected.length > 0 && provider.describe().id !== "composio") {
                 await reconcilePendingConnections(
                   deps.prisma,
                   context.actor,
@@ -2777,6 +2865,7 @@ export function createRouter(deps: RouterDeps) {
       list: authed.connections.list.handler(async ({ context }) => {
         const rows = await deps.prisma.connection.findMany({
           where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+          orderBy: { createdAt: "desc" },
         });
         return rows.map((row) => ({
           id: row.id,
@@ -2784,6 +2873,7 @@ export function createRouter(deps: RouterDeps) {
           provider: row.provider,
           displayName: row.displayName,
           status: row.status as "pending" | "connected" | "revoked" | "error",
+          accountId: row.providerRef,
           capabilities: [],
           createdAt: row.createdAt.toISOString(),
         }));
@@ -2807,13 +2897,18 @@ export function createRouter(deps: RouterDeps) {
         });
         try {
           const auth = await connector.begin(
-            { provider: input.provider, redirectUrl: `${deps.env.webOrigin}/app` },
+            {
+              provider: input.provider,
+              redirectUrl: `${deps.env.webOrigin}/app`,
+              alias: input.displayName,
+            },
             connectionContext(context.actor, "connections.begin", context.signal),
           );
           await deps.prisma.connection.update({
             where: { id: row.id },
             data: {
-              status: auth.authorizationUrl ? "pending" : "connected",
+              status:
+                !auth.authorizationUrl && auth.state === input.provider ? "connected" : "pending",
               providerRef: auth.state || null,
               metadata: { state: auth.state },
             },
@@ -2843,7 +2938,7 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         let row = existing;
-        if (existing.status !== "connected") {
+        if (existing.status === "pending") {
           if (input.code) {
             const state = existing.providerRef ?? existing.provider;
             try {
@@ -2858,11 +2953,24 @@ export function createRouter(deps: RouterDeps) {
           const ready = await connector.connectionReady(
             connectionContext(context.actor, "connections.complete", context.signal),
             existing.provider,
+            existing.providerRef ?? undefined,
           );
           if (ready) {
-            row = await deps.prisma.connection.update({
-              where: { id: existing.id },
+            await deps.prisma.connection.updateMany({
+              where: {
+                id: existing.id,
+                status: "pending",
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+              },
               data: { status: "connected" },
+            });
+            row = await deps.prisma.connection.findFirstOrThrow({
+              where: {
+                id: existing.id,
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+              },
             });
           }
         }
@@ -2872,6 +2980,7 @@ export function createRouter(deps: RouterDeps) {
           provider: row.provider,
           displayName: row.displayName,
           status: row.status as "pending" | "connected" | "revoked" | "error",
+          accountId: row.providerRef,
           capabilities: [],
           createdAt: row.createdAt.toISOString(),
         };
@@ -2893,7 +3002,7 @@ export function createRouter(deps: RouterDeps) {
           }
           try {
             await connector.revoke(
-              row.provider,
+              row.providerRef || row.provider,
               connectionContext(context.actor, "connections.revoke", context.signal),
             );
           } catch (error) {
@@ -3398,7 +3507,13 @@ export function createRouter(deps: RouterDeps) {
     },
     notifications: {
       registerPush: authed.notifications.registerPush.handler(async ({ context, input }) => {
-        await savePushToken(deps.dataDir, context.actor.userId, input.token);
+        await savePushRegistration(
+          deps.dataDir,
+          context.actor.userId,
+          input.provider === "apns"
+            ? { provider: "apns", token: input.token, environment: input.environment! }
+            : { provider: "expo", token: input.token },
+        );
         return { ok: true as const };
       }),
       unregisterPush: authed.notifications.unregisterPush.handler(async ({ context }) => {

@@ -1,4 +1,4 @@
-import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
+import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import { inferAttachmentMimeType } from "@rakazo/core";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
@@ -22,6 +22,31 @@ async function readUriAsBase64(uri: string): Promise<{ contentBase64: string; si
   return { contentBase64, size };
 }
 
+async function loadPickedAssets(
+  existingCount: number,
+  assets: Array<{ name: string; uri: string; mimeType: string | null; previewUri?: string }>,
+) {
+  const attachments: PickedAttachment[] = [];
+  const skipped: PickSkip[] = [];
+  for (const asset of assets) {
+    if (existingCount + attachments.length >= ATTACHMENT_MAX_COUNT) {
+      skipped.push({ name: asset.name, reason: `max ${ATTACHMENT_MAX_COUNT} attachments` });
+      continue;
+    }
+    if (!asset.mimeType) {
+      skipped.push({ name: asset.name, reason: "unsupported type" });
+      continue;
+    }
+    const { contentBase64, size } = await readUriAsBase64(asset.uri);
+    const result = filterPickedAttachments(existingCount + attachments.length, [
+      { ...asset, contentBase64, size },
+    ]);
+    attachments.push(...result.attachments);
+    skipped.push(...result.skipped);
+  }
+  return { attachments, skipped };
+}
+
 export async function pickFromLibrary(existingCount = 0): Promise<{
   attachments: PickedAttachment[];
   skipped: PickSkip[];
@@ -29,18 +54,22 @@ export async function pickFromLibrary(existingCount = 0): Promise<{
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ["images"],
     allowsMultipleSelection: true,
+    selectionLimit: Math.max(1, ATTACHMENT_MAX_COUNT - existingCount),
     quality: 1,
   });
   if (result.canceled) return { attachments: [], skipped: [] };
-  const candidates = await Promise.all(
-    result.assets.map(async (asset) => {
+  return loadPickedAssets(
+    existingCount,
+    result.assets.map((asset) => {
       const name = asset.fileName ?? `photo-${asset.assetId ?? Date.now()}.jpg`;
-      const mimeType = inferAttachmentMimeType(name, asset.mimeType ?? undefined);
-      const { contentBase64, size } = await readUriAsBase64(asset.uri);
-      return { name, mimeType, size, contentBase64, previewUri: asset.uri };
+      return {
+        name,
+        uri: asset.uri,
+        mimeType: inferAttachmentMimeType(name, asset.mimeType ?? undefined),
+        previewUri: asset.uri,
+      };
     }),
   );
-  return filterPickedAttachments(existingCount, candidates);
 }
 
 export async function takePhoto(existingCount = 0): Promise<{
@@ -73,13 +102,15 @@ export async function pickDocuments(existingCount = 0): Promise<{
   });
   if (result.canceled) return { attachments: [], skipped: [] };
   const assets = result.assets ?? [];
-  const candidates = await Promise.all(
-    assets.map(async (asset) => {
+  return loadPickedAssets(
+    existingCount,
+    assets.map((asset) => {
       const name = asset.name ?? "file";
-      const mimeType = inferAttachmentMimeType(name, asset.mimeType ?? undefined);
-      const { contentBase64, size } = await readUriAsBase64(asset.uri);
-      return { name, mimeType, size, contentBase64 };
+      return {
+        name,
+        uri: asset.uri,
+        mimeType: inferAttachmentMimeType(name, asset.mimeType ?? undefined),
+      };
     }),
   );
-  return filterPickedAttachments(existingCount, candidates);
 }

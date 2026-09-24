@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "@rakazo/ui-tokens/css";
 @import "@rakazo/ui-web/styles.css";
-@import "@fontsource-variable/geist/wght.css";
 
 @source "../../packages/ui-web/src/**/*.{ts,tsx}";
 @source "./src/**/*.{ts,tsx}";
@@ -13,7 +12,15 @@ body,
   margin: 0;
   background: var(--rk-page);
   color: var(--rk-body);
-  font-family: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 400;
+}
+
+button,
+input,
+select,
+textarea {
+  font-weight: inherit;
 }
 
 .rk-scroll::-webkit-scrollbar {
@@ -73,3 +80,236 @@ body,
     opacity: 0.3;
   }
 }
+
+/* Quiet, neutral chat surfaces. Glass is confined to app chrome so the
+   transcript keeps a stable background while scrolling. */
+:root,
+[data-theme="dark"] {
+  --rk-page: #080808;
+  --rk-main: #080808;
+  --rk-sidebar: #141414;
+  --rk-panel: #141414;
+  --rk-chat-assistant: #272727;
+  --rk-chat-user: #263747;
+  --rk-chat-user-ink: #f4f7ff;
+  --rk-chat-selected: #303030;
+  --rk-glass: rgba(28, 28, 28, 0.88);
+  --rk-glass-line: rgba(255, 255, 255, 0.09);
+  --rk-glass-highlight: rgba(255, 255, 255, 0.035);
+}
+
+[data-theme="light"] {
+  --rk-page: #f7f7f8;
+  --rk-main: #ffffff;
+  --rk-sidebar: #f1f1f3;
+  --rk-panel: #fafafb;
+  --rk-chat-assistant: #efeff1;
+  --rk-chat-user: #dcebff;
+  --rk-chat-user-ink: #17263a;
+  --rk-chat-selected: #e3e3e7;
+  --rk-glass: rgba(255, 255, 255, 0.88);
+  --rk-glass-line: rgba(30, 30, 25, 0.12);
+  --rk-glass-highlight: rgba(255, 255, 255, 0.5);
+}
+
+.rk-thread-row {
+  align-items: center;
+  min-height: 68px;
+  border-radius: 15px;
+}
+
+.rk-thread-row-selected {
+  background: var(--rk-chat-selected);
+}
+
+.rk-thread-toolbar {
+  min-height: 72px;
+  background: color-mix(in srgb, var(--rk-main) 92%, transparent);
+  border-bottom-color: var(--rk-glass-line);
+  backdrop-filter: blur(18px) saturate(110%);
+  -webkit-backdrop-filter: blur(18px) saturate(110%);
+}
+
+.rk-detail-panel {
+  border-inline-start: 1px solid var(--rk-glass-line);
+}
+
+.rk-dialog-surface {
+  background: var(--rk-glass);
+  border-color: var(--rk-glass-line);
+  border-radius: 24px;
+  backdrop-filter: blur(20px) saturate(110%);
+  -webkit-backdrop-filter: blur(20px) saturate(110%);
+}
+
+.rk-composer-bar {
+  min-height: 56px;
+  background: var(--rk-glass);
+  border-color: var(--rk-glass-line);
+  box-shadow:
+    inset 0 1px 0 var(--rk-glass-highlight),
+    0 4px 18px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(20px) saturate(115%);
+  -webkit-backdrop-filter: blur(20px) saturate(115%);
+  transition: border-color 150ms ease;
+}
+
+.rk-composer-bar:focus-within {
+  border-color: var(--rk-scroll-hover);
+}
+
+.rk-composer-bar[data-recording="true"] {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.rk-composer-bar[data-recording="true"] > :not(.rk-recording-controls) {
+  display: none;
+}
+
+.rk-recording-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  border: 1px solid var(--rk-glass-line);
+  border-radius: 999px;
+  background: var(--rk-glass);
+  color: var(--rk-ink);
+  box-shadow: inset 0 1px 0 var(--rk-glass-highlight), 0 5px 16px rgba(0, 0, 0, 0.07);
+  backdrop-filter: blur(24px) saturate(130%);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+}
+
+.rk-recording-send {
+  color: #fff;
+  background: #111;
+}
+
+.rk-workspace-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--rk-glass-line);
+  border-radius: 999px;
+  background: var(--rk-glass);
+  color: var(--rk-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rk-workspace-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 9px);
+  left: 0;
+  width: 270px;
+  padding: 6px;
+  border: 1px solid var(--rk-glass-line);
+  border-radius: 19px;
+  background: var(--rk-surface);
+  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.16);
+}
+
+.rk-workspace-menu button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 11px 13px;
+  border-radius: 13px;
+  color: var(--rk-ink);
+  text-align: start;
+}
+
+.rk-workspace-menu button:hover,
+.rk-workspace-menu button[aria-checked="true"] {
+  background: var(--rk-elevated);
+}
+
+.rk-workspace-menu button:disabled { opacity: 0.45; }
+.rk-workspace-menu button small { color: var(--rk-muted); font-size: 12px; }
+
+.rk-workspace-trigger:focus-visible,
+.rk-workspace-menu button:focus-visible {
+  outline: 2px solid var(--rk-ink);
+  outline-offset: 2px;
+}
+
+.rk-composer-bar > button {
+  order: 3;
+}
+
+.rk-composer-bar > button:first-of-type {
+  order: 0;
+  border-color: transparent;
+}
+
+.rk-composer-bar > .rk-composer-input {
+  order: 1;
+}
+
+.rk-composer-bar > .rk-composer-mic {
+  order: 2;
+}
+
+.rk-composer-input textarea::placeholder {
+  color: var(--rk-muted);
+}
+
+.rk-message-bubble {
+  font-size: 16px;
+  line-height: 1.6;
+  padding-block: 13px;
+  border-radius: 22px;
+}
+
+.rk-message-assistant {
+  background: var(--rk-chat-assistant);
+}
+
+.rk-message-user {
+  background: var(--rk-chat-user);
+  color: var(--rk-chat-user-ink);
+}
+
+@media (min-width: 768px) {
+  .rk-sidebar {
+    width: 294px;
+    max-width: 294px;
+  }
+
+  .rk-transcript {
+    padding-inline: max(28px, calc((100% - 900px) / 2));
+  }
+}
+
+@media (max-width: 767px) {
+  .rk-message-bubble {
+    max-width: 88%;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .rk-thread-toolbar,
+  .rk-dialog-surface,
+  .rk-composer-bar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--rk-panel);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rk-composer-bar {
+    transition: none;
+  }
+}
+
+.rk-composer { width: 100%; max-width: 948px; margin-inline: auto; }

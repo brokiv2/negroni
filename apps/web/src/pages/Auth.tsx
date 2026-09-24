@@ -21,9 +21,9 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const passwordFieldId = mode === "in" ? "current-password" : "new-password";
   const title =
     mode === "in" ? (
-      <Trans>Sign in to Rakazo</Trans>
+      <Trans>Sign in to Negroni</Trans>
     ) : mode === "up" ? (
-      <Trans>Create your Rakazo</Trans>
+      <Trans>Create your Negroni</Trans>
     ) : (
       <Trans>Reset your password</Trans>
     );

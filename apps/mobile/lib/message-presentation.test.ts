@@ -4,8 +4,6 @@ import {
   hasVisibleMessagePresentation,
   isCenteredAgentEvent,
   messagePresentationSegments,
-  toolBlocksForMessage,
-  toolOwnerId,
 } from "./message-presentation";
 
 describe("mobile message presentation", () => {
@@ -33,63 +31,30 @@ describe("mobile message presentation", () => {
     expect(isCenteredAgentEvent([{ kind: "text", text: "Hello" }])).toBe(false);
   });
 
-  it("hides message_bot tool usage when the peer-message marker already represents it", () => {
-    const blocks = [
-      {
-        kind: "steps",
-        steps: [
-          { label: "Read file", count: 1 },
-          { label: "Message bot", count: 1 },
-        ],
-      },
-      { kind: "bot_message_sent", toBotId: "b", toBotName: "Research", text: "Go" },
-    ] as MessageBlock[];
-
-    expect(toolBlocksForMessage(blocks)).toEqual([
-      { kind: "steps", steps: [{ label: "Read file", count: 1 }] },
-    ]);
-    expect(
-      hasVisibleMessagePresentation([
-        { kind: "steps", steps: [{ label: "Message bot", count: 1 }] },
-      ]),
-    ).toBe(false);
-  });
-
-  it("attributes group tool usage to the bot that emitted the message", () => {
-    const progress: { botId: string; blocks: MessageBlock[] } = {
-      botId: "research",
-      blocks: [{ kind: "progress", text: "Using browser", pendingToolNames: ["browser"] }],
+  it("removes activity-only rows and keeps mixed response content", () => {
+    const steps: MessageBlock = { kind: "steps", steps: [{ label: "Read file", count: 1 }] };
+    const progress: MessageBlock = {
+      kind: "progress",
+      text: "Using browser",
+      pendingToolNames: ["browser"],
     };
-    expect(toolOwnerId(progress, true)).toBe("research");
-    expect(toolOwnerId({ botId: "research", blocks: [{ kind: "text", text: "done" }] }, true)).toBe(
-      undefined,
-    );
-    expect(toolOwnerId(progress, false)).toBe(undefined);
-  });
-
-  it("keeps tool usage in its original place between response content", () => {
-    const tool: Extract<MessageBlock, { kind: "steps" }> = {
-      kind: "steps",
-      steps: [{ label: "Read file", count: 1 }],
-    };
-
+    expect(hasVisibleMessagePresentation([steps, progress])).toBe(false);
+    expect(messagePresentationSegments([steps, progress])).toEqual([]);
     expect(
       messagePresentationSegments([
         { kind: "text", text: "Checking." },
-        tool,
+        steps,
+        progress,
         { kind: "text", text: "Done." },
       ]),
     ).toEqual([
-      { kind: "content", blocks: [{ kind: "text", text: "Checking." }] },
-      { kind: "tool", block: tool },
-      { kind: "content", blocks: [{ kind: "text", text: "Done." }] },
+      {
+        kind: "content",
+        blocks: [
+          { kind: "text", text: "Checking." },
+          { kind: "text", text: "Done." },
+        ],
+      },
     ]);
-
-    expect(
-      messagePresentationSegments([
-        { kind: "steps", steps: [{ label: "Message bot", count: 1 }] },
-        { kind: "text", text: "Done." },
-      ]),
-    ).toEqual([{ kind: "content", blocks: [{ kind: "text", text: "Done." }] }]);
   });
 });

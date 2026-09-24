@@ -23,12 +23,14 @@ export function getCachedAppearancePreference(): AppearancePreference {
 }
 
 export async function loadAppearancePreference(): Promise<AppearancePreference> {
+  const previous = memoryPreference;
   try {
     const stored = await SecureStore.getItemAsync(UI_APPEARANCE_STORAGE_KEY);
     memoryPreference = normalizeAppearancePreference(stored);
   } catch {
     memoryPreference = memoryPreference ?? "system";
   }
+  if (memoryPreference !== previous) notify();
   return memoryPreference;
 }
 

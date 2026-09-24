@@ -39,17 +39,23 @@ import {
 } from "@rakazo/contracts";
 import {
   abortableDelay,
+  assistantHierarchyIds,
   attachmentsForThread,
   buildComposerMentionOptions,
   type ComposerMention,
   clampMentionHighlightIndex,
   cronFromPreset,
+  connectedModelOptions,
+  modelOptionKey,
+  parseModelOptionKey,
   groupBotsForSidebar,
+  friendlyChatError,
   inferAttachmentMimeType,
   isActive,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
   latestAnswerableAskMessageId,
+  mainAssistantBot,
   mentionChipKey,
   reorderBotTo,
   resolveComposerSendPlan,
@@ -59,7 +65,7 @@ import {
   searchHitThreadTarget,
   serializeComposerPrompt,
   speechFromBlocks,
-  toolActivityLabel,
+  transcriptContentBlocks,
   truncateSlashDescription,
   userVisibleMessages,
 } from "@rakazo/core";
@@ -71,6 +77,7 @@ import {
   type GroupAvatarMember,
 } from "@rakazo/ui-web";
 import {
+  AudioLines,
   ArrowDown,
   ArrowUp,
   Bell,
@@ -126,7 +133,7 @@ import {
   computersAreUnavailable,
 } from "../components/ComputersUnavailableHint";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
-import { ToolActivityDisclosure, ToolSteps } from "../components/ToolActivityDisclosure";
+import { PersonalWorkspace } from "../components/PersonalWorkspace";
 import { SkillDraftCard } from "../components/teach/SkillDraftCard";
 import { TeachCaptureOverlay } from "../components/teach/TeachCaptureOverlay";
 import { TeachComputerOverlayControl } from "../components/teach/TeachComputerOverlay";
@@ -402,7 +409,28 @@ export function ShellPage() {
   const [dismissedRunErrorIds, setDismissedRunErrorIds] =
     useState<ReadonlySet<string>>(readSeenRunErrorIds);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!workspaceMenuOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".rk-workspace-menu, .rk-workspace-trigger")) setWorkspaceMenuOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setWorkspaceMenuOpen(false); };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
+  }, [workspaceMenuOpen]);
+  const [personalOpen, setPersonalOpen] = useState(() => {
+    try { return window.localStorage.getItem("negroni:chat-view") === "assistant"; }
+    catch { return false; }
+  });
+  const [composerPrefill, setComposerPrefill] = useState<{ nonce: number; targetKey: string; text: string } | null>(null);
+  const prefillNonce = useRef(0);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [chatView, setChatView] = useState<"assistant" | "team">(() => {
+    try { return window.localStorage.getItem("negroni:chat-view") === "assistant" ? "assistant" : "team"; }
+    catch { return "team"; }
+  });
   const [draggedBotId, setDraggedBotId] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
@@ -497,7 +525,45 @@ export function ShellPage() {
   const autoSpokenBotId = useRef<string | null>(null);
 
   const inGroup = Boolean(groupId);
+  const transcriptVisible = chatView !== "assistant" || !personalOpen;
+  const transcriptVisibleRef = useRef(transcriptVisible);
+  transcriptVisibleRef.current = transcriptVisible;
+  const assistant = mainAssistantBot(bots);
+  const assistantIds = useMemo(() => assistant ? [...assistantHierarchyIds(assistant.id, bots)] : [], [assistant?.id, bots]);
   const active = inGroup ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
+  useEffect(() => {
+    if (chatView === "assistant" && assistant && !personalOpen && botId !== assistant.id) {
+      navigate(`/app/${assistant.id}`, { replace: true });
+    }
+  }, [assistant?.id, botId, chatView, navigate, personalOpen]);
+  const switchChatView = useCallback((next: "assistant" | "team") => {
+    setChatView(next);
+    setPersonalOpen(next === "assistant");
+    setPanel(null);
+    try { window.localStorage.setItem("negroni:chat-view", next); } catch { /* local storage unavailable */ }
+    setMobileSidebarOpen(false);
+    if (next === "assistant" && assistant) navigate(`/app/${assistant.id}`);
+  }, [assistant?.id, navigate]);
+  const openPersonalChat = useCallback((target?: { botId: string; groupId?: string; draft?: string }) => {
+    if (!assistant) return;
+    const targetBotId = target?.botId ?? assistant.id;
+    const isTeamTarget = Boolean(target?.groupId) || targetBotId !== assistant.id;
+    if (target?.draft !== undefined) {
+      setComposerPrefill({
+        nonce: ++prefillNonce.current,
+        targetKey: target?.groupId ? `group:${target.groupId}` : `bot:${targetBotId}`,
+        text: target.draft,
+      });
+      setReplyTarget(null);
+    }
+    if (isTeamTarget) {
+      setChatView("team");
+      try { window.localStorage.setItem("negroni:chat-view", "team"); } catch { /* local storage unavailable */ }
+    }
+    setPersonalOpen(false);
+    setPanel(null);
+    navigate(target?.groupId ? `/app/g/${target.groupId}` : `/app/${targetBotId}`);
+  }, [assistant?.id, navigate]);
   const activeGroup = groups.find((group) => group.id === groupId);
   const activePendingAttachments = useMemo(
     () => attachmentsForThread(pendingAttachments, inGroup ? groupId : active?.id),
@@ -694,10 +760,12 @@ export function ShellPage() {
   );
 
   function snapTranscriptToEndAfterFrame() {
+    if (!transcriptVisibleRef.current) return;
     const queuedElement = messageScroll.current;
     if (!queuedElement) return;
     const queuedScrollTop = queuedElement.scrollTop;
     window.requestAnimationFrame(() => {
+      if (!transcriptVisibleRef.current) return;
       const element = messageScroll.current;
       if (transcriptCanSnapAfterFrame(element, queuedElement, queuedScrollTop)) {
         queuedElement.scrollTop = queuedElement.scrollHeight;
@@ -707,7 +775,7 @@ export function ShellPage() {
 
   async function refreshGroupThread(id: string, signal?: AbortSignal) {
     const scrollElement = messageScroll.current;
-    const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
+    const stickToEnd = transcriptVisibleRef.current && (!scrollElement || transcriptIsNearEnd(scrollElement));
     markOnce("rk:renderer:thread-request-start");
     const request = ++groupRefreshEpoch.current;
     const snap = await rpc.threads.get({ groupId: id }, signal ? { signal } : undefined);
@@ -736,7 +804,7 @@ export function ShellPage() {
 
   async function refreshThread(id: string, signal?: AbortSignal) {
     const scrollElement = messageScroll.current;
-    const stickToEnd = !scrollElement || transcriptIsNearEnd(scrollElement);
+    const stickToEnd = transcriptVisibleRef.current && (!scrollElement || transcriptIsNearEnd(scrollElement));
     markOnce("rk:renderer:thread-request-start");
     const epoch = historyEpoch.current;
     const request = ++threadRefreshEpoch.current;
@@ -1631,8 +1699,10 @@ export function ShellPage() {
     rememberSeenRunErrorId(runId);
   }, []);
   const transcriptMessages = useMemo(
-    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: true }),
-    [activeSnapshot?.messages],
+    () => userVisibleMessages(activeSnapshot?.messages ?? [], { includePeerReceipts: chatView === "team" })
+      .map((message) => ({ ...message, blocks: transcriptContentBlocks(message.blocks, { hideCoordination: chatView === "assistant" }) }))
+      .filter((message) => message.blocks.length > 0),
+    [activeSnapshot?.messages, chatView],
   );
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
     () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
@@ -1786,6 +1856,7 @@ export function ShellPage() {
   }, [active, initialBotsLoaded, shellReady, snapshot?.botId]);
 
   useLayoutEffect(() => {
+    if (!transcriptVisible) return;
     const pin = pinnedAroundRef.current;
     if (inGroup) {
       if (!groupId || !snapshot || snapshot.groupId !== groupId) return;
@@ -1802,7 +1873,7 @@ export function ShellPage() {
     if (!element) return;
     element.scrollTop = element.scrollHeight;
     initiallyScrolledThread.current = snapshot.threadId;
-  }, [active, groupId, inGroup, snapshot?.botId, snapshot?.groupId, snapshot?.threadId]);
+  }, [active, groupId, inGroup, snapshot?.botId, snapshot?.groupId, snapshot?.threadId, transcriptVisible]);
 
   const openBot = useCallback((id: string) => navigate(`/app/${id}`), [navigate]);
   const loadOlder = useCallback(() => loadOlderMessagesRef.current(), []);
@@ -2348,7 +2419,7 @@ export function ShellPage() {
         />
       ) : null}
       <aside
-        className={`absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-[var(--rk-hairline)] bg-[var(--rk-sidebar)] transition-transform md:static md:z-auto md:w-[316px] md:translate-x-0 ${
+        className={`rk-sidebar absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-[var(--rk-hairline)] bg-[var(--rk-sidebar)] transition-transform md:static md:z-auto md:w-[316px] md:translate-x-0 ${chatView === "assistant" ? "md:hidden" : ""} ${
           mobileSidebarOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
         }`}
       >
@@ -2560,12 +2631,12 @@ export function ShellPage() {
                               position: { x: event.clientX, y: event.clientY },
                             });
                           }}
-                          className={`flex w-full gap-3 rounded-xl px-2.5 py-[11px] text-start ${
+                          className={`rk-thread-row flex w-full gap-3 rounded-xl px-2.5 py-[11px] text-start ${
                             item.kind === "bot" ? "cursor-grab active:cursor-grabbing" : ""
                           } ${
                             (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
                             (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id)
-                              ? "bg-[var(--rk-surface)]"
+                              ? "rk-thread-row-selected bg-[var(--rk-surface)]"
                               : "hover:bg-[var(--rk-page)]"
                           }`}
                           style={{
@@ -2577,7 +2648,7 @@ export function ShellPage() {
                             <BotAvatar
                               color={item.chat.color}
                               identity={item.chat.id}
-                              size={38}
+                              size={42}
                               status={item.chat.status}
                             />
                           ) : (
@@ -2869,17 +2940,57 @@ export function ShellPage() {
         inert={mobileSidebarOpen}
         className="flex min-w-0 flex-1 flex-col bg-[var(--rk-main)]"
       >
-        <div className="app-drag flex items-center justify-between border-b border-[var(--rk-surface)] px-3 py-[17px] md:px-[22px]">
+        <div className="rk-thread-toolbar app-drag flex items-center justify-between border-b border-[var(--rk-surface)] px-3 py-[17px] md:px-[22px]">
           <div className="flex min-w-0 items-center gap-2">
+            <div className="app-no-drag relative">
+              <button
+                type="button"
+                aria-label="Choose workspace"
+                aria-expanded={workspaceMenuOpen}
+                onClick={() => setWorkspaceMenuOpen((open) => !open)}
+                className="rk-workspace-trigger"
+              >
+                {chatView === "assistant" ? "Personal" : "Team"}
+                <ChevronDown size={14} strokeWidth={1.7} />
+              </button>
+              {workspaceMenuOpen ? (
+                <div className="rk-workspace-menu" role="menu" aria-label="Workspace">
+                  <button type="button" role="menuitemradio" aria-checked={chatView === "assistant"} disabled={!assistant} onClick={() => { switchChatView("assistant"); setWorkspaceMenuOpen(false); }}>
+                    <span>Personal assistant</span><small>One ongoing conversation</small>
+                  </button>
+                  <button type="button" role="menuitemradio" aria-checked={chatView === "team"} onClick={() => { switchChatView("team"); setWorkspaceMenuOpen(false); }}>
+                    <span>Team chats</span><small>Separate agents and conversations</small>
+                  </button>
+                  <div role="separator" className="my-1 border-t border-[var(--rk-hairline)]" />
+                  <button type="button" role="menuitem" onClick={() => { setWorkspaceMenuOpen(false); setPluginsOpen(true); }}><span><Trans>Integrations</Trans></span></button>
+                  <button type="button" role="menuitem" onClick={() => { setWorkspaceMenuOpen(false); setAccountSettingsFocusUsage(false); setAccountSettingsOpen(true); }}><span><Trans>Settings</Trans></span></button>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               aria-label={t`Open navigation`}
               onClick={() => setMobileSidebarOpen(true)}
               className="app-no-drag grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--rk-soft)] hover:bg-[var(--rk-elevated)] md:hidden"
+              style={{ display: chatView === "assistant" ? "none" : undefined }}
             >
               <Menu size={19} strokeWidth={1.7} />
             </button>
-            <button
+            {chatView === "assistant" && assistant ? (
+              <div className="app-no-drag flex items-center gap-1 rounded-full border border-[var(--rk-glass-line)] bg-[var(--rk-glass)] p-1">
+                <button type="button" aria-current={personalOpen ? "page" : undefined}
+                  onClick={() => { setPersonalOpen(true); setPanel(null); }}
+                  className={`rounded-full px-3.5 py-1.5 text-[13px] font-medium ${personalOpen ? "bg-[var(--rk-ink)] text-[var(--rk-main)]" : "text-[var(--rk-soft)] hover:text-[var(--rk-ink)]"}`}>
+                  For you
+                </button>
+                <button type="button" aria-current={!personalOpen ? "page" : undefined}
+                  onClick={() => openPersonalChat()}
+                  className={`rounded-full px-3.5 py-1.5 text-[13px] font-medium ${!personalOpen ? "bg-[var(--rk-ink)] text-[var(--rk-main)]" : "text-[var(--rk-soft)] hover:text-[var(--rk-ink)]"}`}>
+                  Conversation
+                </button>
+              </div>
+            ) : null}
+            {!(chatView === "assistant" && personalOpen) ? <button
               type="button"
               data-testid="bot-settings-trigger"
               onClick={() => setPanel(inGroup ? "group-settings" : "settings")}
@@ -2908,10 +3019,10 @@ export function ShellPage() {
                     : (active?.name ?? t`Select a bot`)}
                 </span>
               </span>
-            </button>
+            </button> : null}
           </div>
           <div className="flex items-center gap-1">
-            {!inGroup && active ? (
+            {!(chatView === "assistant" && personalOpen) && !inGroup && active ? (
               <button
                 type="button"
                 title={voiceStatus?.ready ? t`Call` : t`Set up voice to call`}
@@ -2929,7 +3040,7 @@ export function ShellPage() {
                 <Phone size={16} strokeWidth={1.6} className="text-[var(--rk-soft)]" />
               </button>
             ) : null}
-            {!inGroup ? (
+            {!(chatView === "assistant" && personalOpen) && !inGroup ? (
               <button
                 type="button"
                 title={t`Agent computer`}
@@ -2949,9 +3060,16 @@ export function ShellPage() {
             ) : null}
           </div>
         </div>
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ display: chatView === "assistant" && personalOpen ? "none" : "flex" }}
+          aria-hidden={chatView === "assistant" && personalOpen ? true : undefined}
+          inert={chatView === "assistant" && personalOpen}
+        >
         <Transcript
           key={activeSnapshot?.threadId}
           scrollRef={messageScroll}
+          visible={transcriptVisible}
           artifactTarget={transcriptArtifactTarget}
           messages={transcriptMessages}
           olderCursor={activeSnapshot?.olderCursor ?? null}
@@ -2984,6 +3102,8 @@ export function ShellPage() {
         ) : null}
         <Composer
           key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
+          prefill={composerPrefill?.targetKey === (inGroup ? `group:${groupId}` : `bot:${active?.id}`) ? composerPrefill : undefined}
+          onPrefillApplied={(nonce) => setComposerPrefill((current) => current?.nonce === nonce ? null : current)}
           activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
           running={composerRunning}
           disabled={Boolean(recordingSkill)}
@@ -3035,14 +3155,36 @@ export function ShellPage() {
               onFinal,
             });
           }}
+          onVoiceCall={!inGroup && active ? () => {
+            if (voiceStatus?.ready) setCallOpen(true);
+            else setVoiceOpen(true);
+          } : undefined}
           onDictateStop={() => dictation.submitHold()}
         />
+        </div>
+        {assistant ? (
+          <div
+            className="flex min-h-0 flex-1"
+            style={{ display: chatView === "assistant" && personalOpen ? "flex" : "none" }}
+            aria-hidden={chatView === "assistant" && personalOpen ? undefined : true}
+            inert={!(chatView === "assistant" && personalOpen)}
+          >
+            <PersonalWorkspace
+              botId={assistant.id}
+              botIds={assistantIds}
+              assistantName={assistant.name}
+              embedded
+              onClose={() => setPersonalOpen(false)}
+              onOpenChat={openPersonalChat}
+            />
+          </div>
+        ) : null}
       </main>
 
       <aside
         data-testid="side-panel"
         data-panel={panel ?? "closed"}
-        className={`absolute inset-y-0 end-0 z-20 flex min-h-0 shrink-0 flex-col overflow-hidden bg-[var(--rk-panel)] transition-[width] duration-150 ease-out md:relative ${
+        className={`rk-detail-panel absolute inset-y-0 end-0 z-20 flex min-h-0 shrink-0 flex-col overflow-hidden bg-[var(--rk-panel)] transition-[width] duration-150 ease-out md:relative ${
           panel && (active || activeGroup)
             ? "w-full max-w-[384px] border-s border-[var(--rk-surface)] md:w-[384px] md:max-w-none"
             : "pointer-events-none w-0"
@@ -3716,7 +3858,7 @@ export function ShellPage() {
                 />
               ) : (
                 <span
-                  className="truncate text-[15.5px] font-medium text-[var(--rk-ink)]"
+                  className="truncate text-[15px] font-medium text-[var(--rk-ink)]"
                   dir="auto"
                 >
                   {computerLabel(computer?.mode, active.name)}
@@ -3834,6 +3976,7 @@ export function ShellPage() {
 
 const Transcript = memo(function Transcript({
   scrollRef,
+  visible,
   artifactTarget,
   messages,
   olderCursor,
@@ -3858,6 +4001,7 @@ const Transcript = memo(function Transcript({
   onSpeak,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
+  visible: boolean;
   artifactTarget: ArtifactTarget;
   messages: ThreadMessage[];
   olderCursor: number | null;
@@ -3886,6 +4030,7 @@ const Transcript = memo(function Transcript({
   const following = useRef(true);
   const autoScrolling = useRef(false);
   const lastScrollTop = useRef<number | null>(null);
+  const wasVisible = useRef(false);
   const autoScrollTimer = useRef<number | undefined>(undefined);
   const jumpButtonRef = useRef<HTMLButtonElement>(null);
   const messageById = useMemo(
@@ -3928,8 +4073,22 @@ const Transcript = memo(function Transcript({
   }, [scrollRef]);
 
   useLayoutEffect(() => {
-    if (following.current) snapToEnd();
-  }, [messages, running, snapToEnd]);
+    if (!visible) {
+      wasVisible.current = false;
+      return;
+    }
+    const element = scrollRef.current;
+    if (!element) return;
+    if (following.current) {
+      snapToEnd();
+    } else if (!wasVisible.current) {
+      if (lastScrollTop.current !== null) element.scrollTop = lastScrollTop.current;
+      const nearEnd = transcriptIsNearEnd(element);
+      setAtEnd(nearEnd);
+      if (nearEnd) following.current = true;
+    }
+    wasVisible.current = true;
+  }, [messages, running, scrollRef, snapToEnd, visible]);
 
   useLayoutEffect(() => {
     const button = jumpButtonRef.current;
@@ -3968,16 +4127,19 @@ const Transcript = memo(function Transcript({
         ref={scrollRef}
         data-testid="transcript"
         onPointerDown={(event) => {
+          if (!visible) return;
           lastScrollTop.current = event.currentTarget.scrollTop;
           autoScrolling.current = false;
           following.current = false;
         }}
         onTouchStart={(event) => {
+          if (!visible) return;
           lastScrollTop.current = event.currentTarget.scrollTop;
           autoScrolling.current = false;
           following.current = false;
         }}
         onWheel={(event) => {
+          if (!visible) return;
           if (event.deltaY < 0) {
             lastScrollTop.current = event.currentTarget.scrollTop;
             autoScrolling.current = false;
@@ -3985,6 +4147,7 @@ const Transcript = memo(function Transcript({
           }
         }}
         onScroll={(event) => {
+          if (!visible) return;
           const scrolledDown = transcriptMovedDown(
             lastScrollTop.current,
             event.currentTarget.scrollTop,
@@ -4002,7 +4165,7 @@ const Transcript = memo(function Transcript({
             following.current = false;
           }
         }}
-        className="rk-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-5 md:px-7 md:py-6"
+        className="rk-transcript rk-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-5 md:px-7 md:py-6"
       >
         {olderCursor != null ? (
           <button
@@ -4015,6 +4178,7 @@ const Transcript = memo(function Transcript({
           </button>
         ) : null}
         {messages.map((message) => {
+          if (transcriptContentBlocks(message.blocks).length === 0) return null;
           const peerReceipt = isPeerReceiptBlocks(message.blocks);
           return (
             <div
@@ -4068,15 +4232,7 @@ const Transcript = memo(function Transcript({
             </div>
           );
         })}
-        {running &&
-        !messages.some(
-          (message) =>
-            message.id.startsWith("progress:") &&
-            message.blocks[0]?.kind === "progress" &&
-            message.blocks[0].text,
-        ) ? (
-          <ActiveBotGlyph bots={workingBots} label={workingLabel} />
-        ) : null}
+        {running ? <ActiveBotGlyph bots={workingBots} label={workingLabel} /> : null}
       </div>
       <button
         ref={jumpButtonRef}
@@ -4097,6 +4253,8 @@ const Transcript = memo(function Transcript({
 
 const Composer = memo(function Composer({
   activeName,
+  prefill,
+  onPrefillApplied,
   running,
   disabled,
   pendingAttachments,
@@ -4124,8 +4282,11 @@ const Composer = memo(function Composer({
   transcribe,
   onDictateStart,
   onDictateStop,
+  onVoiceCall,
 }: {
   activeName?: string;
+  prefill?: { nonce: number; text: string };
+  onPrefillApplied?: (nonce: number) => void;
   running: boolean;
   disabled?: boolean;
   pendingAttachments: PendingAttachment[];
@@ -4153,6 +4314,7 @@ const Composer = memo(function Composer({
   transcribe: boolean;
   onDictateStart: (onFinal: (text: string) => void) => void;
   onDictateStop: () => void;
+  onVoiceCall?: () => void;
 }) {
   const { t } = useLingui();
   const [draft, setDraft] = useState("");
@@ -4161,7 +4323,51 @@ const Composer = memo(function Composer({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
   const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
+  const [draftPreview, setDraftPreview] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const appliedPrefill = useRef(0);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const recordingStartedAt = useRef(0);
+  const sendRecordingOnFinal = useRef(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  useEffect(() => {
+    if (!prefill || appliedPrefill.current === prefill.nonce) return;
+    appliedPrefill.current = prefill.nonce;
+    setDraft(prefill.text);
+    setSelectedSkill(null);
+    setSelectedMentions([]);
+    setMentionQuery(null);
+    setSlashQuery(null);
+    setDraftPreview(false);
+    onPrefillApplied?.(prefill.nonce);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [prefill, onPrefillApplied]);
+  useEffect(() => {
+    if (!dictating) return;
+    recordingStartedAt.current = Date.now();
+    setRecordingSeconds(0);
+    const timer = window.setInterval(() => {
+      setRecordingSeconds(Math.floor((Date.now() - recordingStartedAt.current) / 1000));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [dictating]);
+  const beginDictation = () => {
+    if (dictating) return;
+    sendRecordingOnFinal.current = false;
+    onDictateStart((text) => {
+      const composed = `${draftRef.current} ${text}`.trim();
+      setDraft(composed);
+      if (sendRecordingOnFinal.current) {
+        sendRecordingOnFinal.current = false;
+        void onSend(serializeComposerPrompt(composed, selectedSkill, selectedMentions), selectedMentions).then(() => {
+          setDraft("");
+          setDraftPreview(false);
+        });
+      }
+    });
+  };
   const runErrorRef = useRef<HTMLDivElement>(null);
   const presentedRunErrorIdRef = useRef<string | null>(null);
   const mentionListboxId = useId();
@@ -4241,6 +4447,19 @@ const Composer = memo(function Composer({
     const nextSlash = slashMatch ? (slashMatch[1] ?? "") : null;
     if (nextSlash !== null && slashQuery === null) onSlashOpen?.();
     setSlashQuery(nextSlash);
+  }
+
+  function formatDraft(marker: string, placeholder: string) {
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draft.length;
+    const end = textarea?.selectionEnd ?? draft.length;
+    const content = draft.slice(start, end) || placeholder;
+    updateDraft(`${draft.slice(0, start)}${marker}${content}${marker}${draft.slice(end)}`);
+    setComposerMenuOpen(false);
+    window.requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(start + marker.length, start + marker.length + content.length);
+    });
   }
 
   function focusComposer() {
@@ -4330,6 +4549,7 @@ const Composer = memo(function Composer({
     if (!canSend || sending || disabled) return;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
     setDraft("");
+    setDraftPreview(false);
     setMentionQuery(null);
     setMentionHighlightIndex(0);
     setSlashQuery(null);
@@ -4397,7 +4617,7 @@ const Composer = memo(function Composer({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`relative z-30 m-0 min-w-0 border-0 px-3 pb-4 pt-3 md:px-6 md:pb-6 ${
+      className={`rk-composer relative z-30 m-0 min-w-0 border-0 px-3 pb-4 pt-3 md:px-6 md:pb-6 ${
         draggingFiles ? "rounded-[14px] ring-2 ring-inset ring-[#8B5CF6]" : ""
       }`}
     >
@@ -4408,7 +4628,7 @@ const Composer = memo(function Composer({
           data-testid="composer-error"
           className="mb-3 flex items-center gap-2 rounded-[14px] border border-[#5A2A2A] bg-[#2A1717] px-4 py-2 text-[13px] text-[var(--rk-danger-soft)]"
         >
-          <span className="min-w-0 flex-1">{sendError ?? dictationError ?? runError}</span>
+          <span className="min-w-0 flex-1">{friendlyChatError(sendError ?? dictationError ?? runError)}</span>
           <button
             type="button"
             aria-label={t`Dismiss error`}
@@ -4561,9 +4781,16 @@ const Composer = memo(function Composer({
           })}
         </div>
       ) : null}
+      {draftPreview && draft.trim() ? (
+        <div className="mb-3 rounded-[18px] border border-[var(--rk-glass-line)] bg-[var(--rk-surface)] px-4 py-3">
+          <div className="mb-2 text-[12px] text-[var(--rk-muted)]"><Trans>Preview</Trans></div>
+          <ChatMarkdown>{draft}</ChatMarkdown>
+        </div>
+      ) : null}
       <div
         data-testid="composer-bar"
-        className="flex items-center gap-3.5 rounded-full border border-[var(--rk-hairline-strong)] bg-[var(--rk-page)] py-[9px] pe-2.5 ps-3"
+        data-recording={dictating ? "true" : "false"}
+        className="rk-composer-shell flex items-center gap-2.5"
       >
         <input
           ref={fileInputRef}
@@ -4573,41 +4800,46 @@ const Composer = memo(function Composer({
           className="hidden"
           onChange={(event) => void onAttachmentPick(event.target.files)}
         />
-        <button
-          type="button"
-          aria-label={t`Attach file`}
-          disabled={disabled}
-          onClick={() => fileInputRef.current?.click()}
-          className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-full border border-[var(--rk-border)] text-[var(--rk-soft)] disabled:opacity-40"
+        <div className="rk-composer-add relative shrink-0">
+          <button
+            type="button"
+            aria-label={t`Attach file`}
+            aria-expanded={composerMenuOpen}
+            aria-haspopup="menu"
+            disabled={disabled}
+            onClick={() => setComposerMenuOpen((open) => !open)}
+            className="grid h-12 w-12 place-items-center rounded-full border border-[var(--rk-glass-line)] bg-[var(--rk-glass)] text-[var(--rk-ink)] shadow-[0_4px_18px_rgba(0,0,0,.06)] disabled:opacity-40"
+          >
+            <Plus size={22} strokeWidth={1.8} />
+          </button>
+          {composerMenuOpen ? (
+            <div role="menu" onKeyDown={(event) => { if (event.key === "Escape") setComposerMenuOpen(false); }} className="rk-composer-add-menu absolute bottom-full left-0 z-30 mb-3 min-w-[190px] rounded-[17px] border border-[var(--rk-glass-line)] bg-[var(--rk-panel)] p-1.5 shadow-[0_16px_40px_rgba(0,0,0,.18)]">
+              <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); fileInputRef.current?.click(); }} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)]"><Paperclip size={15} />{t`Attach file`}</button>
+              <button type="button" role="menuitem" onClick={() => { setComposerMenuOpen(false); beginDictation(); }} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)]"><Mic size={15} />{t`Dictate`}</button>
+              <button type="button" role="menuitem" onClick={() => formatDraft("**", "bold")} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)]"><span className="w-[15px] text-center font-bold">B</span>{t`Bold`}</button>
+              <button type="button" role="menuitem" onClick={() => formatDraft("*", "italic")} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)]"><span className="w-[15px] text-center italic">I</span>{t`Italic`}</button>
+              <button type="button" role="menuitem" onClick={() => formatDraft("`", "code")} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)]"><span className="w-[15px] text-center">{`<>`}</span>{t`Code`}</button>
+              <button type="button" role="menuitem" aria-label="Preview formatting" disabled={!draft.trim()} onClick={() => { setComposerMenuOpen(false); setDraftPreview((shown) => !shown); }} className="flex w-full items-center gap-2 rounded-[11px] px-3 py-2 text-left text-[13px] text-[var(--rk-ink)] hover:bg-[var(--rk-elevated)] disabled:opacity-40"><span className="w-[15px] text-center font-semibold">Aa</span>{t`Preview formatting`}</button>
+            </div>
+          ) : null}
+        </div>
+        <div
+          data-recording={dictating ? "true" : "false"}
+          className="rk-composer-bar flex min-w-0 flex-1 items-center gap-3.5 rounded-full border border-[var(--rk-hairline-strong)] bg-[var(--rk-page)] py-[9px] pe-2.5 ps-4"
         >
-          <Plus size={17} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          aria-label={dictating ? t`Stop dictation` : t`Dictate`}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onDictateStart((text) => setDraft((current) => `${current} ${text}`.trim()));
-          }}
-          onMouseUp={onDictateStop}
-          onMouseLeave={() => {
-            if (dictating) onDictateStop();
-          }}
-          onTouchStart={(event) => {
-            event.preventDefault();
-            onDictateStart((text) => setDraft((current) => `${current} ${text}`.trim()));
-          }}
-          onTouchEnd={onDictateStop}
-          className={`grid h-[34px] w-[34px] shrink-0 place-items-center rounded-full border ${
-            dictating
-              ? "border-[var(--rk-success-soft)] bg-[rgba(48,162,75,.16)] text-[var(--rk-success-soft)]"
-              : "border-[var(--rk-border)] text-[var(--rk-soft)]"
-          }`}
-          title={transcribe ? t`Hold to talk` : t`Hold to talk (on-device dictation)`}
-        >
-          <Mic size={16} strokeWidth={1.8} />
-        </button>
-        <div className="flex min-w-0 flex-1 flex-wrap items-end gap-1.5">
+        {dictating ? (
+          <div className="rk-recording-controls flex w-full items-center gap-2">
+            <button type="button" aria-label="Stop recording and edit" onClick={onDictateStop} className="rk-recording-pill flex-1"><Square size={17} fill="currentColor" /></button>
+            <div className="rk-recording-pill flex-[1.4] gap-3" aria-label="Recording">
+              <span className="text-[20px] tabular-nums">{Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, "0")}</span>
+              <span className="flex items-center gap-[3px]" aria-hidden="true">
+                {Array.from({ length: 13 }, (_, index) => <span key={index} className="w-[3px] rounded-full bg-[var(--rk-muted)]" style={{ height: `${8 + ((index * 7) % 14)}px` }} />)}
+              </span>
+            </div>
+            <button type="button" aria-label="Send recording" onClick={() => { sendRecordingOnFinal.current = true; onDictateStop(); }} className="rk-recording-pill rk-recording-send flex-1"><ArrowUp size={21} strokeWidth={2.4} /></button>
+          </div>
+        ) : null}
+        <div className="rk-composer-input flex min-w-0 flex-1 flex-wrap items-end gap-1.5">
           {selectedSkill ? (
             <span
               data-testid="skill-chip"
@@ -4717,9 +4949,18 @@ const Composer = memo(function Composer({
             autoComplete="off"
             dir="auto"
             rows={1}
-            className="max-h-32 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15.5px] leading-6 text-[var(--rk-ink)] outline-none placeholder:text-[var(--rk-body)] disabled:opacity-40"
+            className="max-h-32 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15px] leading-6 text-[var(--rk-ink)] outline-none placeholder:text-[var(--rk-body)] disabled:opacity-40"
           />
         </div>
+        <button
+          type="button"
+          aria-label={dictating ? t`Stop dictation` : t`Dictate`}
+          onClick={beginDictation}
+          className={`rk-composer-mic h-9 w-9 shrink-0 place-items-center rounded-full text-[var(--rk-muted)] hover:text-[var(--rk-ink)] ${draft.trim() ? "hidden" : "grid"}`}
+          title={transcribe ? t`Dictate` : t`Dictate on this device`}
+        >
+          <Mic size={18} strokeWidth={1.8} />
+        </button>
         {running ? (
           <>
             <button
@@ -4741,6 +4982,11 @@ const Composer = memo(function Composer({
               <Square size={12} strokeWidth={0} fill="currentColor" />
             </button>
           </>
+        ) : !canSend && onVoiceCall ? (
+          <button type="button" aria-label={t`Call`} onClick={onVoiceCall} disabled={disabled}
+            className="grid h-10 w-12 shrink-0 place-items-center rounded-full bg-[var(--rk-cream)] text-[var(--rk-cream-ink)] disabled:opacity-50">
+            <AudioLines size={21} strokeWidth={2} />
+          </button>
         ) : (
           <button
             type="button"
@@ -4752,6 +4998,7 @@ const Composer = memo(function Composer({
             <ArrowUp size={18} strokeWidth={2} />
           </button>
         )}
+        </div>
       </div>
     </fieldset>
   );
@@ -4975,11 +5222,13 @@ const MessageView = memo(function MessageView({
   onSpeak: () => void;
 }) {
   const { t } = useLingui();
+  const contentBlocks = transcriptContentBlocks(message.blocks);
+  if (contentBlocks.length === 0) return null;
   const isNarration =
     message.role === "bot" &&
-    message.blocks.length > 0 &&
-    message.blocks.every(
-      (block) => block.kind === "text" || block.kind === "progress" || block.kind === "steps",
+    contentBlocks.length > 0 &&
+    contentBlocks.every(
+      (block) => block.kind === "text" || block.kind === "progress",
     );
   const isLive = message.id.startsWith("progress:");
   const parentJumpId = replyPreview?.id ?? replyToMessageId;
@@ -5010,25 +5259,10 @@ const MessageView = memo(function MessageView({
         {messageContext}
         <div className="flex justify-start">
           <div
-            className="max-w-[74%] space-y-2.5 rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15.5px] leading-[1.5] text-[var(--rk-body)]"
+            className="rk-message-bubble rk-message-assistant max-w-[74%] space-y-2.5 rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15px] leading-[1.5] text-[var(--rk-body)]"
             dir="auto"
           >
-            {message.blocks.map((block, i) => {
-              if (block.kind === "steps") {
-                const isCurrentBlock = isLive && i === message.blocks.length - 1;
-                return (
-                  <ToolActivityDisclosure
-                    key={i}
-                    live={isLive}
-                    label={isLive ? t`Working…` : toolActivityLabel(block.durationMs, false)}
-                  >
-                    <ToolSteps
-                      steps={block.steps}
-                      currentIndex={isCurrentBlock ? block.steps.length - 1 : undefined}
-                    />
-                  </ToolActivityDisclosure>
-                );
-              }
+            {contentBlocks.map((block, i) => {
               if (block.kind === "text" || block.kind === "progress") {
                 return (
                   <div key={i}>
@@ -5038,7 +5272,7 @@ const MessageView = memo(function MessageView({
               }
               return null;
             })}
-            {!isLive && voiceReady && message.blocks.some((block) => block.kind === "text") ? (
+            {!isLive && voiceReady && contentBlocks.some((block) => block.kind === "text") ? (
               <button
                 type="button"
                 aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
@@ -5056,7 +5290,7 @@ const MessageView = memo(function MessageView({
   return (
     <>
       {messageContext}
-      {message.blocks.map((block, i) => {
+      {contentBlocks.map((block, i) => {
         if (block.kind === "handoff") {
           const from = memberName?.(block.fromBotId) ?? t`bot`;
           const to = memberName?.(block.toBotId) ?? t`bot`;
@@ -5115,30 +5349,10 @@ const MessageView = memo(function MessageView({
           return (
             <div key={i} className="flex justify-start">
               <div
-                className="max-w-[74%] rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15.5px] leading-[1.5] text-[var(--rk-body)]"
+                className="rk-message-bubble rk-message-assistant max-w-[74%] rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15px] leading-[1.5] text-[var(--rk-body)]"
                 dir="auto"
               >
                 <ChatMarkdown streaming>{block.text}</ChatMarkdown>
-              </div>
-            </div>
-          );
-        }
-        if (block.kind === "steps") {
-          return (
-            <div key={i} className="flex justify-start">
-              <div
-                className="max-w-[74%] space-y-1.5 rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3"
-                dir="ltr"
-              >
-                <ToolActivityDisclosure
-                  live={isLive}
-                  label={isLive ? t`Working…` : toolActivityLabel(block.durationMs, false)}
-                >
-                  <ToolSteps
-                    steps={block.steps}
-                    currentIndex={isLive ? block.steps.length - 1 : undefined}
-                  />
-                </ToolActivityDisclosure>
               </div>
             </div>
           );
@@ -5290,7 +5504,7 @@ const MessageView = memo(function MessageView({
           return (
             <div key={i} className="flex justify-end">
               <div
-                className="max-w-[70%] whitespace-pre-wrap rounded-[20px] bg-[var(--rk-cream)] px-[18px] py-3 text-[15.5px] leading-[1.45] text-[var(--rk-cream-ink)]"
+                className="rk-message-bubble rk-message-user max-w-[70%] whitespace-pre-wrap rounded-[20px] bg-[var(--rk-cream)] px-[18px] py-3 text-[15px] leading-[1.45] text-[var(--rk-cream-ink)]"
                 dir="auto"
               >
                 {block.text}
@@ -5302,7 +5516,7 @@ const MessageView = memo(function MessageView({
           return (
             <div key={i} className="flex justify-start">
               <div
-                className="max-w-[74%] rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15.5px] leading-[1.5] text-[var(--rk-body)]"
+                className="rk-message-bubble rk-message-assistant max-w-[74%] rounded-[20px] bg-[var(--rk-surface-2)] px-[18px] py-3 text-[15px] leading-[1.5] text-[var(--rk-body)]"
                 dir="auto"
               >
                 <ChatMarkdown>{block.text}</ChatMarkdown>
@@ -5573,44 +5787,7 @@ function BotSettings({
       .catch(() => undefined);
   }, []);
 
-  const connectedOptions: Array<{
-    key: string;
-    provider: string;
-    modelId: string;
-    label: string;
-  }> = [];
-  const seenOptions = new Set<string>();
-  for (const credential of credentials) {
-    const providerModels = catalog.filter(
-      (entry) => entry.provider === credential.provider && !entry.placeholder,
-    );
-    const credentialInCatalog = Boolean(
-      credential.modelId && providerModels.some((entry) => entry.id === credential.modelId),
-    );
-    // Catalog providers expand to every model for that connection. Free-form
-    // credentials (model id not in the catalog) stay a single connected pair.
-    const options =
-      credential.modelId && !credentialInCatalog
-        ? [
-            {
-              key: modelOptionKey(credential.provider, credential.modelId),
-              provider: credential.provider,
-              modelId: credential.modelId,
-              label: `${credential.label} · ${credential.modelId}`,
-            },
-          ]
-        : providerModels.map((entry) => ({
-            key: modelOptionKey(entry.provider, entry.id),
-            provider: entry.provider,
-            modelId: entry.id,
-            label: `${entry.providerName ?? entry.provider} · ${entry.label}`,
-          }));
-    for (const option of options) {
-      if (seenOptions.has(option.key)) continue;
-      seenOptions.add(option.key);
-      connectedOptions.push(option);
-    }
-  }
+  const connectedOptions = connectedModelOptions(credentials, catalog);
 
   const effectiveProvider = modelKey
     ? parseModelOptionKey(modelKey)?.provider
@@ -5826,9 +6003,6 @@ function BotSettings({
   );
 }
 
-function modelOptionKey(provider: string, modelId: string) {
-  return `${provider}::${modelId}`;
-}
 
 function thinkingLevelLabel(level: ThinkingLevel) {
   if (level === "xhigh") return t`Extra high`;
@@ -5840,11 +6014,6 @@ function thinkingLevelLabel(level: ThinkingLevel) {
   return `${level.slice(0, 1).toUpperCase()}${level.slice(1)}`;
 }
 
-function parseModelOptionKey(key: string) {
-  const separator = key.indexOf("::");
-  if (separator <= 0) return null;
-  return { provider: key.slice(0, separator), modelId: key.slice(separator + 2) };
-}
 
 function catalogLabel(
   catalog: ModelCatalogEntry[],
@@ -5969,7 +6138,7 @@ function NewBotSectionDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-bot-section-title"
-        className="w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
+        className="rk-dialog-surface w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
         onPointerDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -6058,7 +6227,7 @@ function ClearConversationDialog({
         aria-modal="true"
         aria-labelledby="clear-conversation-title"
         aria-describedby="clear-conversation-description"
-        className="w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
+        className="rk-dialog-surface w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <h2
@@ -6142,7 +6311,7 @@ function DeleteBotDialog({
         aria-modal="true"
         aria-labelledby="delete-bot-title"
         aria-describedby="delete-bot-description"
-        className="w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
+        className="rk-dialog-surface w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <h2 id="delete-bot-title" className="text-[17px] font-medium text-[var(--rk-ink-strong)]">
@@ -6261,7 +6430,7 @@ function DeleteItemDialog({
         aria-modal="true"
         aria-labelledby="delete-item-title"
         aria-describedby="delete-item-description"
-        className="w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
+        className="rk-dialog-surface w-full max-w-[420px] rounded-[18px] border border-[var(--rk-elevated)] bg-[var(--rk-surface-2)] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
         onPointerDown={(event) => event.stopPropagation()}
       >
         <h2 id="delete-item-title" className="text-[17px] font-medium text-[var(--rk-ink-strong)]">
@@ -6381,7 +6550,7 @@ function ChoiceCard({
   return (
     <div className="flex justify-start">
       <div className="w-[min(420px,80%)] rounded-[20px] border border-[var(--rk-border)] bg-[var(--rk-surface)] px-[18px] py-[14px]">
-        <div className="text-[15.5px] text-[var(--rk-body)]">{block.question}</div>
+        <div className="text-[15px] text-[var(--rk-body)]">{block.question}</div>
         {block.subtitle ? (
           <div className="mt-0.5 text-[13px] text-[var(--rk-soft)]">{block.subtitle}</div>
         ) : null}

@@ -74,7 +74,7 @@ export function AskCard({
 
   return (
     <div className="max-w-[74%] rounded-[20px] border border-[var(--rk-border)] bg-[var(--rk-surface)] px-5 py-[17px]">
-      <div className="text-[15.5px] leading-[1.5] text-[var(--rk-ink)]">
+      <div className="text-[15px] leading-[1.5] text-[var(--rk-ink)]">
         <ChatMarkdown>{block.text}</ChatMarkdown>
       </div>
       {block.detail ? (

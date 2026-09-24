@@ -1,4 +1,5 @@
-import { Redirect, useRouter } from "expo-router";
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
+import * as AppleAuthentication from "expo-apple-authentication";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import {
@@ -28,12 +29,15 @@ import {
   resetApiBase,
   saveApiBase,
   signIn,
+  signInWithApple,
   signUp,
   usesCustomApiBase,
 } from "../lib/api";
+import { appleSignInAvailable, requestAppleIdentity } from "../lib/apple-auth";
 
 export default function SignIn() {
   const router = useRouter();
+  const { reauthenticate } = useLocalSearchParams<{ reauthenticate?: string }>();
   const [mode, setMode] = useState<"in" | "up" | "forgot">("in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -46,13 +50,22 @@ export default function SignIn() {
   const [serverOpen, setServerOpen] = useState(false);
   const [reset, setReset] = useState<PasswordResetCapabilities | null>(null);
   const [resetSent, setResetSent] = useState(false);
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [showEmail, setShowEmail] = useState(true);
+
+  useEffect(() => {
+    void appleSignInAvailable().then((available) => {
+      setAppleAvailable(available);
+      if (available) setShowEmail(false);
+    }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     void loadSessionToken().then((token) => {
-      setHasSession(Boolean(token));
+      setHasSession(Boolean(token) && reauthenticate !== "1");
       setReady(true);
     });
-  }, []);
+  }, [reauthenticate]);
 
   useEffect(() => {
     let active = true;
@@ -103,6 +116,23 @@ export default function SignIn() {
     }
   }
 
+  async function submitApple() {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const identity = await requestAppleIdentity();
+      if (!identity) return;
+      await signInWithApple(identity.token, identity.nonce);
+      router.replace("/");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not sign in with Apple ID");
+      setShowEmail(true);
+    } finally {
+      setPending(false);
+    }
+  }
+
   const custom = usesCustomApiBase(apiBase);
 
   return (
@@ -133,9 +163,9 @@ export default function SignIn() {
                 }}
               >
                 {mode === "in"
-                  ? "Sign in to Rakazo"
+                  ? "Sign in to Negroni"
                   : mode === "up"
-                    ? "Sign up for Rakazo"
+                    ? "Sign up for Negroni"
                     : "Reset your password"}
               </Text>
               {resetSent ? (
@@ -161,6 +191,27 @@ export default function SignIn() {
                 </View>
               ) : (
                 <>
+                  {mode === "in" && appleAvailable ? (
+                    <View style={{ marginTop: 28 }}>
+                      <AppleAuthentication.AppleAuthenticationButton
+                        buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                        buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                        cornerRadius={14}
+                        onPress={() => void submitApple()}
+                        style={{ width: "100%", height: 54, opacity: pending ? 0.55 : 1 }}
+                      />
+                      <Text style={{ color: "#6E6E68", fontSize: 13, lineHeight: 19, marginTop: 12, textAlign: "center" }}>
+                        Your Apple ID must be connected to your existing Negroni account first.
+                      </Text>
+                      <Pressable accessibilityRole="button" onPress={() => setShowEmail((value) => !value)} style={{ alignSelf: "center", marginTop: 14, padding: 8 }}>
+                        <Text style={{ color: "#1B1B1E", fontSize: 15, fontWeight: "600" }}>
+                          {showEmail ? "Hide email sign-in" : "Use email to connect Apple ID"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {showEmail || mode !== "in" ? (
+                  <>
                   {mode === "up" ? (
                     <TextInput
                       autoComplete="name"
@@ -279,6 +330,9 @@ export default function SignIn() {
                       </Text>
                     </Pressable>
                   </View>
+                  </>
+                  ) : null}
+                  {!showEmail && error ? <Text style={{ color: "#B91C1C", marginTop: 12 }}>{error}</Text> : null}
                 </>
               )}
             </ScrollView>
@@ -296,16 +350,12 @@ export default function SignIn() {
                 paddingTop: 8,
               }}
             >
-              {custom ? (
-                <>
-                  <Text style={{ color: "#A8A8A2", fontSize: 12 }}>Custom server</Text>
-                  <Text style={{ color: "#6E6E68", fontSize: 13, marginTop: 2 }}>
-                    {displayApiHost(apiBase)}
-                  </Text>
-                </>
-              ) : (
-                <Text style={{ color: "#A8A8A2", fontSize: 13 }}>Use a custom server</Text>
-              )}
+              <Text style={{ color: "#A8A8A2", fontSize: 12 }}>
+                {custom ? "Custom server" : "Server"}
+              </Text>
+              <Text style={{ color: "#6E6E68", fontSize: 13, marginTop: 2 }}>
+                {displayApiHost(apiBase)}
+              </Text>
             </Pressable>
           </View>
         </TouchableWithoutFeedback>
@@ -413,8 +463,9 @@ function ServerSheet({
             </Pressable>
           </View>
           <Text style={{ color: "#6E6E68", marginTop: 28, fontSize: 15, lineHeight: 22 }}>
-            Point this app at your self-hosted Rakazo origin — the same HTTPS URL you open in a
-            browser.
+            Enter the Negroni server running on your Mac. On your home network, use its local
+            address, for example http://your-mac.local:3100. If a VPN is active, allow access to
+            devices on the local network.
           </Text>
           <TextInput
             autoCapitalize="none"

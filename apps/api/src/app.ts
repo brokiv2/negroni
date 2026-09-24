@@ -11,6 +11,7 @@ import type {
   TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
 import {
+  apnsConfigFromEnv,
   applyMessagingOutboundStatus,
   ChatSdkMessagingSurface,
   type ComposioProvider,
@@ -66,6 +67,7 @@ import { cors } from "hono/cors";
 import { type AppEnv, loadEnv } from "./env.js";
 import { createMessagingInboundHandler } from "./messaging-inbound.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
+import { publicTunnelGate } from "./public-tunnel.js";
 import { createRouter } from "./router.js";
 import { mountVoiceHttpRoutes } from "./voice.js";
 import { mountWebhookHttpRoutes } from "./webhook.js";
@@ -218,13 +220,16 @@ export async function createApp(
   void pipedream?.warmDirectory?.().catch(() => undefined);
   const runtime =
     env.agentRuntime === "scripted" ? new ScriptedAgentRuntime() : new PiAgentRuntime();
-  const notifications = new ExpoPushProvider(env.dataDir);
+  const notifications = new ExpoPushProvider(env.dataDir, {
+    apns: apnsConfigFromEnv(process.env),
+  });
   const auth = createAuth(prisma, {
     secret: env.authSecret,
     baseURL: env.authUrl,
     webOrigin: env.webOrigin,
     signupsEnabled: env.signupsEnabled,
     signupAllowlist: env.signupAllowlist,
+    appleBundleIdentifier: process.env.APPLE_APP_BUNDLE_ID ?? "com.artempaskov.aisy",
     email,
     onEmailError: (error) => console.error("transactional email delivery failed", error),
     extraOrigins: [
@@ -342,6 +347,7 @@ export async function createApp(
     clientInterceptors: [onError((error, { path }) => logUnexpectedRpcError(error, path))],
   });
   const app = new Hono();
+  app.use("*", publicTunnelGate(env.publicTunnelHost, env.publicTunnelKey));
   app.use(
     "*",
     cors({

@@ -1,3 +1,5 @@
+import { tunnelHeaders } from "./tunnel";
+
 const LOCAL_API = "http://127.0.0.1:3100";
 const DEFAULT_API = process.env.EXPO_PUBLIC_API_URL ?? LOCAL_API;
 
@@ -41,6 +43,35 @@ export function usesCustomApiBase(url: string, fallback = defaultApiBase()) {
   return url !== fallback;
 }
 
+export function migrateLegacyApiBase(
+  stored: string,
+  fallback = defaultApiBase(),
+  development = false,
+): string {
+  const storedResult = normalizeApiBase(stored);
+  const fallbackResult = normalizeApiBase(fallback);
+  if (!storedResult.ok || !fallbackResult.ok) return stored;
+  try {
+    const storedHost = new URL(storedResult.url).hostname.toLowerCase();
+    const fallbackHost = new URL(fallbackResult.url).hostname.toLowerCase();
+    if (storedHost.endsWith(".ngrok-free.app") && fallbackHost.endsWith(".ngrok-free.dev")) {
+      return fallbackResult.url;
+    }
+    if (
+      development &&
+      storedResult.url === "http://127.0.0.1:3199" &&
+      fallbackHost !== "localhost" &&
+      fallbackHost !== "127.0.0.1" &&
+      fallbackHost !== "::1"
+    ) {
+      return fallbackResult.url;
+    }
+  } catch {
+    return stored;
+  }
+  return storedResult.url;
+}
+
 export function apiBaseWarning(url: string): string | null {
   try {
     const parsed = new URL(url);
@@ -64,7 +95,7 @@ export async function probeApiBase(
   try {
     const res = await fetchImpl(`${parsed.url}/rpc/health`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "rakazo://" },
+      headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
       body: JSON.stringify({ json: {} }),
       signal: controller.signal,
     });
@@ -73,11 +104,14 @@ export async function probeApiBase(
       error?: { message?: string };
     };
     if (!res.ok || body.error || body.json?.ok !== true) {
-      return { ok: false, error: "That URL did not look like a Rakazo server" };
+      return { ok: false, error: "That URL did not look like a Negroni server" };
     }
     return parsed;
   } catch {
-    return { ok: false, error: "Could not reach that server" };
+    return {
+      ok: false,
+      error: `Could not reach ${displayApiHost(parsed.url)}. Keep Negroni running on the Mac and check Wi-Fi or VPN local-network access.`,
+    };
   } finally {
     clearTimeout(timer);
   }

@@ -100,6 +100,7 @@ const structuredMentionTarget = z.discriminatedUnion("kind", [
 
 const threadSendInput = threadTarget
   .safeExtend({
+    interactionMode: z.enum(["chat", "voice"]).optional(),
     text: z.string().optional(),
     artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
     /** Bare bot ids (legacy) or typed mention chips from the composer. */
@@ -167,6 +168,25 @@ export const appContract = {
         }),
       )
       .output(z.object({ models: z.array(z.string()) })),
+    probeProvider: oc
+      .input(z.object({ provider: z.string() }))
+      .output(
+        z.object({
+          models: z.array(z.string()),
+          catalogIds: z.array(z.string()),
+          baseUrl: z.string().nullable(),
+        }),
+      ),
+    addModelOverride: oc
+      .input(
+        z.object({
+          provider: z.string(),
+          id: z.string().trim().min(1).max(128),
+          name: z.string().trim().max(128).optional(),
+          basedOn: z.string().trim().max(128).optional(),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
     beginOAuth: oc
       .input(
         z.object({
@@ -636,7 +656,18 @@ export const appContract = {
   },
   notifications: {
     registerPush: oc
-      .input(z.object({ token: z.string().min(8).max(512) }))
+      .input(
+        z
+          .object({
+            token: z.string().min(8).max(512),
+            provider: z.enum(["expo", "apns"]).default("expo"),
+            environment: z.enum(["development", "production"]).optional(),
+          })
+          .refine((value) => value.provider !== "apns" || Boolean(value.environment), {
+            message: "APNs registrations require an environment",
+            path: ["environment"],
+          }),
+      )
       .output(z.object({ ok: z.literal(true) })),
     unregisterPush: oc.output(z.object({ ok: z.literal(true) })),
   },

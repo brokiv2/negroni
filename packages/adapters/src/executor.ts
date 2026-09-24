@@ -54,6 +54,7 @@ import {
   promptInvokesSkill,
   redactSecrets,
   renderBotDirectory,
+  mainAssistantBot,
   resolveActionApprovalDetail,
   sandboxCommandTimeoutMs,
   type ToolCallStreak,
@@ -123,13 +124,7 @@ import {
 import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import { agentConnectionTools, builtinAgentTools } from "./builtin-tools.js";
 import { archiveSpawnedBot, spawnBot } from "./child-bots.js";
-import {
-  collectLogIds,
-  mergeConnectedPlugins,
-  needsLivePluginSync,
-  type PluginConnectionRow,
-  planLiveConnectionSync,
-} from "./composio-connector.js";
+import { collectLogIds } from "./composio-connector.js";
 import { BACKGROUND_WORK_LAUNCH, scheduleComputerSleep } from "./computer-idle.js";
 import {
   acquireComputerExecutionLease,
@@ -405,47 +400,6 @@ export async function deferFutureRoutine(
   if (scheduledAt.getTime() <= Date.now() + 1_000) return false;
   await jobs.enqueue(routineWakeupJob(routineId, scheduledAt));
   return true;
-}
-
-async function loadLivePluginSlugs(
-  listConnectedPluginSlugs: ExecutorDeps["listConnectedPluginSlugs"],
-  userId: string,
-): Promise<{ ok: true; slugs: string[] } | { ok: false }> {
-  if (!listConnectedPluginSlugs) return { ok: false };
-  try {
-    return { ok: true, slugs: await listConnectedPluginSlugs(userId) };
-  } catch {
-    return { ok: false };
-  }
-}
-
-async function persistLivePluginConnections(
-  prisma: PrismaClient,
-  owner: { userId: string; spaceId: string },
-  rows: PluginConnectionRow[],
-  liveSlugs: string[],
-): Promise<void> {
-  const sync = planLiveConnectionSync(rows, liveSlugs);
-  if (sync.connectIds.length > 0) {
-    await prisma.connection.updateMany({
-      where: {
-        id: { in: sync.connectIds },
-        userId: owner.userId,
-        spaceId: owner.spaceId,
-      },
-      data: { status: "connected" },
-    });
-  }
-  if (sync.revokeIds.length > 0) {
-    await prisma.connection.updateMany({
-      where: {
-        id: { in: sync.revokeIds },
-        userId: owner.userId,
-        spaceId: owner.spaceId,
-      },
-      data: { status: "revoked" },
-    });
-  }
 }
 
 export const APPROVED_EFFECT_REPLAY_ORDER = [{ createdAt: "asc" as const }, { id: "asc" as const }];
@@ -883,27 +837,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const credential = useModelOverride ? overrideCredential! : defaultCredential;
         runAbortController = new AbortController();
         if (!leaseValid) runAbortController.abort();
-        const composioRows = storedConnections.filter(
-          (connection) => connection.connectorId === "composio",
-        );
-        let liveSlugs: string[] = [];
-        if (needsLivePluginSync(composioRows)) {
-          const listing = await loadLivePluginSlugs(deps.listConnectedPluginSlugs, run.userId);
-          if (listing.ok) {
-            liveSlugs = listing.slugs;
-            await persistLivePluginConnections(deps.prisma, run, composioRows, listing.slugs).catch(
-              () => undefined,
-            );
-          }
-        }
-        const connectedComposio = mergeConnectedPlugins(composioRows, liveSlugs);
-        const activeKeys = new Set(
-          connectedComposio.map((connection) => `composio:${connection.provider}`),
-        );
+        // OAuth completion is account-specific. A live toolkit cannot authorize
+        // pending, failed or revoked accounts belonging to that same toolkit.
         const connectedPlugins = storedConnections.filter(
-          (connection) =>
-            connection.status === "connected" ||
-            activeKeys.has(`${connection.connectorId}:${connection.provider}`),
+          (connection) => connection.status === "connected",
         );
         const context = {
           operationId: runId,
@@ -921,7 +858,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             displayName: row.displayName,
             providerRef: row.providerRef ?? undefined,
           })),
-          connectedProviders: connectedComposio.map((row) => row.provider),
+          connectedProviders: connectedPlugins
+            .filter((row) => row.connectorId === "composio")
+            .map((row) => row.provider),
         };
         const memoryScope = configuredMemory
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)
@@ -2735,11 +2674,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         const runtimeHistory = [...historicalContext, ...history];
         // Without a roster a bot only knows the bots it spawned itself.
-        const botDirectory = thread.groupId
-          ? undefined
-          : renderBotDirectory(
-              (
-                await deps.prisma.bot.findMany({
+        const teammates = thread.groupId
+          ? []
+          : await deps.prisma.bot.findMany({
                   where: {
                     spaceId: run.spaceId,
                     userId: run.userId,
@@ -2747,17 +2684,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     id: { not: bot.id },
                     thread: { isNot: null },
                   },
-                  select: { id: true, name: true, title: true, description: true },
+                  select: { id: true, name: true, title: true, description: true, parentBotId: true, pinned: true, createdAt: true },
                   orderBy: { createdAt: "asc" },
                   take: BOT_DIRECTORY_LIMIT,
-                })
-              ).map((peer) => ({
-                id: peer.id,
-                name: peer.name,
-                title: peer.title,
-                description: peer.description,
+                });
+        const botDirectory = thread.groupId ? undefined : renderBotDirectory(teammates);
+        const mainAssistantId = thread.groupId
+          ? undefined
+          : mainAssistantBot([
+              { id: bot.id, pinned: bot.pinned, parentBotId: bot.parentBotId, createdAt: bot.createdAt.toISOString() },
+              ...teammates.map((peer) => ({
+                id: peer.id, pinned: peer.pinned, parentBotId: peer.parentBotId,
+                createdAt: peer.createdAt.toISOString(),
               })),
-            );
+            ])?.id;
+        const coordinationInstruction = thread.groupId
+          ? undefined
+          : bot.id === mainAssistantId
+            ? "You are the user's main assistant in a persistent conversation. Answer directly when you can. For a distinct specialist task, send one clear request to an existing relevant teammate or use a short subagent. Keep ownership of the user's request, report meaningful progress in this conversation, and summarize the specialist's result here. Never ask the user to move to another bot chat just to finish this request. Do not surface tool names, run IDs, routing metadata, or raw peer messages in your answer."
+            : bot.parentBotId
+              ? `You are a specialist in the user's agent team. Your parent bot id is ${bot.parentBotId}. Complete delegated work in your own context, then return a concise result with evidence to the requester. Do not redirect the user between chats.`
+              : undefined;
 
         try {
           for await (const event of deps.runtime.run(
@@ -2769,6 +2716,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               prompt,
               instructions: [
                 bot.instructions || `${bot.name}: ${bot.title}\n${bot.description}`,
+                run.interactionMode === "voice"
+                  ? "This is a live spoken conversation. Reply promptly in the user's language, usually in one or two short sentences. Use natural speech without Markdown or reading code aloud. Do not perform extra research or delegate unless the request requires it. Keep all existing tool authorization and approval rules."
+                  : undefined,
                 groupContext,
                 messagingContext,
                 memoryContext ? redactSecrets(memoryContext, runSecrets) : undefined,
@@ -2783,6 +2733,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
                 "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
                 botDirectory,
+                coordinationInstruction,
                 "archive_bot safely archives a bot this bot created, and only that bot. Use it when the user asks to remove that bot or when it is finished and unused. The user can restore it or permanently delete it later. confirm_name must exactly match its name.",
                 pluginLine,
                 agentSkillsLine,
@@ -2800,6 +2751,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               model: {
                 provider: runModelProvider,
                 id: runModelId,
+                interactionMode: run.interactionMode === "voice" ? "voice" : "chat",
                 apiKey: resolved.oauth ? undefined : resolved.apiKey,
                 baseUrl: resolved.baseUrl,
                 thinkingLevel:

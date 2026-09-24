@@ -1,6 +1,7 @@
 export type ChatMarkdownProps = {
   children: string;
   streaming?: boolean;
+  appearance?: "light" | "dark";
 };
 
 const protocolPattern = /^([a-z][a-z\d+.-]*):/i;

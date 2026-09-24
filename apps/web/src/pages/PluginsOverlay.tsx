@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { CapabilityInstall, ConnectionCatalogItem } from "@rakazo/contracts";
+import type { CapabilityInstall, Connection, ConnectionCatalogItem } from "@rakazo/contracts";
 import {
   abortableDelay,
   buildFeaturedConnectorTiles,
@@ -39,6 +39,9 @@ export function PluginsOverlay({
   const { t } = useLingui();
   const [query, setQuery] = useState("");
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [accountItem, setAccountItem] = useState<ConnectionCatalogItem | null>(null);
+  const [accountLabel, setAccountLabel] = useState("");
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
   const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
   const [sourceName, setSourceName] = useState("");
@@ -53,11 +56,13 @@ export function PluginsOverlay({
   const connectionAttempt = useRef<AbortController | null>(null);
 
   async function refresh() {
-    const [items, installs] = await Promise.all([
+    const [items, installs, rows] = await Promise.all([
       rpc.connections.catalog({}),
       rpc.capabilities.list(),
+      rpc.connections.list().catch(() => [] as Connection[]),
     ]);
     setCatalog(items);
+    setConnections(rows.filter((row) => row.status === "connected" || row.status === "pending"));
     setSources(installs.filter((install) => install.kind === "mcp" || install.kind === "api"));
     return items;
   }
@@ -103,7 +108,19 @@ export function PluginsOverlay({
     setCatalog((prev) => markConnected(prev, item.connectorId, item.slug, connected));
   }
 
-  async function connect(item: ConnectionCatalogItem) {
+  function connectionsFor(item: ConnectionCatalogItem) {
+    return connections.filter(
+      (row) => row.connectorId === item.connectorId && row.provider === item.slug,
+    );
+  }
+
+  function requestConnect(item: ConnectionCatalogItem) {
+    const existing = connectionsFor(item);
+    setAccountLabel(existing.length > 0 ? `${item.name} ${existing.length + 1}` : item.name);
+    setAccountItem(item);
+  }
+
+  async function connect(item: ConnectionCatalogItem, label: string) {
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
@@ -111,10 +128,11 @@ export function PluginsOverlay({
     const key = itemKey(item);
     setPending(key);
     try {
+      const displayName = label.trim() || item.name;
       const started = await rpc.connections.begin({
         connectorId: item.connectorId,
         provider: item.slug,
-        displayName: item.name,
+        displayName,
       });
       if (started.authorizationUrl)
         window.open(started.authorizationUrl, "rakazo-plugin-connect", "noopener,noreferrer");
@@ -132,6 +150,7 @@ export function PluginsOverlay({
         if (row?.status === "connected") {
           if (controller.signal.aborted) return;
           setItemConnected(item, true);
+          await refresh();
           void notifyAppConnected(item);
           return;
         }
@@ -152,22 +171,13 @@ export function PluginsOverlay({
     }
   }
 
-  async function revoke(item: ConnectionCatalogItem) {
+  async function revokeConnection(item: ConnectionCatalogItem, connectionId: string) {
     setCatalogError(null);
     const key = itemKey(item);
-    setPending(key);
+    setPending(`${key}:${connectionId}`);
     try {
-      const rows = await rpc.connections.list();
-      const matches = rows.filter(
-        (entry) => entry.connectorId === item.connectorId && entry.provider === item.slug,
-      );
-      const row =
-        matches.find((entry) => entry.status === "connected") ??
-        matches.find((entry) => entry.status === "pending") ??
-        matches.find((entry) => entry.status === "error");
-      if (!row) throw new Error(t`No connection record found for ${item.name}.`);
-      await rpc.connections.revoke({ connectionId: row.id });
-      setItemConnected(item, false);
+      await rpc.connections.revoke({ connectionId });
+      await refresh();
     } catch (err) {
       setCatalogError(err instanceof Error ? err.message : t`Could not revoke connection`);
     } finally {
@@ -231,8 +241,8 @@ export function PluginsOverlay({
 
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-[rgba(4,4,5,.62)] p-10">
-      <div className="flex h-[760px] w-[1080px] max-w-full flex-col overflow-hidden rounded-[26px] border border-[var(--rk-hairline-strong)] bg-[var(--rk-surface)] shadow-[0_40px_90px_rgba(0,0,0,.55)]">
-        <div className="flex items-start justify-between px-8 pt-7">
+      <div className="rk-dialog-surface flex h-[760px] max-h-[calc(100dvh-5rem)] w-[1080px] max-w-full flex-col overflow-hidden rounded-[26px] border border-[var(--rk-hairline-strong)] bg-[var(--rk-surface)] shadow-[0_40px_90px_rgba(0,0,0,.55)]">
+        <div className="flex shrink-0 items-start justify-between px-8 pt-7">
           <div className="text-2xl font-medium text-[var(--rk-ink-strong)]">
             <Trans>Integrations</Trans>
           </div>
@@ -246,7 +256,7 @@ export function PluginsOverlay({
           </button>
         </div>
 
-        <div className="px-8 pt-4">
+        <div className="shrink-0 px-8 pt-4">
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -256,7 +266,34 @@ export function PluginsOverlay({
           />
         </div>
 
-        <div id="integration-list" className="rk-scroll flex-1 overflow-y-auto px-8 py-6">
+        {accountItem ? (
+          <form
+            className="flex shrink-0 items-end gap-3 px-8 pt-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void connect(accountItem, accountLabel);
+              setAccountItem(null);
+            }}
+          >
+            <label className="min-w-0 flex-1 text-[13px] text-[var(--rk-soft)]">
+              Account label
+              <input
+                value={accountLabel}
+                onChange={(event) => setAccountLabel(event.target.value)}
+                placeholder="Personal / Work"
+                className="mt-1 w-full rounded-[13px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 text-[15px] text-[var(--rk-ink)] outline-none"
+              />
+            </label>
+            <Button type="submit" variant="pill" disabled={pending !== null}>
+              Connect
+            </Button>
+            <Button type="button" variant="pill" onClick={() => setAccountItem(null)}>
+              Cancel
+            </Button>
+          </form>
+        ) : null}
+
+        <div id="integration-list" className="rk-scroll min-h-0 flex-1 overflow-y-auto px-8 py-6">
           {catalogError ? (
             <p className="mb-4 text-sm text-[var(--rk-danger)]">{catalogError}</p>
           ) : null}
@@ -308,26 +345,56 @@ export function PluginsOverlay({
                           ) : null}
                         </div>
                         {item && !tile.missing ? (
-                          <Button
-                            type="button"
-                            variant="pill"
-                            size="sm"
-                            disabled={pending === key}
-                            onClick={() => void (connected ? revoke(item) : connect(item))}
-                          >
-                            {pending === key ? (
-                              connected ? (
-                                <Trans>Removing…</Trans>
-                              ) : (
-                                <Trans>Adding…</Trans>
-                              )
-                            ) : connected ? (
-                              <Trans>Remove</Trans>
-                            ) : (
-                              <Trans>Add</Trans>
-                            )}
-                          </Button>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <Button
+                              type="button"
+                              variant="pill"
+                              size="sm"
+                              disabled={pending === key || Boolean(pending?.startsWith(`${key}:`))}
+                              onClick={() => requestConnect(item)}
+                            >
+                              {pending === key ? "Adding…" : connected ? "Add account" : "Add"}
+                            </Button>
+                            {connected ? (
+                              <div className="max-w-[140px] text-right text-[11px] text-[var(--rk-muted-2)]">
+                                {(item.connectionCount ?? connectionsFor(item).length) > 1
+                                  ? `${item.connectionCount ?? connectionsFor(item).length} accounts`
+                                  : "Connected"}
+                              </div>
+                            ) : null}
+                          </div>
                         ) : null}
+                      </div>
+                    );
+                  })}
+                  {/* Per-account revoke rows for featured apps with connections */}
+                  {featuredTiles.map((tile) => {
+                    const item = tile.item;
+                    if (!item || tile.missing) return null;
+                    const rows = connectionsFor(item);
+                    if (rows.length === 0) return null;
+                    return (
+                      <div key={`accounts-${tile.id}`} className="col-span-2 space-y-1 px-1 pb-2">
+                        {rows.map((row) => (
+                          <div
+                            key={row.id}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-[var(--rk-scroll)]/40 px-2 py-1.5 text-[12.5px]"
+                          >
+                            <span className="min-w-0 truncate text-[var(--rk-soft)]">
+                              {tile.label}: {row.displayName}
+                              {row.status !== "connected" ? ` (${row.status})` : ""}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="pill"
+                              size="sm"
+                              disabled={pending === `${itemKey(item)}:${row.id}`}
+                              onClick={() => void revokeConnection(item, row.id)}
+                            >
+                              {pending === `${itemKey(item)}:${row.id}` ? "Removing…" : "Remove"}
+                            </Button>
+                          </div>
+                        ))}
                       </div>
                     );
                   })}
@@ -371,25 +438,45 @@ export function PluginsOverlay({
                         {item.name}
                       </div>
                     </div>
-                    <Button
-                      type="button"
-                      variant="pill"
-                      size="sm"
-                      disabled={pending === key}
-                      onClick={() => void (item.connected ? revoke(item) : connect(item))}
-                    >
-                      {pending === key ? (
-                        item.connected ? (
-                          <Trans>Removing…</Trans>
-                        ) : (
-                          <Trans>Adding…</Trans>
-                        )
-                      ) : item.connected ? (
-                        <Trans>Remove</Trans>
-                      ) : (
-                        <Trans>Add</Trans>
-                      )}
-                    </Button>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <Button
+                        type="button"
+                        variant="pill"
+                        size="sm"
+                        disabled={pending === key || Boolean(pending?.startsWith(`${key}:`))}
+                        onClick={() => requestConnect(item)}
+                      >
+                        {pending === key ? "Adding…" : item.connected ? "Add account" : "Add"}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+              {visible.map((item) => {
+                const rows = connectionsFor(item);
+                if (rows.length === 0) return null;
+                return (
+                  <div key={`acc-${itemKey(item)}`} className="col-span-2 space-y-1 px-1 pb-2">
+                    {rows.map((row) => (
+                      <div
+                        key={row.id}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-[var(--rk-scroll)]/40 px-2 py-1.5 text-[12.5px]"
+                      >
+                        <span className="min-w-0 truncate text-[var(--rk-soft)]">
+                          {item.name}: {row.displayName}
+                          {row.status !== "connected" ? ` (${row.status})` : ""}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="pill"
+                          size="sm"
+                          disabled={pending === `${itemKey(item)}:${row.id}`}
+                          onClick={() => void revokeConnection(item, row.id)}
+                        >
+                          {pending === `${itemKey(item)}:${row.id}` ? "Removing…" : "Remove"}
+                        </Button>
+                      </div>
+                    ))}
                   </div>
                 );
               })}
@@ -580,7 +667,7 @@ export function PluginsOverlay({
                       disabled={pending === source.id}
                       onClick={() => void removeSource(source)}
                     >
-                      {pending === source.id ? <Trans>Removing…</Trans> : <Trans>Remove</Trans>}
+                      {pending === source.id ? "Removing…" : "Remove"}
                     </Button>
                   </div>
                 ))}

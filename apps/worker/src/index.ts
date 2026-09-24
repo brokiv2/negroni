@@ -4,6 +4,7 @@ import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 loadRootEnv();
 
 import {
+  apnsConfigFromEnv,
   ChatSdkMessagingSurface,
   createBackgroundJobHandlers,
   createConnectorStack,
@@ -130,7 +131,9 @@ async function main() {
     secretStore: secrets,
     deploymentModelKey,
     dataDir,
-    notifications: new ExpoPushProvider(dataDir),
+    notifications: new ExpoPushProvider(dataDir, {
+      apns: apnsConfigFromEnv(process.env),
+    }),
     jobs,
     events,
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,

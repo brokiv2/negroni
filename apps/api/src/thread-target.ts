@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import { type JobPublisher, runContinueJob } from "@rakazo/adapter-kit";
 import { toComputerRef } from "@rakazo/adapters";
 import {
@@ -531,6 +532,7 @@ export async function sendThreadMessage(
   actor: Actor,
   target: ThreadTarget,
   input: {
+    interactionMode?: "chat" | "voice";
     text?: string;
     artifactIds?: string[];
     mentions?: MentionTargetInput[];
@@ -538,6 +540,8 @@ export async function sendThreadMessage(
     clientNonce?: string;
   },
 ) {
+  // Build 19 sent a call nonce before the explicit mode field existed.
+  const interactionMode = input.interactionMode ?? (input.clientNonce?.startsWith("call-") ? "voice" : "chat");
   const existing = await replayExistingSend(deps, target.threadId, input.clientNonce);
   if (existing) return existing;
 
@@ -580,6 +584,9 @@ export async function sendThreadMessage(
           },
           select: { id: true, taskId: true, status: true },
         });
+        if (active && interactionMode === "voice") {
+          throw new ORPCError("CONFLICT", { message: "The bot is already working. Wait for it to finish before calling." });
+        }
         if (active) {
           await tx.steeringMessage.create({
             data: {
@@ -624,6 +631,7 @@ export async function sendThreadMessage(
             userId: actor.userId,
             status: "queued",
             trigger: "user",
+            interactionMode,
             clientNonce: sendRunClientNonce(input.clientNonce, message.id),
             sourceMessageId: message.id,
           },
@@ -717,6 +725,7 @@ export async function sendThreadMessage(
             userId: actor.userId,
             status: "queued",
             trigger: "user",
+            interactionMode,
             clientNonce: sendRunClientNonce(input.clientNonce, message.id, botId),
             sourceMessageId: message.id,
           },

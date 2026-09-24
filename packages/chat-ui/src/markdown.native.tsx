@@ -3,100 +3,130 @@ import Markdown, {
   type RenderRules,
 } from "@ronradtke/react-native-markdown-display";
 import { memo } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import { Linking, StyleSheet, Text, useColorScheme, View } from "react-native";
 import type { ChatMarkdownProps } from "./markdown";
 import { sanitizeMarkdownUrl } from "./markdown";
 
-const styles = StyleSheet.create({
-  body: {
-    color: "#DFDFE2",
-    fontSize: 15.5,
-    lineHeight: 23,
-    width: "100%",
-    minWidth: 0,
-    flexShrink: 1,
-  },
-  paragraph: {
-    marginTop: 0,
-    marginBottom: 9,
-    width: "100%",
-    flexShrink: 1,
-  },
-  heading1: {
-    color: "#F3F3F4",
-    fontSize: 21,
-    lineHeight: 27,
-    marginTop: 10,
-    marginBottom: 5,
-  },
-  heading2: {
-    color: "#F3F3F4",
-    fontSize: 19,
-    lineHeight: 25,
-    marginTop: 10,
-    marginBottom: 5,
-  },
-  heading3: {
-    color: "#F3F3F4",
-    fontSize: 17,
-    lineHeight: 23,
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  strong: {
-    color: "#F3F3F4",
-    fontWeight: "700",
-  },
-  link: {
-    color: "#86B7FF",
-    textDecorationLine: "underline",
-    marginBottom: 0,
-  },
-  code_inline: {
-    color: "#ECECEE",
-    backgroundColor: "#101012",
-    borderColor: "#34343A",
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 0,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  code_block: {
-    color: "#ECECEE",
-    backgroundColor: "#0E0E10",
-    borderColor: "#2D2D32",
-  },
-  fence: {
-    backgroundColor: "#0E0E10",
-    borderColor: "#2D2D32",
-  },
-  fence_code: {
-    backgroundColor: "#0E0E10",
-  },
-  blockquote: {
-    backgroundColor: "transparent",
-    borderLeftColor: "#55555C",
-  },
-  table: {
-    borderColor: "#34343A",
-  },
-  tr: {
-    borderColor: "#34343A",
-  },
-  hr: {
-    backgroundColor: "#34343A",
-  },
-  bullet_list_content: {
-    flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
-  },
-  ordered_list_content: {
-    flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
-  },
+function createStyles(colors: {
+  text: string;
+  strong: string;
+  link: string;
+  codeText: string;
+  codeBackground: string;
+  codeBorder: string;
+  quoteBorder: string;
+}) {
+  return StyleSheet.create({
+    body: {
+      color: colors.text,
+      fontSize: 17,
+      lineHeight: 25,
+      width: "100%",
+      minWidth: 0,
+      flexShrink: 1,
+    },
+    paragraph: {
+      marginTop: 0,
+      marginBottom: 9,
+      width: "100%",
+      flexShrink: 1,
+    },
+    heading1: {
+      color: colors.strong,
+      fontSize: 21,
+      lineHeight: 27,
+      marginTop: 10,
+      marginBottom: 5,
+    },
+    heading2: {
+      color: colors.strong,
+      fontSize: 19,
+      lineHeight: 25,
+      marginTop: 10,
+      marginBottom: 5,
+    },
+    heading3: {
+      color: colors.strong,
+      fontSize: 17,
+      lineHeight: 23,
+      marginTop: 8,
+      marginBottom: 4,
+    },
+    strong: {
+      color: colors.strong,
+      fontWeight: "700",
+    },
+    link: {
+      color: colors.link,
+      textDecorationLine: "underline",
+      marginBottom: 0,
+    },
+    code_inline: {
+      color: colors.codeText,
+      backgroundColor: colors.codeBackground,
+      borderColor: colors.codeBorder,
+      borderWidth: StyleSheet.hairlineWidth,
+      padding: 0,
+      paddingHorizontal: 4,
+      paddingVertical: 1,
+      borderRadius: 4,
+    },
+    code_block: {
+      color: colors.codeText,
+      backgroundColor: colors.codeBackground,
+      borderColor: colors.codeBorder,
+    },
+    fence: {
+      backgroundColor: colors.codeBackground,
+      borderColor: colors.codeBorder,
+    },
+    fence_code: {
+      backgroundColor: colors.codeBackground,
+    },
+    blockquote: {
+      backgroundColor: "transparent",
+      borderLeftColor: colors.quoteBorder,
+    },
+    table: {
+      borderColor: colors.codeBorder,
+    },
+    tr: {
+      borderColor: colors.codeBorder,
+    },
+    hr: {
+      backgroundColor: colors.codeBorder,
+    },
+    bullet_list_content: {
+      flex: 1,
+      flexShrink: 1,
+      minWidth: 0,
+    },
+    ordered_list_content: {
+      flex: 1,
+      flexShrink: 1,
+      minWidth: 0,
+    },
+  });
+}
+
+const darkStyles = createStyles({
+  text: "#DFDFE2",
+  strong: "#F3F3F4",
+  link: "#86B7FF",
+  codeText: "#ECECEE",
+  codeBackground: "#0E0E10",
+  codeBorder: "#34343A",
+  quoteBorder: "#55555C",
+});
+
+const lightStyles = createStyles({
+  text: "#29292D",
+  strong: "#151515",
+  link: "#165CC0",
+  codeText: "#222226",
+  codeBackground: "#F5F5F2",
+  codeBorder: "#D2D2CE",
+  quoteBorder: "#A0A09B",
 });
 
 async function openSafeLink(url: string) {
@@ -125,10 +155,13 @@ const renderRules: RenderRules = {
 export const ChatMarkdown = memo(function ChatMarkdown({
   children,
   streaming = false,
+  appearance,
 }: ChatMarkdownProps) {
+  const systemColorScheme = useColorScheme();
+  const colorScheme = appearance ?? (systemColorScheme === "light" ? "light" : "dark");
   const sharedProps = {
-    colorScheme: "dark" as const,
-    style: styles,
+    colorScheme,
+    style: colorScheme === "light" ? lightStyles : darkStyles,
     rules: renderRules,
     allowedImageHandlers: ["https://", "http://"],
     onLinkPress: (url: string) => {
@@ -140,7 +173,11 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   return (
     <View style={layout.wrap}>
       {streaming ? (
-        <MarkdownStream {...sharedProps} cursorColor="#85858A" streaming>
+        <MarkdownStream
+          {...sharedProps}
+          cursorColor={colorScheme === "light" ? "#6C6C70" : "#85858A"}
+          streaming
+        >
           {children}
         </MarkdownStream>
       ) : (

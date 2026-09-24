@@ -447,6 +447,8 @@ export const ConnectionSchema = z.object({
   provider: z.string(),
   displayName: z.string(),
   status: z.enum(["pending", "connected", "revoked", "error"]),
+  /** Composio connected-account id when known (multi-account). */
+  accountId: z.string().nullable().optional(),
   capabilities: z.array(z.string()),
   createdAt: z.string(),
 });
@@ -458,6 +460,8 @@ export const ConnectionCatalogItemSchema = z.object({
   name: z.string(),
   logo: z.string().nullable(),
   connected: z.boolean(),
+  /** Number of active connected accounts for this toolkit (multi-account). */
+  connectionCount: z.number().int().nonnegative().optional(),
   noAuth: z.boolean(),
 });
 export type ConnectionCatalogItem = z.infer<typeof ConnectionCatalogItemSchema>;

@@ -204,7 +204,7 @@ function OrganicAvatar({
               filter:
                 mode === "working"
                   ? `drop-shadow(0 0 ${Math.round(size * 0.16)}px ${color})`
-                  : "drop-shadow(0 2px 3px rgba(0,0,0,.34))",
+                  : "drop-shadow(0 1px 1px rgba(0,0,0,.12))",
             } as CSSProperties
           }
         >
@@ -293,7 +293,7 @@ export function Wordmark({ className }: { className?: string }) {
         <span className="h-4 w-[7px] rounded-full bg-[var(--rk-cream)]" />
       </div>
       <span className="font-[Aeonik,ui-sans-serif] text-[28px] tracking-tight text-[var(--rk-ink-strong)]">
-        Rakazo
+        Negroni
       </span>
     </div>
   );

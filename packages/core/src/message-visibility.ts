@@ -11,7 +11,7 @@ export type UserVisibleMessagesOptions = {
    * (web CollaborationMarker; mobile AgentEventLabel). Peer bodies stay hidden.
    */
   includePeerReceipts?: boolean;
-  /** Peer-run ids from `run.trigger === "bot_message"` when receipts may be out of window. */
+  /** Internal peer-request run IDs when receipts may be out of window. Excludes result/status reporting runs. */
   knownPeerRunIds?: Iterable<string>;
 };
 
@@ -21,7 +21,16 @@ export function isPeerReceiptBlocks(blocks: readonly MessageBlock[]): boolean {
   );
 }
 
-/** Drop peer-run activity/replies; optionally keep sent/received receipt rows. */
+/** A delegated result/status wakes the coordinator to report back to the user. */
+export function peerMessageReportsToUser(blocks: readonly MessageBlock[]): boolean {
+  return blocks.some(
+    (block) =>
+      block.kind === "bot_message_received" &&
+      (block.intent === "result" || block.intent === "status"),
+  );
+}
+
+/** Drop internal peer-request replies; keep coordinator result summaries. */
 export function userVisibleMessages<T extends PresentableMessage>(
   messages: readonly T[],
   options: UserVisibleMessagesOptions = {},
@@ -29,7 +38,11 @@ export function userVisibleMessages<T extends PresentableMessage>(
   const peerRunIds = new Set([
     ...(options.knownPeerRunIds ?? []),
     ...messages
-      .filter((message) => message.blocks.some((block) => block.kind === "bot_message_received"))
+      .filter(
+        (message) =>
+          message.blocks.some((block) => block.kind === "bot_message_received") &&
+          !peerMessageReportsToUser(message.blocks),
+      )
       .flatMap((message) => (message.runId ? [message.runId] : [])),
   ]);
   const includePeerReceipts = options.includePeerReceipts === true;
@@ -38,4 +51,20 @@ export function userVisibleMessages<T extends PresentableMessage>(
     if (isPeerReceiptBlocks(message.blocks)) return includePeerReceipts;
     return !message.runId || !peerRunIds.has(message.runId);
   });
+}
+
+/** Chat shows responses and interactive content, without tool execution disclosures. */
+export function transcriptContentBlocks(
+  blocks: readonly MessageBlock[],
+  options: { hideCoordination?: boolean } = {},
+): MessageBlock[] {
+  return blocks.filter(
+    (block) =>
+      block.kind !== "steps" &&
+      !(options.hideCoordination && (block.kind === "handoff" || block.kind === "subagent")) &&
+      !(
+        block.kind === "progress" &&
+        ((block.pendingToolNames?.length ?? 0) > 0 || /^Using\s+/i.test(block.text))
+      ),
+  );
 }

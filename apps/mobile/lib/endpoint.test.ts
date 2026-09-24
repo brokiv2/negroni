@@ -6,6 +6,7 @@ import {
   apiBaseWarning,
   defaultApiBase,
   displayApiHost,
+  migrateLegacyApiBase,
   normalizeApiBase,
   probeApiBase,
   usesCustomApiBase,
@@ -84,6 +85,33 @@ describe("display and warnings", () => {
   it("treats the compile-time default as not custom", () => {
     expect(usesCustomApiBase(defaultApiBase())).toBe(false);
     expect(usesCustomApiBase("https://rakazo.example.com")).toBe(true);
+  });
+
+  it("moves a saved temporary ngrok URL to the assigned dev domain", () => {
+    expect(
+      migrateLegacyApiBase(
+        "https://36df-31-216-71-25.ngrok-free.app",
+        "https://assigned-name.ngrok-free.dev",
+      ),
+    ).toBe("https://assigned-name.ngrok-free.dev");
+  });
+
+  it("migrates the retired simulator port only in development to a remote configured API", () => {
+    expect(
+      migrateLegacyApiBase("http://127.0.0.1:3199", "https://assigned-name.ngrok-free.dev", true),
+    ).toBe("https://assigned-name.ngrok-free.dev");
+    expect(
+      migrateLegacyApiBase("http://127.0.0.1:3199", "https://assigned-name.ngrok-free.dev"),
+    ).toBe("http://127.0.0.1:3199");
+    expect(
+      migrateLegacyApiBase("http://127.0.0.1:3199", "http://127.0.0.1:3100", true),
+    ).toBe("http://127.0.0.1:3199");
+  });
+
+  it("preserves normal custom servers", () => {
+    expect(
+      migrateLegacyApiBase("https://custom.example.com", "https://assigned-name.ngrok-free.dev"),
+    ).toBe("https://custom.example.com");
   });
 });
 

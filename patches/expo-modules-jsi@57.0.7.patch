@@ -1,0 +1,21 @@
+diff --git a/apple/scripts/build-xcframework.sh b/apple/scripts/build-xcframework.sh
+index 56bcb4ced0c25da2aaa170e3d2657ae2e4798ca7..1b393688851d91d56c4bac84144545ff175a4f9d 100755
+--- a/apple/scripts/build-xcframework.sh
++++ b/apple/scripts/build-xcframework.sh
+@@ -30,9 +30,13 @@ PACKAGE_NAME="ExpoModulesJSI"
+ XCFRAMEWORK_PATH="${PACKAGE_DIR}/Products/${PACKAGE_NAME}.xcframework"
+ 
+ CONFIGURATION="Release"
+-DERIVED_DATA_PATH="${PACKAGE_DIR}/.DerivedData"
+-SPM_BUILD_PATH="${PACKAGE_DIR}/.build"
+-SPM_WORKSPACE_PATH="${PACKAGE_DIR}/.swiftpm"
++# Keep generated Apple bundles outside File Provider/iCloud folders. Those
++# folders can attach Finder metadata while the nested Xcode build is running,
++# and codesign then rejects the framework as containing resource-fork data.
++TEMP_BUILD_ROOT="${PROJECT_TEMP_DIR:-${TMPDIR:-/tmp}/expo-modules-jsi}"
++DERIVED_DATA_PATH="${TEMP_BUILD_ROOT}/NestedDerivedData"
++SPM_BUILD_PATH="${TEMP_BUILD_ROOT}/SwiftPMBuild"
++SPM_WORKSPACE_PATH="${TEMP_BUILD_ROOT}/SwiftPMWorkspace"
+ BUILD_PRODUCTS_PATH="${DERIVED_DATA_PATH}/Build/Products"
+ 
+ source "${PACKAGE_DIR}/scripts/xcframework-helpers.sh"

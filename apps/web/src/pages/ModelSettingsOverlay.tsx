@@ -34,6 +34,10 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
   const [probeModels, setProbeModels] = useState<string[]>([]);
   const [probedBaseUrl, setProbedBaseUrl] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
+  const [providerProbeModels, setProviderProbeModels] = useState<string[]>([]);
+  const [providerProbing, setProviderProbing] = useState(false);
+  const [providerProbeError, setProviderProbeError] = useState<string | null>(null);
+  const [addingOverrideId, setAddingOverrideId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +181,47 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
     resetOpenAiCompatibleProbe();
   }
 
+  async function probeConnectedProvider() {
+    if (!provider || !credential) return;
+    setProviderProbing(true);
+    setProviderProbeError(null);
+    try {
+      const result = await rpc.models.probeProvider({ provider });
+      setProviderProbeModels(result.models);
+    } catch (err) {
+      setProviderProbeError(err instanceof Error ? err.message : t`Could not list models`);
+    } finally {
+      setProviderProbing(false);
+    }
+  }
+
+  async function addOverrideModel(id: string) {
+    setAddingOverrideId(id);
+    setProviderProbeError(null);
+    try {
+      const result = await rpc.models.addModelOverride({
+        provider,
+        id,
+        basedOn: suggestBasedOn(id),
+      });
+      if (!result.ok) throw new Error("Could not add the model");
+      await refresh();
+      setNotice(t`${id} added to the model list.`);
+    } catch (err) {
+      setProviderProbeError(err instanceof Error ? err.message : t`Could not add the model`);
+    } finally {
+      setAddingOverrideId(null);
+    }
+  }
+
+  function suggestBasedOn(id: string): string | undefined {
+    const ids = modelsForProvider.map((entry) => entry.id);
+    const token = id.split(/[-._]/)[0]?.toLowerCase() ?? "";
+    return (
+      ids.find((candidate) => candidate.toLowerCase().startsWith(token)) ?? ids[ids.length - 1]
+    );
+  }
+
   function chooseProvider(nextProvider: string) {
     cancelOAuthAttempt();
     selectionRevisionRef.current += 1;
@@ -194,6 +239,8 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
     detailScrollRef.current?.scrollTo({ top: 0 });
     setApiKey("");
     resetOpenAiCompatibleProbe();
+    setProviderProbeModels([]);
+    setProviderProbeError(null);
     setError(null);
     setNotice(null);
   }
@@ -505,6 +552,59 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
                           setNotice(null);
                         }}
                       />
+                      {selected.auth !== "oauth" ? (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            className="text-[13px] text-[var(--rk-muted)] underline disabled:opacity-60"
+                            disabled={providerProbing || !credential}
+                            onClick={() => void probeConnectedProvider()}
+                          >
+                            {providerProbing ? (
+                              <Trans>Checking models…</Trans>
+                            ) : (
+                              <Trans>Fetch model list from provider</Trans>
+                            )}
+                          </button>
+                          {providerProbeError ? (
+                            <p className="mt-1 text-[13px] text-[var(--rk-muted)]">
+                              {providerProbeError}
+                            </p>
+                          ) : null}
+                          {providerProbeModels.length ? (
+                            <ul className="mt-2 space-y-1">
+                              {providerProbeModels.map((id) => {
+                                const known = modelsForProvider.some((entry) => entry.id === id);
+                                return (
+                                  <li
+                                    key={id}
+                                    className="flex items-center justify-between gap-2 text-[13px] text-[var(--rk-ink)]"
+                                  >
+                                    <span className="truncate">
+                                      {id}
+                                      {known ? " ✓" : ""}
+                                    </span>
+                                    {!known ? (
+                                      <button
+                                        type="button"
+                                        className="underline disabled:opacity-60"
+                                        disabled={addingOverrideId !== null}
+                                        onClick={() => void addOverrideModel(id)}
+                                      >
+                                        {addingOverrideId === id ? (
+                                          <Trans>Adding…</Trans>
+                                        ) : (
+                                          <Trans>Add to list</Trans>
+                                        )}
+                                      </button>
+                                    ) : null}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </>
                   )}
                 </div>

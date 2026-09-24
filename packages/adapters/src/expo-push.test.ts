@@ -6,7 +6,9 @@ import {
   deletePushToken,
   ExpoPushProvider,
   expoPushErrorMessage,
+  loadPushRegistrations,
   loadPushToken,
+  savePushRegistration,
   savePushToken,
 } from "./expo-push.js";
 
@@ -108,6 +110,62 @@ describe("expo push", () => {
     expect(body.collapseId).toBe("th-1");
     expect(body.tag).toBe("th-1");
     expect(body.data.kind).toBe("takeover");
+  });
+
+  it("routes native iOS registrations directly to APNs", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-push-"));
+    dirs.push(dataDir);
+    await savePushRegistration(dataDir, "user-1", {
+      provider: "apns",
+      token: "0123456789abcdef",
+      environment: "production",
+    });
+    const sendApns = vi.fn(async () => ({ status: 200 }));
+    const apns = {
+      keyId: "KEY1234567",
+      teamId: "TEAM123456",
+      topic: "com.example.app",
+      privateKeyPath: "/private/key.p8",
+    };
+    const push = new ExpoPushProvider(dataDir, { apns, sendApns });
+    const message = {
+      kind: "completion" as const,
+      title: "Done",
+      body: "The task finished",
+      botId: "bot-1",
+      threadId: "thread-1",
+    };
+
+    await push.send(message, notifyContext);
+
+    expect(sendApns).toHaveBeenCalledWith(
+      apns,
+      "0123456789abcdef",
+      "production",
+      message,
+      notifyContext.signal,
+    );
+  });
+
+  it("keeps registrations for more than one device", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-push-"));
+    dirs.push(dataDir);
+    await savePushRegistration(dataDir, "user-1", {
+      provider: "apns",
+      token: "device-one-token",
+      environment: "production",
+    });
+    await savePushRegistration(dataDir, "user-1", {
+      provider: "apns",
+      token: "device-two-token",
+      environment: "production",
+    });
+
+    const registrations = await loadPushRegistrations(dataDir, "user-1");
+    expect(registrations.map(({ token }) => token)).toEqual([
+      "device-one-token",
+      "device-two-token",
+    ]);
   });
 
   it("throws when Expo rejects the request", async () => {

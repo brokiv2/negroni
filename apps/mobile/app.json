@@ -1,12 +1,11 @@
 {
   "expo": {
-    "name": "Rakazo",
-    "slug": "rakazo",
-    "owner": "inbox-zero",
-    "scheme": "rakazo",
+    "name": "Negroni",
+    "slug": "negroni",
+    "scheme": "negroni",
     "version": "1.0.0",
-    "orientation": "portrait",
-    "userInterfaceStyle": "dark",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
     "plugins": [
       [
@@ -18,8 +17,14 @@
         }
       ],
       "expo-router",
+      "expo-apple-authentication",
       "expo-secure-store",
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Negroni uses the microphone to transcribe messages for your bots."
+        }
+      ],
       "expo-localization",
       "@react-native-vector-icons/ionicons",
       "@react-native-vector-icons/material-design-icons",
@@ -33,8 +38,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Rakazo uses your photo library so you can attach images to a bot message.",
-          "cameraPermission": "Rakazo uses the camera so you can attach photos to a bot message.",
+          "photosPermission": "Negroni uses your photo library so you can attach images to a bot message.",
+          "cameraPermission": "Negroni uses the camera so you can attach photos to a bot message.",
           "microphonePermission": false
         }
       ],
@@ -42,24 +47,27 @@
       "./plugins/with-worklets-headers"
     ],
     "ios": {
-      "bundleIdentifier": "com.rakazo.app",
-      "buildNumber": "1",
-      "supportsTablet": false,
+      "bundleIdentifier": "com.artempaskov.aisy",
+      "usesAppleSignIn": true,
+      "buildNumber": "25",
+      "supportsTablet": true,
       "icon": "./assets/icon.png",
       "config": {
         "usesNonExemptEncryption": false
       },
       "infoPlist": {
-        "NSCameraUsageDescription": "Rakazo uses the camera so you can attach photos to a bot message.",
-        "NSPhotoLibraryUsageDescription": "Rakazo uses your photo library so you can attach images to a bot message.",
-        "NSLocalNetworkUsageDescription": "Rakazo connects to a self-hosted Rakazo server on your local network.",
+        "CFBundleIconName": "AppIcon",
+        "NSCameraUsageDescription": "Negroni uses the camera so you can attach photos to a bot message.",
+        "NSPhotoLibraryUsageDescription": "Negroni uses your photo library so you can attach images to a bot message.",
+        "NSMicrophoneUsageDescription": "Negroni uses the microphone to transcribe messages for your bots.",
+        "NSLocalNetworkUsageDescription": "Negroni connects to your Negroni server on the local network.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
       }
     },
     "android": {
-      "package": "com.rakazo.app",
+      "package": "com.artempaskov.negroni",
       "versionCode": 10,
       "softwareKeyboardLayoutMode": "resize",
       "icon": "./assets/icon.png",
@@ -74,16 +82,10 @@
     },
     "extra": {
       "router": {},
-      "supportsRTL": true,
-      "eas": {
-        "projectId": "07f7eb04-45e3-47fe-9374-99a2f991131e"
-      }
-    },
-    "runtimeVersion": {
-      "policy": "appVersion"
+      "supportsRTL": true
     },
     "updates": {
-      "url": "https://u.expo.dev/07f7eb04-45e3-47fe-9374-99a2f991131e"
+      "enabled": false
     }
   }
 }

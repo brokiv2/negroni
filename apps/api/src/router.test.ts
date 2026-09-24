@@ -221,14 +221,16 @@ describe("connections.complete", () => {
   it("forwards an optional code to the managed connector", async () => {
     const complete = vi.fn().mockResolvedValue({ connectionRef: "gmail" });
     const connectionReady = vi.fn().mockResolvedValue(true);
-    const update = vi.fn().mockResolvedValue({
+    const refreshedConnection = {
       id: "conn-1",
       connectorId: "composio",
       provider: "gmail",
       displayName: "Gmail",
       status: "connected",
+      providerRef: "gmail-state",
       createdAt: new Date("2026-08-26T00:00:00.000Z"),
-    });
+    };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       connection: {
         findFirst: vi.fn().mockResolvedValue({
@@ -240,7 +242,8 @@ describe("connections.complete", () => {
           status: "pending",
           createdAt: new Date("2026-08-26T00:00:00.000Z"),
         }),
-        update,
+        updateMany,
+        findFirstOrThrow: vi.fn().mockResolvedValue(refreshedConnection),
       },
     } as unknown as PrismaClient;
     const deps = {
@@ -285,7 +288,15 @@ describe("connections.complete", () => {
       { state: "gmail-state", code: "123456" },
       expect.objectContaining({ spaceId: "workspace-1", userId: "user-1" }),
     );
-    expect(connectionReady).toHaveBeenCalled();
+    expect(connectionReady).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: "workspace-1", userId: "user-1" }),
+      "gmail",
+      "gmail-state",
+    );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "conn-1", status: "pending", spaceId: "workspace-1", userId: "user-1" },
+      data: { status: "connected" },
+    });
   });
 });
 

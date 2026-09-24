@@ -1,10 +1,6 @@
 import type { Models } from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { registerLocalProvider } from "./pi-local-provider.js";
-import {
-  OPENAI_COMPATIBLE_PROVIDER_ID,
-  registerOpenAiCompatibleCatalog,
-} from "./pi-openai-compatible-provider.js";
+import { composedCatalog } from "./catalog-overrides.js";
+import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
 
 /** Computer tools whose results include screenshots for the model. */
 export const IMAGE_RETURNING_COMPUTER_TOOLS = new Set([
@@ -18,11 +14,8 @@ export const MODEL_CANNOT_SEE_MESSAGE = "This bot's model cannot see; pick a vis
 
 const SCRIPTED_DEFAULT_MODEL_ID = "deepseek/deepseek-v4-flash-0731";
 
-let catalogModelsCache: Models | undefined;
-
 function catalogModels(): Models {
-  catalogModelsCache ??= registerOpenAiCompatibleCatalog(registerLocalProvider(builtinModels()));
-  return catalogModelsCache;
+  return composedCatalog();
 }
 
 /**

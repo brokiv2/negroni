@@ -6,7 +6,7 @@ import {
   type MessageBlock,
   type SpaceBot,
 } from "@rakazo/contracts";
-import { userVisibleMessages } from "@rakazo/core";
+import { peerMessageReportsToUser, userVisibleMessages } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import { type ComputerMode, ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
@@ -253,10 +253,16 @@ export function createRepos(prisma: PrismaClient) {
       const peerRuns = candidateRunIds.length
         ? await prisma.run.findMany({
             where: { id: { in: candidateRunIds }, trigger: "bot_message" },
-            select: { id: true },
+            select: { id: true, sourceMessage: { select: { blocks: true } } },
           })
         : [];
-      const peerRunIds = new Set(peerRuns.map((run) => run.id));
+      const peerRunIds = new Set(
+        peerRuns
+          .filter(
+            (run) => !peerMessageReportsToUser((run.sourceMessage?.blocks ?? []) as MessageBlock[]),
+          )
+          .map((run) => run.id),
+      );
       return Promise.all(
         bots.map(async (bot) => {
           let messages = bot.thread?.messages ?? [];
@@ -268,9 +274,12 @@ export function createRepos(prisma: PrismaClient) {
             if (windowRunIds.length > 0) {
               const morePeers = await prisma.run.findMany({
                 where: { id: { in: windowRunIds }, trigger: "bot_message" },
-                select: { id: true },
+                select: { id: true, sourceMessage: { select: { blocks: true } } },
               });
-              for (const run of morePeers) peerRunIds.add(run.id);
+              for (const run of morePeers) {
+                if (!peerMessageReportsToUser((run.sourceMessage?.blocks ?? []) as MessageBlock[]))
+                  peerRunIds.add(run.id);
+              }
             }
             const visible = userVisibleMessages(
               messages.map((message) => ({

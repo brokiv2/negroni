@@ -22,6 +22,8 @@ export interface ConnectedConnector {
   externalId: string;
   displayName: string;
   providerRef?: string;
+  /** Authoritative adapter metadata for toolkits that require no external account. */
+  noAuth?: boolean;
 }
 
 export interface AdapterDescriptor<TCapabilities> {
@@ -330,6 +332,8 @@ export interface AgentRunRequest {
     id: string;
     apiKey?: string;
     baseUrl?: string;
+    /** Voice turns request the lowest supported effort without changing bot preferences. */
+    interactionMode?: "chat" | "voice";
     /** Preferred thinking effort for reasoning models; clamped to the model’s supported set. */
     thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
     /** In-process OAuth credential from the encrypted store for this run. */

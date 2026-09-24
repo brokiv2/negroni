@@ -1,4 +1,5 @@
 import type { TransactionalEmail, TransactionalEmailProvider } from "@rakazo/adapter-kit";
+import { createHash } from "node:crypto";
 import { emailAllowed, parseAllowlist, signupPolicyFromEnv } from "@rakazo/core";
 import { bootstrapUserSpace, type PrismaClient } from "@rakazo/db";
 import { betterAuth } from "better-auth";
@@ -16,6 +17,7 @@ export interface AuthEnv {
   email?: TransactionalEmailProvider;
   onEmailError?: (error: unknown) => void;
   beforeDeleteUser?: (userId: string) => Promise<void>;
+  appleBundleIdentifier?: string;
 }
 
 export async function resolveSignupPolicy(
@@ -42,6 +44,31 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
     baseURL: env.baseURL,
     trustedOrigins: [env.webOrigin, env.baseURL, ...(env.extraOrigins ?? [])],
     database: prismaAdapter(prisma, { provider: "postgresql" }),
+    socialProviders: env.appleBundleIdentifier
+      ? {
+          apple: {
+            clientId: env.appleBundleIdentifier,
+            // Native ID-token verification uses Apple's public keys, not an OAuth code exchange.
+            // Redirect-based web login is rejected by the hook below until a Services ID is configured.
+            clientSecret: "native-id-token-only",
+            appBundleIdentifier: env.appleBundleIdentifier,
+            disableSignUp: true,
+            mapProfileToUser: (profile) => ({
+              email: profile.email ?? `apple-${createHash("sha256").update(profile.sub).digest("hex")}@users.negroni.invalid`,
+            }),
+          },
+        }
+      : undefined,
+    account: {
+      accountLinking: {
+        enabled: true,
+        disableImplicitLinking: true,
+        allowDifferentEmails: true,
+        // Apple's signed subject is trusted for an explicit in-session link,
+        // even when Apple omits email on a later authorization.
+        trustedProviders: ["apple"],
+      },
+    },
     emailAndPassword: {
       enabled: true,
       // Signup policy is mutable deployment state, so the request hook below
@@ -104,6 +131,12 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
     hooks: {
       before: async (ctx) => {
         const path = String((ctx as { path?: string }).path ?? "");
+        const socialBody = ctx.body as { provider?: string; idToken?: { token?: string; nonce?: string } } | undefined;
+        if ((path === "/sign-in/social" || path === "/link-social") &&
+          socialBody?.provider === "apple" &&
+          (!socialBody.idToken?.token || !socialBody.idToken.nonce)) {
+          throw new APIError("BAD_REQUEST", { message: "Use the iPhone app to connect Apple ID" });
+        }
         if (!path.includes("sign-up")) return;
         const policy = await resolveSignupPolicy(prisma, env);
         if (!policy.enabled) {

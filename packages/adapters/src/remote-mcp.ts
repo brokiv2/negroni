@@ -123,10 +123,18 @@ export async function assertSafeRemoteUrl(
   } catch {
     throw new Error("Connector URL is invalid");
   }
-  if (url.protocol !== "https:") throw new Error("Connector URL must use HTTPS");
   if (url.username || url.password) throw new Error("Connector URL must not contain credentials");
   if (url.hash) throw new Error("Connector URL must not contain a fragment");
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  // Local MCP servers (loopback) are a supported self-hosted case: allow plain
+  // HTTP there and skip public-address checks, which only make sense remote.
+  const isLoopbackHost =
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "::1" ||
+    /^127\.\d+\.\d+\.\d+$/.test(hostname);
+  if (isLoopbackHost) return url;
+  if (url.protocol !== "https:") throw new Error("Connector URL must use HTTPS");
   if (isPrivateHostname(hostname)) throw new Error("Connector URL targets a private host");
   assertPublicAddresses(await resolve(hostname), hostname);
   return url;

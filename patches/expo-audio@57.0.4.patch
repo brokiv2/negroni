@@ -1,0 +1,59 @@
+diff --git a/ios/AudioModule.swift b/ios/AudioModule.swift
+index d26560627c2dfa97370440ad28304617f3f9f0f7..9187d388a70c3b940049e7de5ed99e3de70d19ec 100644
+--- a/ios/AudioModule.swift
++++ b/ios/AudioModule.swift
+@@ -605,9 +605,9 @@ public class AudioModule: Module {
+ 
+ #if os(iOS)
+     registry.allRecorders.values.forEach { recorder in
+-      if recorder.isRecording {
+-        recorder.pauseRecording()
+-      }
++      // pauseRecording guards its cached state. Querying AVAudioRecorder here
++      // can wait for prepareToRecord's lock on the main lifecycle thread.
++      recorder.pauseRecording()
+     }
+ #endif
+   }
+@@ -682,7 +682,7 @@ public class AudioModule: Module {
+ 
+ #if os(iOS)
+     registry.allRecorders.values.forEach { recorder in
+-      if recorder.allowsRecording && !recorder.isRecording {
++      if recorder.allowsRecording {
+         _ = try? recorder.startRecording()
+       }
+     }
+@@ -713,9 +713,9 @@ public class AudioModule: Module {
+   private func pauseAllRecorders() {
+ #if os(iOS)
+     registry.allRecorders.values.forEach { recorder in
+-      if recorder.isRecording {
+-        recorder.pauseRecording()
+-      }
++      // pauseRecording guards its cached state. Querying AVAudioRecorder here
++      // can wait for prepareToRecord's lock on the main lifecycle thread.
++      recorder.pauseRecording()
+     }
+ #endif
+   }
+@@ -723,7 +723,7 @@ public class AudioModule: Module {
+   private func resumeAllRecorders() {
+ #if os(iOS)
+     registry.allRecorders.values.forEach { recorder in
+-      if recorder.allowsRecording && !recorder.isRecording {
++      if recorder.allowsRecording {
+         _ = try? recorder.startRecording()
+       }
+     }
+@@ -766,9 +766,7 @@ public class AudioModule: Module {
+     #if os(iOS)
+     if !mode.allowsRecording {
+       registry.allRecorders.values.forEach { recorder in
+-        if recorder.isRecording {
+-          recorder.ref.stop()
+-        }
++        recorder.stopRecording()
+         recorder.allowsRecording = false
+       }
+     } else {

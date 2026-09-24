@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
-import { BuiButton, SuccessPop } from "../components/beautiful-ui/primitives";
+import { BuiButton } from "../components/beautiful-ui/primitives";
 import {
   ComputersUnavailableHint,
   computersAreUnavailable,
@@ -145,26 +145,6 @@ export function AccountSettingsOverlay({
             {email ? <p className="mt-1 text-[13px] text-[var(--rk-faint)]">{email}</p> : null}
           </section>
 
-          <ChangePasswordSection />
-
-          {messagingEnabled && onOpenMessaging ? (
-            <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-              <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-                <Trans>Messaging</Trans>
-              </h3>
-              <p className="mt-3 text-[13px] text-[var(--rk-faint)]">
-                <Trans>Chat apps, group channels, and agent connections.</Trans>
-              </p>
-              <button
-                type="button"
-                onClick={onOpenMessaging}
-                className="mt-3 rounded-full bg-[var(--rk-border)] px-4 py-2 text-[13.5px] font-medium text-[var(--rk-ink)]"
-              >
-                <Trans>Manage messaging settings</Trans>
-              </button>
-            </section>
-          ) : null}
-
           <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
             <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
               <Trans>Appearance</Trans>
@@ -184,6 +164,45 @@ export function AccountSettingsOverlay({
             </h3>
             <UiLocalePicker value={locale} onChange={chooseLocale} />
           </section>
+
+          <div
+            ref={usageRef}
+            tabIndex={-1}
+            data-testid="usage-settings"
+            className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4 outline-none"
+          >
+            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
+              <Trans>Usage</Trans>
+            </h3>
+            {usage ? (
+              <p className="mt-3 text-[14px] text-[var(--rk-soft)]">
+                <Trans>
+                  {usage.runs} runs · {usage.inputTokens + usage.outputTokens} tokens
+                </Trans>
+              </p>
+            ) : null}
+            <p className={`text-[12.5px] text-[var(--rk-muted-2)] ${usage ? "mt-2" : "mt-3"}`}>
+              <Trans>Model spend uses your provider keys.</Trans>
+            </p>
+          </div>
+
+          {messagingEnabled && onOpenMessaging ? (
+            <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
+              <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
+                <Trans>Messaging</Trans>
+              </h3>
+              <p className="mt-3 text-[13px] text-[var(--rk-faint)]">
+                <Trans>Chat apps, group channels, and agent connections.</Trans>
+              </p>
+              <button
+                type="button"
+                onClick={onOpenMessaging}
+                className="mt-3 rounded-full bg-[var(--rk-border)] px-4 py-2 text-[13.5px] font-medium text-[var(--rk-ink)]"
+              >
+                <Trans>Manage messaging settings</Trans>
+              </button>
+            </section>
+          ) : null}
 
           <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
             <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
@@ -223,27 +242,6 @@ export function AccountSettingsOverlay({
             ) : null}
           </section>
 
-          <div
-            ref={usageRef}
-            tabIndex={-1}
-            data-testid="usage-settings"
-            className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4 outline-none"
-          >
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Usage</Trans>
-            </h3>
-            {usage ? (
-              <p className="mt-3 text-[14px] text-[var(--rk-soft)]">
-                <Trans>
-                  {usage.runs} runs · {usage.inputTokens + usage.outputTokens} tokens
-                </Trans>
-              </p>
-            ) : null}
-            <p className={`text-[12.5px] text-[var(--rk-muted-2)] ${usage ? "mt-2" : "mt-3"}`}>
-              <Trans>Model spend uses your provider keys.</Trans>
-            </p>
-          </div>
-
           <SoftwareUpdateSection isDeploymentOwner={isDeploymentOwner} />
 
           {isDeploymentOwner && computersAreUnavailable(sandboxProvider) ? (
@@ -279,6 +277,8 @@ export function AccountSettingsOverlay({
               <ApprovalRulesSettings />
             </div>
           </details>
+
+          <ChangePasswordSection />
         </div>
       </div>
     </div>
@@ -287,6 +287,7 @@ export function AccountSettingsOverlay({
 
 function ChangePasswordSection() {
   const { t } = useLingui();
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -317,6 +318,7 @@ function ChangePasswordSection() {
       setNewPassword("");
       setConfirmation("");
       setSaved(true);
+      if (detailsRef.current) detailsRef.current.open = false;
     } catch {
       setError(t`Could not reach the server`);
     } finally {
@@ -325,11 +327,12 @@ function ChangePasswordSection() {
   }
 
   return (
-    <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-      <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-        <Trans>Password</Trans>
-      </h3>
-      <div className="mt-3 grid gap-3">
+    <details ref={detailsRef} className="group mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)]">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4">
+        <span><span className="block text-[15px] font-medium text-[var(--rk-ink)]"><Trans>Change password</Trans></span><span className="mt-1 block text-[12.5px] text-[var(--rk-muted-2)]"><Trans>Update your sign-in password</Trans></span></span>
+        <span className="flex items-center gap-2">{saved ? <span className="text-[12px] text-[var(--rk-success-soft)]"><Trans>Updated</Trans></span> : null}<ChevronDown size={16} className="text-[var(--rk-muted)] transition-transform group-open:rotate-180" /></span>
+      </summary>
+      <div className="grid gap-3 border-t border-[var(--rk-border)] px-4 pb-4 pt-4">
         <SettingsPasswordInput
           label={t`Current password`}
           autoComplete="current-password"
@@ -348,23 +351,14 @@ function ChangePasswordSection() {
           value={confirmation}
           onChange={setConfirmation}
         />
+        {error ? <p role="alert" className="text-[12.5px] text-[var(--rk-danger)]">{error}</p> : null}
+        <div className="flex items-center gap-3">
+          <BuiButton tone="accent" disabled={pending || currentPassword.length < 8 || newPassword.length < 8} onClick={() => void changePassword()}>
+            {pending ? <Trans>Changing…</Trans> : <Trans>Update password</Trans>}
+          </BuiButton>
+        </div>
       </div>
-      {error ? (
-        <p role="alert" className="mt-3 text-[12.5px] text-[var(--rk-danger)]">
-          {error}
-        </p>
-      ) : null}
-      <div className="mt-4 flex items-center gap-3">
-        <BuiButton
-          tone="accent"
-          disabled={pending || currentPassword.length < 8 || newPassword.length < 8}
-          onClick={() => void changePassword()}
-        >
-          {pending ? <Trans>Changing…</Trans> : <Trans>Change password</Trans>}
-        </BuiButton>
-        {saved ? <SuccessPop label={t`Password updated`} /> : null}
-      </div>
-    </section>
+    </details>
   );
 }
 

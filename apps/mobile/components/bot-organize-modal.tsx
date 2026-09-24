@@ -1,279 +1,48 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 import type { MobileBot, MobileBotSection } from "../lib/api";
-import { native, useThemedStyles } from "../lib/native";
-import { NativeSymbol } from "./native-symbol";
+import { mobileTokens } from "../lib/appearance";
+import { useResolvedAppearance } from "../lib/native";
+import { ActionSheet, SheetRow } from "./action-sheet";
 
-export type BotOrganizationUpdate = {
-  pinned?: boolean;
-  sectionId?: string | null;
-  notifyOnFinish?: boolean;
-};
+export type BotOrganizationUpdate = { pinned?: boolean; sectionId?: string | null; notifyOnFinish?: boolean };
 
-export function BotOrganizeModal({
-  bot,
-  sections,
-  onClose,
-  onUpdate,
-  onCreateSection,
-}: {
-  bot: Pick<MobileBot, "name" | "pinned" | "sectionId"> &
-    Partial<Pick<MobileBot, "notifyOnFinish">>;
+export function BotOrganizeModal({ bot, sections, onClose, onUpdate, onCreateSection }: {
+  bot: Pick<MobileBot, "name" | "pinned" | "sectionId"> & Partial<Pick<MobileBot, "notifyOnFinish">>;
   sections: MobileBotSection[];
   onClose: () => void;
   onUpdate: (update: BotOrganizationUpdate) => Promise<void>;
   onCreateSection: (name: string) => Promise<void>;
 }) {
-  const styles = useThemedStyles(createBotOrganizeStyles);
+  useResolvedAppearance();
+  const theme = mobileTokens();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
+  const [error, setError] = useState(false);
   async function save(request: () => Promise<void>) {
     if (saving) return;
     setSaving(true);
-    setError(null);
-    try {
-      await request();
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update chat");
-      setSaving(false);
-    }
+    setError(false);
+    try { await request(); onClose(); }
+    catch { setError(true); setSaving(false); }
   }
-
   return (
-    <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <Pressable
-          accessibilityLabel="Close chat organization"
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-        />
-        <View style={styles.sheet}>
-          <Text style={styles.title} numberOfLines={1}>
-            {bot.name}
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            disabled={saving}
-            onPress={() => void save(() => onUpdate({ pinned: !bot.pinned }))}
-            style={({ pressed }) => [styles.action, pressed && styles.pressed]}
-          >
-            <NativeSymbol
-              ios={bot.pinned ? "pin.slash" : "pin"}
-              android={bot.pinned ? "pin-outline" : "pin"}
-              size={18}
-            />
-            <Text style={styles.actionLabel}>{bot.pinned ? "Unpin" : "Pin"}</Text>
-          </Pressable>
-          {typeof bot.notifyOnFinish === "boolean" ? (
-            <Pressable
-              accessibilityRole="button"
-              disabled={saving}
-              onPress={() => void save(() => onUpdate({ notifyOnFinish: !bot.notifyOnFinish }))}
-              style={({ pressed }) => [styles.action, pressed && styles.pressed]}
-            >
-              <NativeSymbol
-                ios={bot.notifyOnFinish ? "bell.slash" : "bell"}
-                android={bot.notifyOnFinish ? "notifications-off-outline" : "notifications-outline"}
-                size={18}
-              />
-              <Text style={styles.actionLabel}>
-                {bot.notifyOnFinish ? "Silence notifications" : "Resume notifications"}
-              </Text>
-            </Pressable>
-          ) : null}
-          <Text style={styles.sectionLabel}>Move to</Text>
-          <ScrollView style={styles.sectionOptions} keyboardShouldPersistTaps="handled">
-            {sections.map((section) => (
-              <SectionOption
-                key={section.id}
-                label={section.name}
-                selected={bot.sectionId === section.id}
-                disabled={saving || bot.sectionId === section.id}
-                onPress={() => void save(() => onUpdate({ sectionId: section.id }))}
-              />
-            ))}
-            <SectionOption
-              label="Unassigned"
-              selected={bot.sectionId === null}
-              disabled={saving || bot.sectionId === null}
-              onPress={() => void save(() => onUpdate({ sectionId: null }))}
-            />
-          </ScrollView>
-          {creating ? (
-            <View style={styles.newSectionRow}>
-              <TextInput
-                autoFocus
-                value={name}
-                onChangeText={setName}
-                maxLength={60}
-                placeholder="Section name"
-                placeholderTextColor={native.secondaryLabel}
-                style={styles.newSectionInput}
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Create section"
-                disabled={saving || !name.trim()}
-                onPress={() => void save(() => onCreateSection(name.trim()))}
-                style={styles.newSectionSubmit}
-              >
-                <Text style={styles.newSectionSubmitLabel}>Create</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <Pressable
-              disabled={saving}
-              onPress={() => setCreating(true)}
-              style={({ pressed }) => [styles.action, pressed && styles.pressed]}
-            >
-              <NativeSymbol ios="folder.badge.plus" android="folder-outline" size={18} />
-              <Text style={styles.actionLabel}>New section</Text>
-            </Pressable>
-          )}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Pressable onPress={onClose} style={styles.cancel}>
-            <Text style={styles.cancelLabel}>Cancel</Text>
-          </Pressable>
+    <ActionSheet visible title={bot.name} onClose={onClose} actions={[
+      { label: bot.pinned ? "Unpin chat" : "Pin chat", ios: bot.pinned ? "pin.slash" : "pin", android: "pin-outline", disabled: saving, onPress: () => void save(() => onUpdate({ pinned: !bot.pinned })) },
+      ...(typeof bot.notifyOnFinish === "boolean" ? [{ label: bot.notifyOnFinish ? "Mute notifications" : "Unmute notifications", ios: bot.notifyOnFinish ? "bell.slash" : "bell", android: "notifications-outline" as const, disabled: saving, onPress: () => void save(() => onUpdate({ notifyOnFinish: !bot.notifyOnFinish })) }] : []),
+    ]}>
+      <View style={{ height: 1, backgroundColor: theme.hairline, marginHorizontal: 14, marginVertical: 10 }} />
+      <Text style={{ color: theme.muted, fontSize: 13, paddingHorizontal: 14, marginBottom: 6 }}>Move to</Text>
+      {[{ id: null, name: "All chats" }, ...sections].map((section) => <SheetRow key={section.id ?? "unassigned"} label={section.name} ios="folder" android="folder-outline" selected={bot.sectionId === section.id} disabled={saving || bot.sectionId === section.id} onPress={() => void save(() => onUpdate({ sectionId: section.id }))} />)}
+      {creating ? (
+        <View style={{ padding: 12, gap: 12 }}>
+          <TextInput autoFocus value={name} onChangeText={setName} maxLength={60} placeholder="Section name" placeholderTextColor={theme.muted} returnKeyType="done" onSubmitEditing={() => { if (name.trim()) void save(() => onCreateSection(name.trim())); }} style={{ color: theme.ink, backgroundColor: theme.surface2, borderRadius: 16, minHeight: 50, fontSize: 17, paddingHorizontal: 16 }} />
+          <Pressable accessibilityRole="button" disabled={saving || !name.trim()} onPress={() => void save(() => onCreateSection(name.trim()))} style={{ backgroundColor: theme.ink, borderRadius: 24, minHeight: 48, alignItems: "center", justifyContent: "center", opacity: !name.trim() ? 0.35 : 1 }}><Text style={{ color: theme.page, fontSize: 16, fontWeight: "600" }}>Create section</Text></Pressable>
         </View>
-      </View>
-    </Modal>
+      ) : <SheetRow label="New section" ios="folder.badge.plus" android="add-circle-outline" disabled={saving} onPress={() => setCreating(true)} />}
+      {saving ? <ActivityIndicator color={theme.ink} style={{ marginVertical: 10 }} /> : null}
+      {error ? <Text accessibilityRole="alert" style={{ color: theme.danger, padding: 14 }}>Couldn't save this change. Please try again.</Text> : null}
+    </ActionSheet>
   );
-}
-
-function SectionOption({
-  label,
-  selected,
-  disabled,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  const styles = useThemedStyles(createBotOrganizeStyles);
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected, disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [styles.sectionOption, pressed && styles.pressed]}
-    >
-      <NativeSymbol ios="folder" android="folder-outline" size={18} />
-      <Text style={styles.actionLabel} numberOfLines={1}>
-        {label}
-      </Text>
-      {selected ? <NativeSymbol ios="checkmark" android="checkmark" size={17} /> : null}
-    </Pressable>
-  );
-}
-
-function createBotOrganizeStyles() {
-  return StyleSheet.create({
-    overlay: {
-      flex: 1,
-      justifyContent: "flex-end",
-      backgroundColor: "rgba(0, 0, 0, 0.62)",
-    },
-    sheet: {
-      maxHeight: "82%",
-      borderTopLeftRadius: 22,
-      borderTopRightRadius: 22,
-      backgroundColor: native.fillPressed,
-      paddingHorizontal: 16,
-      paddingTop: 18,
-      paddingBottom: 28,
-    },
-    title: {
-      color: native.label,
-      fontSize: 18,
-      fontWeight: "600",
-      paddingHorizontal: 8,
-      paddingBottom: 10,
-    },
-    action: {
-      minHeight: 46,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      borderRadius: 11,
-      paddingHorizontal: 10,
-    },
-    pressed: {
-      backgroundColor: native.fill,
-    },
-    actionLabel: {
-      flex: 1,
-      color: native.label,
-      fontSize: 16,
-    },
-    sectionLabel: {
-      color: native.secondaryLabel,
-      fontSize: 13,
-      fontWeight: "600",
-      paddingHorizontal: 10,
-      paddingTop: 12,
-      paddingBottom: 6,
-    },
-    sectionOptions: {
-      maxHeight: 230,
-    },
-    sectionOption: {
-      minHeight: 44,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      borderRadius: 11,
-      paddingHorizontal: 10,
-    },
-    newSectionRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-    },
-    newSectionInput: {
-      flex: 1,
-      height: 40,
-      borderRadius: 10,
-      backgroundColor: native.fill,
-      color: native.label,
-      paddingHorizontal: 12,
-      fontSize: 16,
-    },
-    newSectionSubmit: {
-      minHeight: 40,
-      justifyContent: "center",
-      borderRadius: 10,
-      backgroundColor: native.label,
-      paddingHorizontal: 14,
-    },
-    newSectionSubmitLabel: {
-      color: native.page,
-      fontSize: 14,
-      fontWeight: "600",
-    },
-    error: {
-      color: "#EF4444",
-      fontSize: 13,
-      paddingHorizontal: 10,
-      paddingTop: 8,
-    },
-    cancel: {
-      alignItems: "center",
-      paddingTop: 14,
-      paddingBottom: 2,
-    },
-    cancelLabel: {
-      color: native.secondaryLabel,
-      fontSize: 16,
-      fontWeight: "600",
-    },
-  });
 }

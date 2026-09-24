@@ -557,7 +557,7 @@ function restoreAppWindowAfterSetup() {
 function installApplicationMenu() {
   const changeServer: Electron.MenuItemConstructorOptions = {
     id: "change-rakazo-server",
-    label: "Change Rakazo Server…",
+    label: "Change Negroni Server…",
     accelerator: "CmdOrCtrl+Shift+K",
     click: () => showSetupWindow(),
   };

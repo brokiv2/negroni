@@ -513,3 +513,50 @@ describe("thread message pages", () => {
     expect(findMany.mock.calls.map(([query]) => query.where.seq?.lt)).toEqual([undefined, 3, 1]);
   });
 });
+
+describe("delegated result visibility", () => {
+  const sourceMessage = {
+    blocks: [
+      {
+        kind: "bot_message_received",
+        intent: "result",
+        fromBotId: "reviewer",
+        fromBotName: "Reviewer",
+        text: "Verified 12",
+      },
+    ],
+  };
+
+  it("keeps coordinator summaries when the peer receipt is outside the loaded page", async () => {
+    const prisma = {
+      message: {
+        findMany: vi.fn(async () => [
+          {
+            id: "summary",
+            threadId: "thread-1",
+            seq: 9,
+            role: "bot",
+            blocks: [{ kind: "text", text: "Reviewer verified 12." }],
+            botId: "bot-1",
+            replyToMessageId: null,
+            runId: "run-result",
+            thumbsUp: false,
+            createdAt: new Date(),
+          },
+        ]),
+      },
+      run: { findMany: vi.fn(async () => [{ id: "run-result", sourceMessage }]) },
+    } as unknown as PrismaClient;
+    const page = await loadMessagePage(prisma, "thread-1", undefined, 3);
+    expect(page.messages.map((message) => message.id)).toEqual(["summary"]);
+  });
+
+  it("allows realtime coordinator result output through the peer-run subscription gate", async () => {
+    const findUnique = vi.fn(async () => ({ trigger: "bot_message", sourceMessage }));
+    const prisma = { run: { findUnique } } as unknown as PrismaClient;
+    const cache = new Map<string, Promise<boolean>>();
+    await expect(isPeerRun(prisma, "run-result", cache)).resolves.toBe(false);
+    await expect(isPeerRun(prisma, "run-result", cache)).resolves.toBe(false);
+    expect(findUnique).toHaveBeenCalledTimes(1);
+  });
+});
