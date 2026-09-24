@@ -1,15 +1,13 @@
 import type { CapabilityInstall, Connection, ConnectionCatalogItem } from "@rakazo/contracts";
 import {
-  abortableDelay,
-  buildFeaturedConnectorTiles,
+  buildConnectorCatalogView,
   EMPTY_PLUGIN_CATALOG_MESSAGE,
-  matchFeaturedConnectorId,
+  POPULAR_CONNECTOR_SECTION_ID,
 } from "@rakazo/core";
+import { useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,9 +17,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { AppLogo } from "../components/AppLogo";
 import { rpc } from "../lib/api";
+import { authorizeConnection, type ConnectionPhase } from "../lib/connection-auth";
 import { loadLastBotId } from "../lib/last-bot";
 import { native, useThemedStyles } from "../lib/native";
+import { openConnectionAuthSession } from "../lib/open-auth-session";
 
 type SourceKind = "treg" | "mcp" | "api";
 
@@ -29,6 +30,15 @@ export default function Integrations() {
   const styles = useThemedStyles(createIntegrationsStyles);
   const { width } = useWindowDimensions();
   const catalogColumns = width >= 480 ? 2 : 1;
+  const returned = useLocalSearchParams<{ connection?: string; status?: string }>();
+  const [query, setQuery] = useState("");
+  const [openSections, setOpenSections] = useState<Set<string>>(
+    () => new Set([POPULAR_CONNECTOR_SECTION_ID]),
+  );
+  const [connecting, setConnecting] = useState<{ key: string; phase: ConnectionPhase } | null>(
+    null,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [accountLabel, setAccountLabel] = useState("");
@@ -46,16 +56,31 @@ export default function Integrations() {
   const [catalogReady, setCatalogReady] = useState(false);
   const connectionAttempt = useRef<AbortController | null>(null);
 
-  const featuredTiles = useMemo(() => buildFeaturedConnectorTiles(catalog), [catalog]);
-  const catalogApps = useMemo(
-    () =>
-      catalog.filter(
-        (item) =>
-          matchFeaturedConnectorId(item.slug) === null &&
-          matchFeaturedConnectorId(item.name) === null,
-      ),
-    [catalog],
+  const searching = query.trim().length > 0;
+  const view = useMemo(() => buildConnectorCatalogView(catalog, query), [catalog, query]);
+  const connectedKeys = useMemo(
+    () => new Set(view.connected.map((item) => `${item.connectorId}:${item.slug}`)),
+    [view.connected],
   );
+  const looseConnections = connections.filter(
+    (row) => !connectedKeys.has(`${row.connectorId}:${row.provider}`),
+  );
+
+  function toggleSection(id: string) {
+    if (searching) return;
+    setOpenSections((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function connectionsFor(item: ConnectionCatalogItem) {
+    return connections.filter(
+      (row) => row.connectorId === item.connectorId && row.provider === item.slug,
+    );
+  }
 
   async function refresh() {
     const [catalogResult, rows] = await Promise.all([
@@ -82,6 +107,16 @@ export default function Integrations() {
     return () => connectionAttempt.current?.abort();
   }, []);
 
+  // Opened from the callback page's deep link (outside an auth session): confirm once.
+  useEffect(() => {
+    const connectionId = returned.connection;
+    if (!connectionId || connectionAttempt.current) return;
+    void rpc<Connection>("connections/complete", { connectionId })
+      .catch(() => undefined)
+      .then(() => refresh())
+      .catch(() => undefined);
+  }, [returned.connection]);
+
   function closeAdvanced() {
     setAdvancedOpen(false);
     setSourceKind(null);
@@ -105,7 +140,9 @@ export default function Integrations() {
     connectionAttempt.current = controller;
     const key = `${item.connectorId}:${item.slug}`;
     setPending(key);
+    setConnecting({ key, phase: "authorizing" });
     setCatalogError(null);
+    setNotice(null);
     try {
       const started = await rpc<{ connectionId: string; authorizationUrl: string | null }>(
         "connections/begin",
@@ -114,31 +151,25 @@ export default function Integrations() {
           provider: item.slug,
           displayName:
             accountLabel.trim() ||
-            (item.connected
-              ? `${item.name} ${connections.filter((row) => row.connectorId === item.connectorId && row.provider === item.slug).length + 1}`
-              : item.name),
+            (item.connected ? `${item.name} ${connectionsFor(item).length + 1}` : item.name),
         },
       );
-      if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
-      for (let attempt = 0; attempt < 45; attempt += 1) {
-        if (controller.signal.aborted) return;
-        const row = await rpc<Connection>("connections/complete", {
-          connectionId: started.connectionId,
-        }).catch(() => undefined);
-        if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
-          void notifyAppConnected(item);
-          await refresh();
-          setAccountLabel("");
-          return;
-        }
-        await abortableDelay(2_000, controller.signal);
+      const outcome = await authorizeConnection({
+        connectionId: started.connectionId,
+        authorizationUrl: started.authorizationUrl,
+        openAuthSession: openConnectionAuthSession,
+        complete: (connectionId) => rpc<Connection>("connections/complete", { connectionId }),
+        signal: controller.signal,
+        onPhase: (phase) => setConnecting({ key, phase }),
+      });
+      if (outcome === "aborted") return;
+      if (outcome === "connected") {
+        void notifyAppConnected(item);
+        setAccountLabel("");
+      } else {
+        setNotice(`${item.name} is still pending.`);
       }
-      if (controller.signal.aborted) return;
-      Alert.alert(
-        "Connection pending",
-        "Finish connecting in the browser, then refresh this page.",
-      );
+      await refresh();
     } catch (reason) {
       if (controller.signal.aborted) return;
       setCatalogError(reason instanceof Error ? reason.message : "Could not connect");
@@ -146,6 +177,7 @@ export default function Integrations() {
       if (connectionAttempt.current === controller) {
         connectionAttempt.current = null;
         setPending(null);
+        setConnecting(null);
       }
     }
   }
@@ -213,10 +245,99 @@ export default function Integrations() {
     }
   }
 
+  function renderApp(item: ConnectionCatalogItem) {
+    const key = `${item.connectorId}:${item.slug}`;
+    const phase = connecting?.key === key ? connecting.phase : null;
+    const accounts = item.connectionCount ?? connectionsFor(item).length;
+    const subtitle = phase
+      ? phase === "authorizing"
+        ? "Waiting for authorization…"
+        : "Confirming…"
+      : item.connected
+        ? accounts > 1
+          ? `${accounts} accounts`
+          : "Connected"
+        : null;
+    return (
+      <View style={styles.row}>
+        <AppLogo name={item.name} logo={item.logo} />
+        <View style={styles.grow}>
+          <Text numberOfLines={1} style={styles.title}>
+            {item.name}
+          </Text>
+          {subtitle ? (
+            <Text
+              numberOfLines={1}
+              style={item.connected && !phase ? styles.connected : styles.secondary}
+            >
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={item.connected ? `Add another ${item.name}` : `Add ${item.name}`}
+          disabled={pending === key}
+          onPress={() => void connect(item)}
+          hitSlop={8}
+        >
+          {phase ? (
+            <ActivityIndicator color={native.label} />
+          ) : (
+            <Text style={styles.link}>{item.connected ? "Add account" : "Add"}</Text>
+          )}
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderAccount(connection: Connection) {
+    return (
+      <View key={connection.id} style={styles.accountRow}>
+        <Text numberOfLines={1} style={[styles.secondary, styles.grow]}>
+          {connection.displayName}
+          {connection.status !== "connected" ? ` · ${connection.status}` : ""}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${connection.displayName}`}
+          disabled={pending !== null}
+          onPress={() => void revoke(connection)}
+          hitSlop={8}
+        >
+          <Text style={styles.remove}>{pending === connection.id ? "Removing…" : "Remove"}</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.explanation}>Connect apps.</Text>
+        {view.connected.length > 0 || looseConnections.length > 0 ? (
+          <View style={styles.group}>
+            <Text style={styles.section}>Connected</Text>
+            {view.connected.map((item) => (
+              <View key={`${item.connectorId}:${item.slug}`} style={styles.group}>
+                {renderApp(item)}
+                {connectionsFor(item).map(renderAccount)}
+              </View>
+            ))}
+            {looseConnections.map(renderAccount)}
+          </View>
+        ) : null}
+
+        <TextInput
+          accessibilityLabel="Search apps"
+          placeholder="Search apps"
+          placeholderTextColor={native.secondaryLabel}
+          value={query}
+          onChangeText={setQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+          style={styles.input}
+        />
         <TextInput
           accessibilityLabel="Account label"
           placeholder="Account label · Personal / Work"
@@ -228,100 +349,48 @@ export default function Integrations() {
         />
 
         {catalogError ? <Text style={styles.error}>{catalogError}</Text> : null}
+        {notice ? <Text style={styles.secondary}>{notice}</Text> : null}
 
         {!catalogReady ? <ActivityIndicator color={native.fillPressed} /> : null}
 
         {catalogReady && catalog.length === 0 ? (
           <Text style={styles.secondary}>{EMPTY_PLUGIN_CATALOG_MESSAGE}</Text>
         ) : null}
-
-        {catalogReady && catalog.length > 0 ? (
-          <View style={catalogColumns === 2 ? styles.catalogGrid : styles.catalogStack}>
-            {featuredTiles.map((tile) => {
-              const item = tile.item;
-              const key = item ? `${item.connectorId}:${item.slug}` : tile.id;
-              const disabled = tile.missing || !item;
-              const connected = item?.connected ?? false;
-              return (
-                <View
-                  key={key}
-                  style={[
-                    styles.row,
-                    catalogColumns === 2 ? styles.catalogCell : null,
-                    disabled ? { opacity: 0.7 } : null,
-                  ]}
-                >
-                  <View style={styles.grow}>
-                    <Text numberOfLines={1} style={styles.title}>
-                      {tile.label}
-                    </Text>
-                    {disabled ? (
-                      <Text style={styles.secondary}>Not in the plugin catalog</Text>
-                    ) : null}
-                  </View>
-                  {disabled || !item ? null : (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        connected ? `Add another ${tile.label}` : `Add ${tile.label}`
-                      }
-                      disabled={pending === key}
-                      onPress={() => void connect(item)}
-                    >
-                      <Text style={styles.link}>
-                        {pending === key ? "Working…" : connected ? "Add account" : "Add"}
-                      </Text>
-                    </Pressable>
-                  )}
-                </View>
-              );
-            })}
-            {catalogApps.map((item) => {
-              const key = `${item.connectorId}:${item.slug}`;
-              return (
-                <View
-                  key={key}
-                  style={[styles.row, catalogColumns === 2 ? styles.catalogCell : null]}
-                >
-                  <View style={styles.grow}>
-                    <Text numberOfLines={1} style={styles.title}>
-                      {item.name}
-                    </Text>
-                  </View>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={item.connected ? `Remove ${item.name}` : `Add ${item.name}`}
-                    disabled={pending === key}
-                    onPress={() => void connect(item)}
-                  >
-                    <Text style={styles.link}>
-                      {pending === key ? "Working…" : item.connected ? "Add account" : "Add"}
-                    </Text>
-                  </Pressable>
-                </View>
-              );
-            })}
-          </View>
+        {catalogReady && catalog.length > 0 && searching && view.sections.length === 0 ? (
+          <Text style={styles.secondary}>No apps match your search.</Text>
         ) : null}
 
-        {connections.map((connection) => (
-          <View key={connection.id} style={styles.row}>
-            <View style={styles.grow}>
-              <Text style={styles.title}>{connection.displayName}</Text>
-              <Text style={styles.secondary}>
-                {connection.provider} · {connection.status}
-              </Text>
+        {view.sections.map((section) => {
+          const open = searching || openSections.has(section.id);
+          return (
+            <View key={section.id} style={styles.group}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: open }}
+                onPress={() => toggleSection(section.id)}
+                style={styles.sectionToggle}
+              >
+                <Text style={styles.sectionTitle}>
+                  {section.title}
+                  <Text style={styles.sectionCount}> {section.items.length}</Text>
+                </Text>
+                <Text style={[styles.chevron, open ? styles.chevronOpen : null]}>›</Text>
+              </Pressable>
+              {open ? (
+                <View style={catalogColumns === 2 ? styles.catalogGrid : styles.catalogStack}>
+                  {section.items.map((item) => (
+                    <View
+                      key={`${section.id}:${item.connectorId}:${item.slug}`}
+                      style={catalogColumns === 2 ? styles.catalogCell : null}
+                    >
+                      {renderApp(item)}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Remove ${connection.displayName}`}
-              disabled={pending !== null}
-              onPress={() => void revoke(connection)}
-            >
-              <Text style={styles.link}>{pending === connection.id ? "Removing…" : "Remove"}</Text>
-            </Pressable>
-          </View>
-        ))}
+          );
+        })}
 
         <Pressable
           accessibilityRole="button"
@@ -468,7 +537,25 @@ function createIntegrationsStyles() {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: native.page },
     content: { padding: 20, gap: 14 },
-    explanation: { color: native.secondaryLabel, fontSize: 14, lineHeight: 20 },
+    group: { gap: 8 },
+    sectionToggle: {
+      minHeight: 40,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    sectionTitle: { color: native.label, fontSize: 15, fontWeight: "600" },
+    sectionCount: { color: native.tertiaryLabel, fontWeight: "400" },
+    chevronOpen: { transform: [{ rotate: "90deg" }] },
+    connected: { color: "#4ECB71", fontSize: 13 },
+    accountRow: {
+      minHeight: 40,
+      paddingHorizontal: 12,
+      marginLeft: 46,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
     section: { color: native.secondaryLabel, fontSize: 14, fontWeight: "600", marginTop: 10 },
     actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
     smallButton: {

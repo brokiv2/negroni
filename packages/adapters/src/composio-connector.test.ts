@@ -17,12 +17,14 @@ import {
   planLiveConnectionSync,
   sanitizeComposioError,
   selectComposioAccount,
+  toolkitMetadataBySlug,
 } from "./composio-connector.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 
 const composioSdkState = vi.hoisted(() => ({
   created: [] as Array<{ userId: string; config: Record<string, unknown> }>,
   directoryFails: false,
+  metadataFails: false,
   accounts: [{ id: "ca-github", toolkit: { slug: "github" }, status: "ACTIVE" }],
   executions: [] as Array<{
     tool: string;
@@ -58,6 +60,38 @@ const composioSdkState = vi.hoisted(() => ({
 
 vi.mock("@composio/core", () => ({
   Composio: class {
+    getClient() {
+      return {
+        toolkits: {
+          list: async ({ cursor }: { cursor?: string }) => {
+            if (composioSdkState.metadataFails) throw new Error("metadata unavailable");
+            return cursor
+              ? {
+                  items: [
+                    {
+                      slug: "google_maps",
+                      meta: { categories: [{ id: "maps", name: "maps" }], logo: "maps.svg" },
+                    },
+                  ],
+                  next_cursor: null,
+                }
+              : {
+                  items: [
+                    {
+                      slug: "github",
+                      meta: {
+                        categories: [{ id: "developer-tools", name: "developer tools" }],
+                        description: "Code hosting",
+                        logo: "github.svg",
+                      },
+                    },
+                  ],
+                  next_cursor: "page-2",
+                };
+          },
+        },
+      };
+    }
     readonly connectedAccounts = {
       list: async () => ({ items: composioSdkState.accounts }),
     };
@@ -451,6 +485,43 @@ describe("composio tool mapping", () => {
     });
   });
 
+  it("adds paginated toolkit categories to the catalog and degrades when metadata fails", async () => {
+    composioSdkState.sessions.clear();
+    composioToolkitDirectory.invalidate();
+    const connector = new ComposioConnector();
+    const context: AdapterContext = {
+      operationId: "catalog-categories",
+      traceId: "catalog-categories",
+      spaceId: "workspace",
+      userId: "user-categories",
+      signal: new AbortController().signal,
+    };
+    const items = await connector.catalog(context);
+    expect(items.find((item) => item.slug === "GITHUB")).toMatchObject({
+      categories: [{ slug: "developer-tools", name: "developer tools" }],
+      description: "Code hosting",
+      logo: "github.svg",
+    });
+    expect(items.find((item) => item.slug === "GOOGLE_MAPS")?.categories).toEqual([
+      { slug: "maps", name: "maps" },
+    ]);
+
+    composioSdkState.metadataFails = true;
+    composioToolkitDirectory.invalidate();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const fallback = await connector.catalog(context);
+      expect(fallback.find((item) => item.slug === "GITHUB")).toMatchObject({
+        categories: [],
+        logo: null,
+      });
+    } finally {
+      warn.mockRestore();
+      composioSdkState.metadataFails = false;
+      composioToolkitDirectory.invalidate();
+    }
+  });
+
   it("uses catalog-canonical toolkit slugs without preloading every tool", async () => {
     composioSdkState.created.length = 0;
     composioSdkState.executions.length = 0;
@@ -641,6 +712,22 @@ describe("composio tool mapping", () => {
       connectIds: ["row-gmail"],
       revokeIds: ["row-dup", "row-err"],
     });
+  });
+
+  it("maps raw toolkit listing metadata by lowercase slug", () => {
+    const metadata = toolkitMetadataBySlug([
+      {
+        slug: "GMAIL",
+        meta: { categories: [{ id: "email", name: "email" }], description: " Mail ", logo: "g" },
+      },
+      { slug: "bare", meta: null },
+    ]);
+    expect(metadata.get("gmail")).toEqual({
+      categories: [{ slug: "email", name: "email" }],
+      description: "Mail",
+      logo: "g",
+    });
+    expect(metadata.get("bare")).toEqual({ categories: [], logo: null });
   });
 
   it("filters the catalog by name or slug", () => {

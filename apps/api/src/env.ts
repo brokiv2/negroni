@@ -5,6 +5,7 @@ import {
   resolveScreenProxySecret,
   resolveSupervisorToken,
 } from "@rakazo/core";
+import { publicApiUrl } from "./connection-callback.js";
 
 export { resolveSandboxProvider } from "@rakazo/adapters";
 
@@ -18,6 +19,8 @@ export interface AppEnv {
   apiUrl: string;
   apiHost: string;
   publicTunnelHost: string | undefined;
+  /** Publicly reachable API origin for OAuth callbacks (PUBLIC_API_URL, else the tunnel host). */
+  publicApiUrl: string | undefined;
   publicTunnelKey: string | undefined;
   signupsEnabled: string | undefined;
   signupAllowlist: string | undefined;
@@ -88,6 +91,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     apiUrl: source.API_URL ?? "http://127.0.0.1:3100",
     apiHost: source.API_HOST ?? "127.0.0.1",
     publicTunnelHost: optional(source.NEGRONI_PUBLIC_TUNNEL_HOST),
+    publicApiUrl: publicApiUrl(
+      optional(source.PUBLIC_API_URL),
+      optional(source.NEGRONI_PUBLIC_TUNNEL_HOST),
+    ),
     publicTunnelKey: optional(source.NEGRONI_PUBLIC_TUNNEL_KEY),
     signupsEnabled: source.SIGNUPS_ENABLED,
     signupAllowlist: source.SIGNUP_ALLOWLIST,

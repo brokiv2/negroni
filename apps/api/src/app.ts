@@ -64,6 +64,11 @@ import {
 import { MarkdownMemoryStore } from "@rakazo/memory";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import {
+  CONNECTION_CALLBACK_PATH,
+  mountConnectionCallbackRoute,
+  requestOrigin,
+} from "./connection-callback.js";
 import { type AppEnv, loadEnv } from "./env.js";
 import { createMessagingInboundHandler } from "./messaging-inbound.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
@@ -335,6 +340,8 @@ export async function createApp(
       defaultModel: env.defaultModel,
       deploymentModelKey: env.deploymentModelKey,
       webOrigin: env.webOrigin,
+      apiUrl: env.apiUrl,
+      publicApiUrl: env.publicApiUrl,
       screenProxySecret: env.screenProxySecret,
       sandboxProvider: env.sandboxProvider,
       gitSha: env.gitSha,
@@ -347,7 +354,10 @@ export async function createApp(
     clientInterceptors: [onError((error, { path }) => logUnexpectedRpcError(error, path))],
   });
   const app = new Hono();
-  app.use("*", publicTunnelGate(env.publicTunnelHost, env.publicTunnelKey));
+  app.use(
+    "*",
+    publicTunnelGate(env.publicTunnelHost, env.publicTunnelKey, [CONNECTION_CALLBACK_PATH]),
+  );
   app.use(
     "*",
     cors({
@@ -388,7 +398,7 @@ export async function createApp(
       : null;
     const { matched, response } = await rpc.handle(c.req.raw, {
       prefix: "/rpc",
-      context: { actor, signal: c.req.raw.signal },
+      context: { actor, signal: c.req.raw.signal, requestOrigin: requestOrigin(c.req.raw) },
     });
     if (matched) return c.newResponse(response.body, response);
     await next();
@@ -401,6 +411,7 @@ export async function createApp(
     );
   });
   mountWebhookHttpRoutes(app, { prisma, secrets, events, jobs });
+  mountConnectionCallbackRoute(app, { prisma, connectors: stack.connector });
   // Messaging webhooks only exist when the surface is enabled.
   if (messaging) {
     const inbound = createMessagingInboundHandler({

@@ -10,13 +10,51 @@ import {
   filterCatalog,
 } from "./composio-connector.js";
 
+const category = (slug: string, name: string) => ({ slug, name });
+
 const DEFAULT_CATALOG: ReadonlyArray<Omit<ComposioCatalogItem, "connected">> = [
-  { slug: "GMAIL", name: "Gmail", logo: null, noAuth: false },
-  { slug: "GOOGLECALENDAR", name: "Google Calendar", logo: null, noAuth: false },
-  { slug: "GOOGLEDRIVE", name: "Google Drive", logo: null, noAuth: false },
-  { slug: "SLACK", name: "Slack", logo: null, noAuth: false },
-  { slug: "GITHUB", name: "GitHub", logo: null, noAuth: false },
-  { slug: "NOTION", name: "Notion", logo: null, noAuth: false },
+  {
+    slug: "GMAIL",
+    name: "Gmail",
+    logo: null,
+    noAuth: false,
+    categories: [category("email", "email")],
+  },
+  {
+    slug: "GOOGLECALENDAR",
+    name: "Google Calendar",
+    logo: null,
+    noAuth: false,
+    categories: [category("scheduling-&-booking", "scheduling & booking")],
+  },
+  {
+    slug: "GOOGLEDRIVE",
+    name: "Google Drive",
+    logo: null,
+    noAuth: false,
+    categories: [category("file-management-&-storage", "file management & storage")],
+  },
+  {
+    slug: "SLACK",
+    name: "Slack",
+    logo: null,
+    noAuth: false,
+    categories: [category("team-collaboration", "team collaboration")],
+  },
+  {
+    slug: "GITHUB",
+    name: "GitHub",
+    logo: null,
+    noAuth: false,
+    categories: [category("developer-tools", "developer tools")],
+  },
+  {
+    slug: "NOTION",
+    name: "Notion",
+    logo: null,
+    noAuth: false,
+    categories: [category("productivity", "productivity")],
+  },
 ];
 
 /** Deterministic, offline Composio catalog and connection emulator for product tests. */

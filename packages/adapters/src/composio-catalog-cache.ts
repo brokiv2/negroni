@@ -1,9 +1,31 @@
+export type ToolkitCategory = { slug: string; name: string };
+
 export type ToolkitDirectoryEntry = {
   slug: string;
   name: string;
   logo: string | null;
   noAuth: boolean;
+  categories: ToolkitCategory[];
+  description?: string;
 };
+
+export type ToolkitMetadata = Pick<ToolkitDirectoryEntry, "categories" | "description" | "logo">;
+
+/** Attach provider metadata (categories, description, logo fallback) to directory entries by slug. */
+export function withToolkitMetadata(
+  directory: Array<Omit<ToolkitDirectoryEntry, "categories" | "description">>,
+  metadata: ReadonlyMap<string, ToolkitMetadata>,
+): ToolkitDirectoryEntry[] {
+  return directory.map((item) => {
+    const meta = metadata.get(item.slug.trim().toLowerCase());
+    return {
+      ...item,
+      logo: item.logo ?? meta?.logo ?? null,
+      categories: meta?.categories ?? [],
+      ...(meta?.description ? { description: meta.description } : {}),
+    };
+  });
+}
 
 export type ToolkitCatalogEntry = ToolkitDirectoryEntry & { connected: boolean };
 

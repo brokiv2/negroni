@@ -125,6 +125,7 @@ import {
   resolveBusyBotName,
   toComputerStatus,
 } from "./computer-status.js";
+import { resolveConnectionCallbackUrl } from "./connection-callback.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
 import { chooseFocus, markAppConnected, startOnboarding } from "./onboarding.js";
 import { listSpaceRuns } from "./runs.js";
@@ -341,6 +342,8 @@ export interface RouterDeps {
     defaultModel: string;
     deploymentModelKey?: string;
     webOrigin: string;
+    apiUrl?: string;
+    publicApiUrl?: string;
     screenProxySecret: string;
     sandboxProvider: string;
     gitSha?: string;
@@ -351,7 +354,11 @@ export interface RouterDeps {
 }
 
 export function createRouter(deps: RouterDeps) {
-  const os = implement(appContract).$context<{ actor: Actor | null; signal?: AbortSignal }>();
+  const os = implement(appContract).$context<{
+    actor: Actor | null;
+    signal?: AbortSignal;
+    requestOrigin?: string;
+  }>();
   const repos = createRepos(deps.prisma);
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const groupRepos = createGroupRepos(deps.prisma);
@@ -2899,7 +2906,15 @@ export function createRouter(deps: RouterDeps) {
           const auth = await connector.begin(
             {
               provider: input.provider,
-              redirectUrl: `${deps.env.webOrigin}/app`,
+              redirectUrl: resolveConnectionCallbackUrl(
+                {
+                  requestOrigin: context.requestOrigin,
+                  apiUrl: deps.env.apiUrl ?? "http://127.0.0.1:3100",
+                  webOrigin: deps.env.webOrigin,
+                  publicApiUrl: deps.env.publicApiUrl,
+                },
+                row.id,
+              ),
               alias: input.displayName,
             },
             connectionContext(context.actor, "connections.begin", context.signal),

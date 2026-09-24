@@ -2,9 +2,9 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { CapabilityInstall, Connection, ConnectionCatalogItem } from "@rakazo/contracts";
 import {
   abortableDelay,
-  buildFeaturedConnectorTiles,
+  buildConnectorCatalogView,
   EMPTY_PLUGIN_CATALOG_MESSAGE,
-  matchFeaturedConnectorId,
+  POPULAR_CONNECTOR_SECTION_ID,
 } from "@rakazo/core";
 import { Button } from "@rakazo/ui-web";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -76,26 +76,21 @@ export function PluginsOverlay({
     return () => connectionAttempt.current?.abort();
   }, []);
 
-  const featuredTiles = useMemo(() => buildFeaturedConnectorTiles(catalog), [catalog]);
-  const showFeatured = !query.trim();
+  const searching = query.trim().length > 0;
+  const view = useMemo(() => buildConnectorCatalogView(catalog, query), [catalog, query]);
+  const [openSections, setOpenSections] = useState<Set<string>>(
+    () => new Set([POPULAR_CONNECTOR_SECTION_ID]),
+  );
 
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const scoped = showFeatured
-      ? catalog.filter(
-          (item) =>
-            matchFeaturedConnectorId(item.slug) === null &&
-            matchFeaturedConnectorId(item.name) === null,
-        )
-      : catalog;
-    if (!needle) return scoped;
-    return scoped.filter(
-      (item) =>
-        item.name.toLowerCase().includes(needle) ||
-        item.slug.toLowerCase().includes(needle) ||
-        item.connectorId.toLowerCase().includes(needle),
-    );
-  }, [catalog, query, showFeatured]);
+  function toggleSection(id: string) {
+    if (searching) return;
+    setOpenSections((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   async function notifyAppConnected(item: ConnectionCatalogItem) {
     if (!activeBotId) return;
@@ -239,6 +234,66 @@ export function PluginsOverlay({
     }
   }
 
+  function renderApp(item: ConnectionCatalogItem) {
+    const key = itemKey(item);
+    const accounts = item.connectionCount ?? connectionsFor(item).length;
+    return (
+      <div className="flex min-w-0 items-center gap-3 rounded-[13px] px-2.5 py-2">
+        <AppLogo name={item.name} logo={item.logo} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-medium text-[var(--rk-ink)]">{item.name}</div>
+          {item.connected ? (
+            <div className="truncate text-[12px] text-[var(--rk-muted-2)]">
+              {accounts > 1 ? `${accounts} accounts` : "Connected"}
+            </div>
+          ) : pending === key ? (
+            <div className="truncate text-[12px] text-[var(--rk-muted-2)]">
+              <Trans>Waiting for authorization…</Trans>
+            </div>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="pill"
+          size="sm"
+          disabled={pending === key || Boolean(pending?.startsWith(`${key}:`))}
+          onClick={() => requestConnect(item)}
+        >
+          {pending === key ? "Adding…" : item.connected ? "Add account" : "Add"}
+        </Button>
+      </div>
+    );
+  }
+
+  function renderAccounts(item: ConnectionCatalogItem) {
+    const rows = connectionsFor(item);
+    if (rows.length === 0) return null;
+    return (
+      <div className="space-y-1 px-1 pb-2">
+        {rows.map((row) => (
+          <div
+            key={row.id}
+            className="flex items-center justify-between gap-2 rounded-lg bg-[var(--rk-scroll)]/40 px-2 py-1.5 text-[12.5px]"
+          >
+            <span className="min-w-0 truncate text-[var(--rk-soft)]">
+              {item.name}: {row.displayName}
+              {row.status !== "connected" ? ` (${row.status})` : ""}
+            </span>
+            <Button
+              type="button"
+              variant="pill"
+              size="sm"
+              disabled={pending === `${itemKey(item)}:${row.id}`}
+              onClick={() => void revokeConnection(item, row.id)}
+            >
+              {pending === `${itemKey(item)}:${row.id}` ? "Removing…" : "Remove"}
+            </Button>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-[rgba(4,4,5,.62)] p-10">
       <div className="rk-dialog-surface flex h-[760px] max-h-[calc(100dvh-5rem)] w-[1080px] max-w-full flex-col overflow-hidden rounded-[26px] border border-[var(--rk-hairline-strong)] bg-[var(--rk-surface)] shadow-[0_40px_90px_rgba(0,0,0,.55)]">
@@ -256,44 +311,59 @@ export function PluginsOverlay({
           </button>
         </div>
 
-        <div className="shrink-0 px-8 pt-4">
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            aria-label={t`Search apps`}
-            placeholder={t`Search apps`}
-            className="w-full rounded-[13px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 text-[15px] text-[var(--rk-ink)] outline-none"
-          />
-        </div>
+        <div id="integration-list" className="rk-scroll min-h-0 flex-1 overflow-y-auto px-8 pb-6">
+          {view.connected.length > 0 ? (
+            <section className="pt-4" data-testid="connected-integrations">
+              <div className="mb-2 text-[13px] font-medium text-[var(--rk-muted)]">
+                <Trans>Connected</Trans>
+              </div>
+              <div className="space-y-1">
+                {view.connected.map((item) => (
+                  <div key={itemKey(item)}>
+                    {renderApp(item)}
+                    {renderAccounts(item)}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
-        {accountItem ? (
-          <form
-            className="flex shrink-0 items-end gap-3 px-8 pt-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void connect(accountItem, accountLabel);
-              setAccountItem(null);
-            }}
-          >
-            <label className="min-w-0 flex-1 text-[13px] text-[var(--rk-soft)]">
-              Account label
-              <input
-                value={accountLabel}
-                onChange={(event) => setAccountLabel(event.target.value)}
-                placeholder="Personal / Work"
-                className="mt-1 w-full rounded-[13px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 text-[15px] text-[var(--rk-ink)] outline-none"
-              />
-            </label>
-            <Button type="submit" variant="pill" disabled={pending !== null}>
-              Connect
-            </Button>
-            <Button type="button" variant="pill" onClick={() => setAccountItem(null)}>
-              Cancel
-            </Button>
-          </form>
-        ) : null}
+          <div className="sticky top-0 z-10 bg-[var(--rk-surface)] pb-3 pt-4">
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label={t`Search apps`}
+              placeholder={t`Search apps`}
+              className="w-full rounded-[13px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 text-[15px] text-[var(--rk-ink)] outline-none"
+            />
+            {accountItem ? (
+              <form
+                className="flex items-end gap-3 pt-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void connect(accountItem, accountLabel);
+                  setAccountItem(null);
+                }}
+              >
+                <label className="min-w-0 flex-1 text-[13px] text-[var(--rk-soft)]">
+                  Account label
+                  <input
+                    value={accountLabel}
+                    onChange={(event) => setAccountLabel(event.target.value)}
+                    placeholder="Personal / Work"
+                    className="mt-1 w-full rounded-[13px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 text-[15px] text-[var(--rk-ink)] outline-none"
+                  />
+                </label>
+                <Button type="submit" variant="pill" disabled={pending !== null}>
+                  Connect
+                </Button>
+                <Button type="button" variant="pill" onClick={() => setAccountItem(null)}>
+                  Cancel
+                </Button>
+              </form>
+            ) : null}
+          </div>
 
-        <div id="integration-list" className="rk-scroll min-h-0 flex-1 overflow-y-auto px-8 py-6">
           {catalogError ? (
             <p className="mb-4 text-sm text-[var(--rk-danger)]">{catalogError}</p>
           ) : null}
@@ -302,187 +372,53 @@ export function PluginsOverlay({
               <Trans>Loading integrations…</Trans>
             </p>
           ) : null}
-
-          {showFeatured ? (
-            <div className="mb-6" data-testid="featured-connectors">
-              {!loading && catalog.length === 0 ? (
-                <p className="text-[13.5px] leading-6 text-[var(--rk-muted-2)]">
-                  {EMPTY_PLUGIN_CATALOG_MESSAGE}
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {featuredTiles.map((tile) => {
-                    const item = tile.item;
-                    const key = item ? itemKey(item) : tile.id;
-                    const disabled = tile.missing || !item;
-                    const connected = item?.connected ?? false;
-                    return (
-                      <div
-                        key={key}
-                        className={`flex min-w-0 items-center gap-3 rounded-[13px] px-2.5 py-2 ${
-                          disabled ? "opacity-70" : ""
-                        }`}
-                      >
-                        {item?.logo ? (
-                          <img
-                            src={item.logo}
-                            alt=""
-                            className="h-9 w-9 shrink-0 rounded-xl bg-[var(--rk-scroll)] object-contain"
-                          />
-                        ) : (
-                          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--rk-scroll)] text-sm font-semibold text-[var(--rk-ink)]">
-                            {tile.label[0]}
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[15px] font-medium text-[var(--rk-ink)]">
-                            {tile.label}
-                          </div>
-                          {disabled ? (
-                            <div className="truncate text-[12.5px] text-[#707077]">
-                              <Trans>Not in the plugin catalog</Trans>
-                            </div>
-                          ) : null}
-                        </div>
-                        {item && !tile.missing ? (
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            <Button
-                              type="button"
-                              variant="pill"
-                              size="sm"
-                              disabled={pending === key || Boolean(pending?.startsWith(`${key}:`))}
-                              onClick={() => requestConnect(item)}
-                            >
-                              {pending === key ? "Adding…" : connected ? "Add account" : "Add"}
-                            </Button>
-                            {connected ? (
-                              <div className="max-w-[140px] text-right text-[11px] text-[var(--rk-muted-2)]">
-                                {(item.connectionCount ?? connectionsFor(item).length) > 1
-                                  ? `${item.connectionCount ?? connectionsFor(item).length} accounts`
-                                  : "Connected"}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                  {/* Per-account revoke rows for featured apps with connections */}
-                  {featuredTiles.map((tile) => {
-                    const item = tile.item;
-                    if (!item || tile.missing) return null;
-                    const rows = connectionsFor(item);
-                    if (rows.length === 0) return null;
-                    return (
-                      <div key={`accounts-${tile.id}`} className="col-span-2 space-y-1 px-1 pb-2">
-                        {rows.map((row) => (
-                          <div
-                            key={row.id}
-                            className="flex items-center justify-between gap-2 rounded-lg bg-[var(--rk-scroll)]/40 px-2 py-1.5 text-[12.5px]"
-                          >
-                            <span className="min-w-0 truncate text-[var(--rk-soft)]">
-                              {tile.label}: {row.displayName}
-                              {row.status !== "connected" ? ` (${row.status})` : ""}
-                            </span>
-                            <Button
-                              type="button"
-                              variant="pill"
-                              size="sm"
-                              disabled={pending === `${itemKey(item)}:${row.id}`}
-                              onClick={() => void revokeConnection(item, row.id)}
-                            >
-                              {pending === `${itemKey(item)}:${row.id}` ? "Removing…" : "Remove"}
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {!loading && catalog.length === 0 && !showFeatured ? (
-            <p className="text-[var(--rk-muted-2)]">
-              <Trans>No managed app catalog is configured on this deployment.</Trans>
+          {!loading && catalog.length === 0 ? (
+            <p className="text-[13.5px] leading-6 text-[var(--rk-muted-2)]">
+              {EMPTY_PLUGIN_CATALOG_MESSAGE}
             </p>
           ) : null}
-          {!loading && catalog.length > 0 && visible.length === 0 && !showFeatured ? (
+          {!loading && catalog.length > 0 && searching && view.sections.length === 0 ? (
             <p className="text-[var(--rk-muted-2)]">
               <Trans>No apps match your search.</Trans>
             </p>
           ) : null}
-          {visible.length > 0 ? (
-            <div className="grid grid-cols-2 gap-2">
-              {visible.map((item) => {
-                const key = itemKey(item);
-                return (
-                  <div
-                    key={key}
-                    className="flex min-w-0 items-center gap-3 rounded-[13px] px-2.5 py-2"
-                  >
-                    {item.logo ? (
-                      <img
-                        src={item.logo}
-                        alt=""
-                        className="h-9 w-9 shrink-0 rounded-xl bg-[var(--rk-scroll)] object-contain"
-                      />
-                    ) : (
-                      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--rk-scroll)] text-sm font-semibold text-[var(--rk-ink)]">
-                        {item.name[0]}
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[15px] font-medium text-[var(--rk-ink)]">
-                        {item.name}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1">
-                      <Button
-                        type="button"
-                        variant="pill"
-                        size="sm"
-                        disabled={pending === key || Boolean(pending?.startsWith(`${key}:`))}
-                        onClick={() => requestConnect(item)}
-                      >
-                        {pending === key ? "Adding…" : item.connected ? "Add account" : "Add"}
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-              {visible.map((item) => {
-                const rows = connectionsFor(item);
-                if (rows.length === 0) return null;
-                return (
-                  <div key={`acc-${itemKey(item)}`} className="col-span-2 space-y-1 px-1 pb-2">
-                    {rows.map((row) => (
-                      <div
-                        key={row.id}
-                        className="flex items-center justify-between gap-2 rounded-lg bg-[var(--rk-scroll)]/40 px-2 py-1.5 text-[12.5px]"
-                      >
-                        <span className="min-w-0 truncate text-[var(--rk-soft)]">
-                          {item.name}: {row.displayName}
-                          {row.status !== "connected" ? ` (${row.status})` : ""}
-                        </span>
-                        <Button
-                          type="button"
-                          variant="pill"
-                          size="sm"
-                          disabled={pending === `${itemKey(item)}:${row.id}`}
-                          onClick={() => void revokeConnection(item, row.id)}
-                        >
-                          {pending === `${itemKey(item)}:${row.id}` ? "Removing…" : "Remove"}
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
 
+          <div className="space-y-1" data-testid="integration-categories">
+            {view.sections.map((section) => {
+              const open = searching || openSections.has(section.id);
+              return (
+                <section key={section.id}>
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    onClick={() => toggleSection(section.id)}
+                    className="flex w-full items-center justify-between gap-3 rounded-[11px] px-1 py-2 text-left text-[14px] text-[var(--rk-soft)] hover:text-[var(--rk-ink)]"
+                  >
+                    <span>
+                      {section.title}
+                      <span className="ml-2 text-[var(--rk-muted-2)]">{section.items.length}</span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={`text-[var(--rk-muted)] transition-transform ${open ? "rotate-90" : ""}`}
+                    >
+                      ›
+                    </span>
+                  </button>
+                  {open ? (
+                    <div className="grid grid-cols-2 gap-1 pb-3">
+                      {section.items.map((item) => (
+                        <div key={`${section.id}:${itemKey(item)}`} className="min-w-0">
+                          {renderApp(item)}
+                          {renderAccounts(item)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })}
+          </div>
           <details
             data-testid="integrations-advanced"
             className="group mt-8"
@@ -676,6 +612,26 @@ export function PluginsOverlay({
           </details>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AppLogo({ name, logo }: { name: string; logo: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (logo && !failed) {
+    return (
+      <img
+        src={logo}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="h-9 w-9 shrink-0 rounded-xl bg-[var(--rk-scroll)] object-contain p-1.5"
+      />
+    );
+  }
+  return (
+    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--rk-scroll)] text-sm font-semibold text-[var(--rk-ink)]">
+      {name.trim().slice(0, 1).toUpperCase() || "?"}
     </div>
   );
 }

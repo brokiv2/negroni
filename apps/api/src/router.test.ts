@@ -300,6 +300,82 @@ describe("connections.complete", () => {
   });
 });
 
+describe("connections.begin callback url", () => {
+  function beginHandler(publicApiUrl?: string) {
+    const begin = vi
+      .fn()
+      .mockResolvedValue({ authorizationUrl: "https://auth.test", state: "ca-1" });
+    const prisma = {
+      connection: {
+        create: vi.fn().mockResolvedValue({ id: "conn-1" }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaClient;
+    const deps = {
+      prisma,
+      connectors: { managed: vi.fn(() => ({ begin })) },
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "http://127.0.0.1:5173",
+        apiUrl: "http://127.0.0.1:3100",
+        publicApiUrl,
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@rakazo.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const handler = new RPCHandler(createRouter(deps));
+    return async (requestOrigin?: string) => {
+      begin.mockClear();
+      const { response } = await handler.handle(
+        new Request("http://127.0.0.1/rpc/connections/begin", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            json: { connectorId: "composio", provider: "gmail", displayName: "Gmail" },
+          }),
+        }),
+        { prefix: "/rpc", context: { actor, requestOrigin } },
+      );
+      expect(response.status).toBe(200);
+      return begin.mock.calls[0]?.[0]?.redirectUrl as string;
+    };
+  }
+
+  it("sends phone flows back through the public API origin", async () => {
+    const begin = beginHandler("https://tunnel.example.test");
+    await expect(begin("https://tunnel.example.test")).resolves.toBe(
+      "https://tunnel.example.test/connections/callback?connection=conn-1",
+    );
+  });
+
+  it("keeps desktop and web flows on the loopback API", async () => {
+    const begin = beginHandler("https://tunnel.example.test");
+    await expect(begin("http://127.0.0.1:3100")).resolves.toBe(
+      "http://127.0.0.1:3100/connections/callback?connection=conn-1",
+    );
+    await expect(begin("http://127.0.0.1:5173")).resolves.toBe(
+      "http://127.0.0.1:3100/connections/callback?connection=conn-1",
+    );
+  });
+
+  it("falls back to the public origin, then the API origin, without a known request origin", async () => {
+    await expect(beginHandler("https://tunnel.example.test")()).resolves.toBe(
+      "https://tunnel.example.test/connections/callback?connection=conn-1",
+    );
+    await expect(beginHandler()("https://unknown.example")).resolves.toBe(
+      "http://127.0.0.1:3100/connections/callback?connection=conn-1",
+    );
+  });
+});
+
 describe("updater owner gate", () => {
   function updaterDeps() {
     const prisma = {

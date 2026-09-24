@@ -64,6 +64,16 @@ curl http://127.0.0.1:3100/health
 - **Раздумья бота скрыты.** Пока ран живой,наррация и шаги инструментов не рендерятся (Shell.tsx: live narration → null) — видно только глиф с морфящим аватаром и «‹бот› is working» (ActiveBotGlyph). После завершения остаётся свёрнутый «Worked for Ns» как история.
 - **Типографика в стиле Grok**: body font-weight 350 (styles.css), у markdown strong = 550, заголовки = 500 (packages/chat-ui/src/markdown.web.css). Инлайн-код и код-блоки — `#ececf0` на тёмной заливке (фикс читаемости в светлой теме).
 
+## Коннекторы (Composio): OAuth-колбэк и телефон (2026-09-24)
+
+- **Куда возвращается OAuth.** `connections.begin` больше не шлёт на `WEB_ORIGIN/app`. Колбэк теперь страница API `GET /connections/callback?connection=<id>` (`apps/api/src/connection-callback.ts`). Origin выбирается по запросу: пришёл с телефона через туннель, значит публичный адрес; пришёл с Мака (127.0.0.1:3100 или веб на 5173), значит `API_URL`.
+- **Env.** `PUBLIC_API_URL` (необязательный, описан в `.env.example`). Если не задан, а `NEGRONI_PUBLIC_TUNNEL_HOST` есть (его ставит `negroni-stack.sh`), берётся `https://<tunnel host>`.
+- **Туннель.** `publicTunnelGate` пропускает без `x-negroni-tunnel-key` только `GET/HEAD /connections/callback`: редирект браузера не несёт заголовок. Всё остальное на туннеле по-прежнему 401. Страница ключ не содержит.
+- **Что делает страница.** Сервер сам проверяет `connectionReady` и переводит строку в `connected`. На телефоне страница уводит в диплинк `negroni://integrations?connection=<id>&status=connected|pending` (плюс кнопка «Return to Negroni»). В попапе веба/десктопа закрывает окно, во вкладке пишет, что её можно закрыть.
+- **Мобилка.** `expo-web-browser`: `openAuthSessionAsync(url, "negroni://integrations")`, после возврата сразу `connections.complete` и короткий поллинг (`apps/mobile/lib/connection-auth.ts`). Это нативный модуль: нужна новая сборка dev client / TestFlight, OTA не хватит.
+- **ngrok free.** На верхнеуровневой навигации ngrok может показать свою заглушку. Тогда жмём «Visit Site»; если сессия всё равно закрылась, поллинг в приложении досчитает подключение сам.
+- **Каталог.** Категории и описания тянутся из `composio.getClient().toolkits.list` (все страницы) и кэшируются вместе с каталогом на час. Список в вебе и на телефоне: сначала Connected, потом поиск, потом секции Popular и категории (сворачиваются), у каждой строки лого или буква в круге.
+
 ## Нюансы
 
 - Репо лежит в iCloud. Скрипт стека работает без tsx watch именно поэтому: watch-режим ловил рестарт-шторм от синка iCloud, и сообщения в чате «пропадали» (API умирал на лету). Не редактируй исходники во время работы ботов — горячая перезагрузка выключена, изменения подхватятся после перезапуска стека.
@@ -75,4 +85,5 @@ curl http://127.0.0.1:3100/health
   cp -R apps/web/dist /Applications/Negroni.app/Contents/Resources/web
   ```
   и перезапустить приложение. (Правки бэкенда — просто перезапуск launchd-джобы.)
+- **Бэкенд крутится из зеркала вне iCloud**: `~/Library/Application Support/Negroni/runtime-20260906` (см. `REPO` в `negroni-stack.sh`). Изменённые исходники api/packages нужно скопировать туда, собранный веб положить и в `/Applications/Negroni.app/Contents/Resources/web`, и в `runtime-20260906/apps/web/dist` (его отдаёт `vite preview` на 5173), потом перезапустить джобу.
 - 2026-09-03: починили нечитаемый код в светлой теме — `packages/chat-ui/src/markdown.web.css`, инлайн-код и код-блоки теперь `#ececf0` на тёмной заливке.

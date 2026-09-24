@@ -4,8 +4,11 @@ import { publicTunnelGate } from "./public-tunnel.js";
 
 function testApp(host = "negroni.ngrok-free.dev", key = "device-key") {
   const app = new Hono();
-  app.use("*", publicTunnelGate(host, key));
+  app.use("*", publicTunnelGate(host, key, ["/connections/callback"]));
   app.post("/rpc/health", (context) => context.json({ ok: true }));
+  app.get("/connections/callback", (context) => context.html("<p>ok</p>"));
+  app.post("/connections/callback", (context) => context.json({ ok: true }));
+  app.get("/connections/callback/extra", (context) => context.json({ ok: true }));
   return app;
 }
 
@@ -38,5 +41,24 @@ describe("publicTunnelGate", () => {
       headers: { "x-forwarded-host": "negroni.ngrok-free.dev" },
     });
     expect(response.status).toBe(401);
+  });
+
+  it("lets browser redirects reach the public callback page without the device key", async () => {
+    const response = await testApp().request(
+      "https://negroni.ngrok-free.dev/connections/callback?connection=conn-1&status=success",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("device-key");
+  });
+
+  it("keeps other methods and nested paths on the callback prefix gated", async () => {
+    const post = await testApp().request("https://negroni.ngrok-free.dev/connections/callback", {
+      method: "POST",
+    });
+    const nested = await testApp().request(
+      "https://negroni.ngrok-free.dev/connections/callback/extra",
+    );
+    expect(post.status).toBe(401);
+    expect(nested.status).toBe(401);
   });
 });

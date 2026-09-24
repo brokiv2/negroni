@@ -13,6 +13,8 @@ import {
   composioToolkitDirectory,
   mergeCatalogWithConnected,
   type ToolkitDirectoryEntry,
+  type ToolkitMetadata,
+  withToolkitMetadata,
 } from "./composio-catalog-cache.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 
@@ -99,6 +101,36 @@ export async function collectPages<T>(
     cursor = result.cursor;
   }
   return items;
+}
+
+type RawToolkitListItem = {
+  slug: string;
+  meta?: {
+    categories?: Array<{ id?: string; slug?: string; name?: string }> | null;
+    description?: string | null;
+    logo?: string | null;
+  } | null;
+};
+
+/** Map the raw Composio toolkit listing to per-slug catalog metadata. */
+export function toolkitMetadataBySlug(
+  items: ReadonlyArray<RawToolkitListItem>,
+): Map<string, ToolkitMetadata> {
+  const bySlug = new Map<string, ToolkitMetadata>();
+  for (const item of items) {
+    const categories = (item.meta?.categories ?? []).flatMap((category) => {
+      const slug = (category.slug ?? category.id ?? "").trim();
+      const name = (category.name ?? slug).trim();
+      return slug ? [{ slug, name: name || slug }] : [];
+    });
+    const description = item.meta?.description?.trim();
+    bySlug.set(item.slug.trim().toLowerCase(), {
+      categories,
+      logo: item.meta?.logo ?? null,
+      ...(description ? { description } : {}),
+    });
+  }
+  return bySlug;
 }
 
 function composioSlugKey(slug: string): string {
@@ -339,13 +371,32 @@ export class ComposioConnector implements ComposioProvider {
 
   private async loadDirectory(): Promise<ToolkitDirectoryEntry[]> {
     const session = await this.sessionFor("__rakazo_catalog__");
-    const toolkits = await collectPages((cursor) => session.toolkits({ limit: 50, cursor }));
-    return toolkits.map((toolkit) => ({
-      slug: toolkit.slug,
-      name: toolkit.name,
-      logo: toolkit.logo ?? null,
-      noAuth: Boolean(toolkit.isNoAuth),
-    }));
+    const [toolkits, metadata] = await Promise.all([
+      collectPages((cursor) => session.toolkits({ limit: 50, cursor })),
+      this.loadToolkitMetadata().catch((error: unknown) => {
+        console.warn("composio toolkit metadata unavailable", error);
+        return new Map<string, ToolkitMetadata>();
+      }),
+    ]);
+    return withToolkitMetadata(
+      toolkits.map((toolkit) => ({
+        slug: toolkit.slug,
+        name: toolkit.name,
+        logo: toolkit.logo ?? null,
+        noAuth: Boolean(toolkit.isNoAuth),
+      })),
+      metadata,
+    );
+  }
+
+  /** Categories and descriptions come from the toolkit listing, not the session directory. */
+  private async loadToolkitMetadata(): Promise<Map<string, ToolkitMetadata>> {
+    const client = this.sdk().getClient();
+    const items = await collectPages(async (cursor) => {
+      const page = await client.toolkits.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
+      return { items: page.items, cursor: page.next_cursor ?? undefined };
+    }, 20);
+    return toolkitMetadataBySlug(items);
   }
 
   async listConnectedSlugs(userId: string): Promise<string[]> {

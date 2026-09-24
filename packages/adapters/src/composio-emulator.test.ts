@@ -27,6 +27,14 @@ describe("ComposioEmulator", () => {
     ]);
   });
 
+  it("serves categories for every catalog entry", async () => {
+    const items = await new ComposioEmulator().catalog(context);
+    expect(items.every((item) => (item.categories?.length ?? 0) > 0)).toBe(true);
+    expect(items.find((item) => item.slug === "GITHUB")?.categories).toEqual([
+      { slug: "developer-tools", name: "developer tools" },
+    ]);
+  });
+
   it("isolates connection state by user and supports revoke", async () => {
     const emulator = new ComposioEmulator();
     await emulator.begin({ provider: "GMAIL", redirectUrl: "http://example.test" }, context);

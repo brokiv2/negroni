@@ -1,10 +1,12 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { abortableDelay } from "@rakazo/core";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { rpc } from "../lib/api";
 import { appConnectPresentation } from "../lib/app-connect";
+import { authorizeConnection } from "../lib/connection-auth";
 import { native } from "../lib/native";
+import { openConnectionAuthSession } from "../lib/open-auth-session";
+import { AppLogo } from "./AppLogo";
 
 export function AppConnectCard({
   botId,
@@ -38,24 +40,26 @@ export function AppConnectCard({
         { signal: controller.signal },
       );
       if (controller.signal.aborted) return;
-      if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        if (controller.signal.aborted) return;
-        const row = await rpc<{ status: string }>(
-          "connections/complete",
-          { connectionId: started.connectionId },
-          { signal: controller.signal },
-        ).catch(() => undefined);
-        if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
-          await rpc("onboarding/appConnected", { botId, provider: block.provider });
-          if (controller.signal.aborted) return;
-          setLocalStatus("connected");
-          return;
-        }
-        await abortableDelay(2_000, controller.signal);
+      const outcome = await authorizeConnection({
+        connectionId: started.connectionId,
+        authorizationUrl: started.authorizationUrl,
+        openAuthSession: openConnectionAuthSession,
+        complete: (connectionId) =>
+          rpc<{ status: string }>(
+            "connections/complete",
+            { connectionId },
+            { signal: controller.signal },
+          ),
+        signal: controller.signal,
+      });
+      if (outcome === "aborted") return;
+      if (outcome === "pending") {
+        setError("Still pending. Finish in the browser, then try again.");
+        return;
       }
-      if (!controller.signal.aborted) setError("Authorization timed out. Please try again.");
+      await rpc("onboarding/appConnected", { botId, provider: block.provider });
+      if (controller.signal.aborted) return;
+      setLocalStatus("connected");
     } catch (reason) {
       if (!controller.signal.aborted) {
         setError(reason instanceof Error ? reason.message : "Could not authorize this app");
@@ -83,20 +87,7 @@ export function AppConnectCard({
       }}
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-        <View
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            backgroundColor: "#30356A",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Text style={{ color: "#E2E4FF", fontSize: 15, fontWeight: "600" }}>
-            {block.name.slice(0, 1).toUpperCase()}
-          </Text>
-        </View>
+        <AppLogo name={block.name} logo={block.logo} size={40} />
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ color: "#ECECEE", fontSize: 15, fontWeight: "600" }}>{view.title}</Text>
           <Text style={{ color: "#85858A", fontSize: 13.5 }} numberOfLines={2}>

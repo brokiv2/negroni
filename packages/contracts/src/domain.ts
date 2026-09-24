@@ -454,11 +454,20 @@ export const ConnectionSchema = z.object({
 });
 export type Connection = z.infer<typeof ConnectionSchema>;
 
+export const ConnectionCatalogCategorySchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+});
+export type ConnectionCatalogCategory = z.infer<typeof ConnectionCatalogCategorySchema>;
+
 export const ConnectionCatalogItemSchema = z.object({
   connectorId: z.string(),
   slug: z.string(),
   name: z.string(),
   logo: z.string().nullable(),
+  /** Provider categories, most relevant first. Empty or absent when unknown. */
+  categories: z.array(ConnectionCatalogCategorySchema).optional(),
+  description: z.string().optional(),
   connected: z.boolean(),
   /** Number of active connected accounts for this toolkit (multi-account). */
   connectionCount: z.number().int().nonnegative().optional(),
