@@ -57,7 +57,7 @@ export function VesperActivityScreen({
       setError(null);
       const [activity, thread, effects] = await Promise.allSettled([
         fetchSpaceActivity(),
-        rpc<MobileSnapshot>("threads/get", { botId }, { signal }),
+        rpc<MobileSnapshot>("threads/get", { botId, threadKind: "personal" }, { signal }),
         rpc<{ effects: EffectReceipt[] }>("effects/list", {}, { signal }),
       ]);
       if (signal.aborted) return;
@@ -92,6 +92,7 @@ export function VesperActivityScreen({
       if (!botId) return;
       await rpc("threads/answer", {
         botId,
+        threadKind: "personal",
         runId: ask.runId,
         messageId: ask.messageId,
         answer: value,
@@ -111,7 +112,7 @@ export function VesperActivityScreen({
     if (!botId) return;
     setStopping(true);
     try {
-      await rpc("threads/stop", { botId });
+      await rpc("threads/stop", { botId, threadKind: "personal" });
       setOpenRunId(null);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : t("Could not stop this"));
