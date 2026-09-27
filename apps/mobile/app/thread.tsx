@@ -154,6 +154,7 @@ import {
   ThreadScrollBehavior,
   type ThreadScrollState,
 } from "../lib/thread-scroll";
+import { enterVesperShell } from "../lib/vesper-entry";
 import { appendDictationTranscript, speakText, transcribeRecording } from "../lib/voice";
 
 type PendingAttachment = PickedAttachment & { threadKey: string };
@@ -716,7 +717,7 @@ function Thread() {
           onPress={() => {
             if (!botId || inGroup) return;
             if (assistantView) {
-              router.push({ pathname: "/assistant-hub", params: { botId, name: displayName } });
+              void enterVesperShell((route) => router.replace(route));
               return;
             }
             router.push({ pathname: "/bot-settings", params: { botId } });
@@ -2600,9 +2601,6 @@ function Thread() {
         <WorkspacePicker
           visible={workspacePickerOpen}
           selected="assistant"
-          assistantAvailable
-          assistantId={botId}
-          assistantName={displayName}
           onClose={() => setWorkspacePickerOpen(false)}
           onSelect={(next) => {
             if (next === "team") void saveChatView("team").then(() => router.replace("/"));

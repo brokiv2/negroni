@@ -31,7 +31,7 @@ export function ChatViewSwitch({
         <Pressable
           key={view}
           accessibilityRole="button"
-          accessibilityLabel={view === "assistant" ? "Assistant view" : "Team view"}
+          accessibilityLabel={view === "assistant" ? "Vesper view" : "Team view"}
           accessibilityState={{ selected: value === view }}
           onPress={() => onChange(view)}
           style={{
@@ -59,7 +59,7 @@ export function ChatViewSwitch({
                     : "#C8C8CC",
             }}
           >
-            {view === "assistant" ? "Assistant" : "Team"}
+            {view === "assistant" ? "Vesper" : "Team"}
           </Text>
         </Pressable>
       ))}
