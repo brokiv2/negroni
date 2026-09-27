@@ -165,6 +165,11 @@ import {
   resolveLoginFill,
   sameSecretDestination,
 } from "./bot-secrets.js";
+import {
+  browserCardFromNavigateResult,
+  browserScreenshotArtifactName,
+  captureBrowserScreenshot,
+} from "./browser-card.js";
 import { createBrowserProvider } from "./browser-provider-factory.js";
 import {
   browserActFromTool,
@@ -1765,12 +1770,63 @@ export function createRunExecutor(deps: ExecutorDeps) {
           midTurnUserTexts.push(narration);
           publishedMidTurnUserMessage = true;
         };
+        let browserCardCount = 0;
         const formatObservation = (
           observation: Awaited<ReturnType<SandboxProvider["observe"]>>,
           note?: string,
         ) => {
           const result = observationToolResult(observation, note, lastComputerFrameId);
           lastComputerFrameId = observation.frameId;
+          return result;
+        };
+
+        /**
+         * Publish the Browser card for a page visit, then hand the tool result
+         * back untouched. The card is additive: the model's result, the tool
+         * streak in `steps` and the run's flow are all unchanged, so a failure
+         * here costs a picture and nothing else.
+         */
+        const publishBrowserCardFor = async (
+          toolName: string,
+          toolArgs: Record<string, unknown>,
+          result: unknown,
+        ): Promise<unknown> => {
+          if (toolName !== "browser_navigate") return result;
+          try {
+            const requestedUrl = String(toolArgs.url ?? "").trim();
+            const failed =
+              !!result &&
+              typeof result === "object" &&
+              typeof (result as { error?: unknown }).error === "string";
+            const artifacts = deps.artifacts;
+            const screenshot =
+              failed || !artifacts
+                ? undefined
+                : await captureBrowserScreenshot(
+                    { prisma: deps.prisma, artifacts, sandbox: deps.sandbox },
+                    {
+                      spaceId: run.spaceId,
+                      userId: run.userId,
+                      botId: bot.id,
+                      ...(thread.groupId ? { groupId: thread.groupId } : {}),
+                      runId,
+                      computer,
+                      context,
+                      operationId: `${runId}:browser-card:${browserCardCount}`,
+                      name: browserScreenshotArtifactName(requestedUrl),
+                    },
+                  );
+            const block = browserCardFromNavigateResult({
+              requestedUrl,
+              result,
+              ...(screenshot ? { screenshot } : {}),
+              computerId: storedComputer.id,
+            });
+            browserCardCount += 1;
+            await publishMessage(deps, run, "bot", redactBlocks([block], runSecrets));
+          } catch (error) {
+            getLogger().error("browser card publish", error);
+          }
           return result;
         };
 
@@ -2710,9 +2766,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return computerScreenToolResult(
               async () =>
                 tool
-                  ? redactConnectorPayload(
-                      await tool(browser, computer, context, args),
-                      redactions(),
+                  ? publishBrowserCardFor(
+                      name,
+                      args,
+                      redactConnectorPayload(
+                        await tool(browser, computer, context, args),
+                        redactions(),
+                      ),
                     )
                   : browserActFromTool(browser, computer, context, args, {
                       redactions,
@@ -5009,13 +5069,71 @@ async function requeueComputerRun(
   });
 }
 
-function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {
+export function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[] {
   return blocks.map((block) => {
     if (block.kind === "text") {
       return { kind: "text" as const, text: redactSecrets(block.text, secrets) };
     }
     if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
       return { ...block, text: redactSecrets(block.text, secrets) };
+    }
+    // Cards quote pages, mailboxes and plans back to the user, so a filled
+    // login can land in a title, a URL query or an excerpt. Every free-text
+    // field on a card goes through the same scrub as narration.
+    if (block.kind === "browser") {
+      return {
+        ...block,
+        summary: redactSecrets(block.summary, secrets),
+        url: redactSecrets(block.url, secrets),
+        ...(block.title ? { title: redactSecrets(block.title, secrets) } : {}),
+        ...(block.error ? { error: redactSecrets(block.error, secrets) } : {}),
+      };
+    }
+    if (block.kind === "mail") {
+      return {
+        ...block,
+        summary: redactSecrets(block.summary, secrets),
+        ...(block.query ? { query: redactSecrets(block.query, secrets) } : {}),
+        ...(block.subject ? { subject: redactSecrets(block.subject, secrets) } : {}),
+        ...(block.sender ? { sender: redactSecrets(block.sender, secrets) } : {}),
+        ...(block.excerpt ? { excerpt: redactSecrets(block.excerpt, secrets) } : {}),
+        ...(block.openUrl ? { openUrl: redactSecrets(block.openUrl, secrets) } : {}),
+      };
+    }
+    if (block.kind === "pdf") {
+      return {
+        ...block,
+        summary: redactSecrets(block.summary, secrets),
+        name: redactSecrets(block.name, secrets),
+        ...(block.fields
+          ? {
+              fields: block.fields.map((field) => ({
+                ...field,
+                value: redactSecrets(field.value, secrets),
+              })),
+            }
+          : {}),
+      };
+    }
+    if (block.kind === "plan") {
+      return {
+        ...block,
+        summary: redactSecrets(block.summary, secrets),
+        title: redactSecrets(block.title, secrets),
+        ...(block.note ? { note: redactSecrets(block.note, secrets) } : {}),
+        steps: block.steps.map((step) => ({
+          ...step,
+          title: redactSecrets(step.title, secrets),
+          ...(step.detail ? { detail: redactSecrets(step.detail, secrets) } : {}),
+        })),
+      };
+    }
+    if (block.kind === "finance") {
+      return {
+        ...block,
+        summary: redactSecrets(block.summary, secrets),
+        title: redactSecrets(block.title, secrets),
+      };
     }
     return block;
   });
