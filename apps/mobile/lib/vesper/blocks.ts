@@ -4,10 +4,10 @@ import type { MessageBlock } from "@rakazo/contracts";
  * The transcript's dispatch point.
  *
  * Negroni's server pre-shapes everything into `MessageBlock`s, so Vesper renders
- * a block kind rather than a tool name. Rich tool-result cards (Browser, Mail,
- * PDF, Plan, Finance) arrive as new block kinds; when they land, add the kind to
- * `VESPER_BLOCK_RENDERERS` and a component beside the others. Until then those
- * results come through as `card` / `steps` / `progress` and render generically.
+ * a block kind rather than a tool name. A new kind slots in by adding an entry
+ * to `VESPER_BLOCK_RENDERERS` and a component beside the others; the map is
+ * complete by construction, so a kind with no entry is a compile error rather
+ * than a silent unstyled default.
  */
 
 export type VesperBlockRenderer =
@@ -35,7 +35,17 @@ export type VesperBlockRenderer =
   | "file"
   /** Chart artifact. */
   | "chart"
-  /** Nothing matched; render the raw text if the block has any. */
+  /** A page the bot visited: screenshot plus a hand-off to the live computer. */
+  | "browser"
+  /** A mail search count, or one thread. */
+  | "mail"
+  /** Document preview. Structurally a superset of `file`. */
+  | "pdf"
+  /** Durable multi-step work with per-step status. Not `steps`. */
+  | "plan"
+  /** The dark finance summary. */
+  | "finance"
+  /** A kind newer than this build; say so rather than dropping it. */
   | "unknown";
 
 /**
@@ -66,6 +76,11 @@ export const VESPER_BLOCK_RENDERERS = {
   bot_message_sent: "delegation",
   bot_message_received: "delegation",
   chart: "chart",
+  browser: "browser",
+  mail: "mail",
+  pdf: "pdf",
+  plan: "plan",
+  finance: "finance",
 } as const satisfies Record<MessageBlock["kind"], VesperBlockRenderer>;
 
 /**
@@ -91,6 +106,11 @@ const STANDALONE: ReadonlySet<VesperBlockRenderer> = new Set([
   "file",
   "chart",
   "delegation",
+  "browser",
+  "mail",
+  "pdf",
+  "plan",
+  "finance",
 ]);
 
 /** True when the block draws its own card and should sit outside the bubble. */

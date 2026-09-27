@@ -52,6 +52,7 @@ export function VesperChatScreen({
   onBotResolved,
   onRunsChanged,
   onOpenComputer,
+  computerReachable,
   desktop,
 }: {
   /** The main assistant's bot id, once `personal.thread` has resolved it. */
@@ -59,6 +60,8 @@ export function VesperChatScreen({
   onBotResolved: (thread: PersonalThread) => void;
   onRunsChanged?: (snapshot: MobileSnapshot | null) => void;
   onOpenComputer: () => void;
+  /** From `computer.status`, so a browser card never asserts its own liveness. */
+  computerReachable: boolean;
   desktop: boolean;
 }) {
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
@@ -280,6 +283,8 @@ export function VesperChatScreen({
             <MessageBubble
               key={message.id}
               message={message}
+              target={botId ? { botId } : null}
+              computerReachable={computerReachable}
               onAnswer={answer}
               onOpenComputer={onOpenComputer}
             />

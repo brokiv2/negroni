@@ -1,6 +1,7 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { Text, View } from "react-native";
 import type { MobileMessage } from "../../../lib/api";
+import type { ArtifactImageTarget } from "../../../lib/vesper/artifact-image";
 import { isBubbleBlock } from "../../../lib/vesper/blocks";
 import { colors, s, vt } from "../theme";
 import { VesperBlock } from "./blocks";
@@ -12,10 +13,14 @@ import { VesperBlock } from "./blocks";
  */
 export function MessageBubble({
   message,
+  target,
+  computerReachable,
   onAnswer,
   onOpenComputer,
 }: {
   message: MobileMessage;
+  target?: ArtifactImageTarget | null;
+  computerReachable?: boolean;
   onAnswer?: (block: MessageBlock, answer: string) => void;
   onOpenComputer?: () => void;
 }) {
@@ -54,6 +59,8 @@ export function MessageBubble({
               <VesperBlock
                 key={`${message.id}:${index}`}
                 block={block}
+                target={target}
+                computerReachable={computerReachable}
                 onAnswer={onAnswer}
                 onOpenComputer={onOpenComputer}
               />
@@ -65,6 +72,8 @@ export function MessageBubble({
         <VesperBlock
           key={`${message.id}:card:${index}`}
           block={block}
+          target={target}
+          computerReachable={computerReachable}
           onAnswer={onAnswer}
           onOpenComputer={onOpenComputer}
         />

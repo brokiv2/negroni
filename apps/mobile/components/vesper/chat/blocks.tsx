@@ -12,9 +12,11 @@ import {
 import type { ReactNode } from "react";
 import { Text, View } from "react-native";
 import { t } from "../../../lib/i18n";
+import type { ArtifactImageTarget } from "../../../lib/vesper/artifact-image";
 import { vesperBlockRenderer } from "../../../lib/vesper/blocks";
 import { Button } from "../kit";
 import { colors, s, vt } from "../theme";
+import { BrowserCard, FinanceCard, MailCard, PdfCard, PlanCard } from "./tool-cards";
 
 /**
  * Generic block renderers.
@@ -69,9 +71,20 @@ function CardHeader({ icon, title, detail }: { icon: ReactNode; title: string; d
   );
 }
 
-function KeyValueCard({ lines }: { lines: { k: string; v: string }[] }) {
+function KeyValueCard({
+  lines,
+  title,
+  subtitle,
+}: {
+  lines: { k: string; v: string }[];
+  title?: string;
+  subtitle?: string;
+}) {
   return (
     <ToolCard>
+      {/* Both are new and optional: a bare `lines` list must still lay out. */}
+      {!!title && <Text style={s.heading}>{title}</Text>}
+      {!!subtitle && <Text style={s.small}>{subtitle}</Text>}
       {lines.map((line) => (
         <View key={`${line.k}:${line.v}`} style={{ gap: 2 }}>
           <Text style={s.label}>{line.k}</Text>
@@ -117,10 +130,37 @@ function StepsCard({
   );
 }
 
-function ProgressLine({ text, pending }: { text: string; pending?: string[] }) {
+function ProgressLine({
+  text,
+  pending,
+  percent,
+}: {
+  text: string;
+  pending?: string[];
+  percent?: number;
+}) {
   return (
-    <View style={{ gap: 3 }}>
+    <View style={{ gap: 5 }}>
       <Text style={s.muted}>{text}</Text>
+      {/* Absent percent means indeterminate: no bar sitting at zero. */}
+      {percent !== undefined && (
+        <View
+          style={{
+            height: 4,
+            borderRadius: vt.radius.progressBar,
+            backgroundColor: colors.line,
+            overflow: "hidden",
+          }}
+        >
+          <View
+            style={{
+              height: 4,
+              width: `${Math.round(Math.min(100, Math.max(0, percent)))}%`,
+              backgroundColor: vt.extras.progressFill,
+            }}
+          />
+        </View>
+      )}
       {!!pending?.length && <Text style={s.small}>{pending.join(" · ")}</Text>}
     </View>
   );
@@ -170,12 +210,22 @@ function delegationLabel(block: MessageBlock): string {
 
 export function VesperBlock({
   block,
+  target,
+  computerReachable = false,
   onAnswer,
   onOpenComputer,
+  onOpenArtifact,
+  onOpenRun,
 }: {
   block: MessageBlock;
+  /** Whose artifacts to resolve card images against. */
+  target?: ArtifactImageTarget | null;
+  /** From `computer.status` — a card never asserts its own liveness. */
+  computerReachable?: boolean;
   onAnswer?: (block: MessageBlock, answer: string) => void;
   onOpenComputer?: () => void;
+  onOpenArtifact?: (artifactId: string) => void;
+  onOpenRun?: (runId: string) => void;
 }) {
   switch (vesperBlockRenderer(block.kind)) {
     case "text":
@@ -184,10 +234,12 @@ export function VesperBlock({
       return "text" in block ? <Text style={s.small}>{block.text}</Text> : null;
     case "progress":
       return block.kind === "progress" ? (
-        <ProgressLine text={block.text} pending={block.pendingToolNames} />
+        <ProgressLine text={block.text} pending={block.pendingToolNames} percent={block.percent} />
       ) : null;
     case "card":
-      if (block.kind === "card") return <KeyValueCard lines={block.lines} />;
+      if (block.kind === "card") {
+        return <KeyValueCard lines={block.lines} title={block.title} subtitle={block.subtitle} />;
+      }
       if (block.kind === "skill_draft") {
         return (
           <ToolCard>
@@ -344,6 +396,29 @@ export function VesperBlock({
             detail={t("{count} rows", { count: block.data.length })}
           />
         </ToolCard>
+      ) : null;
+    case "browser":
+      return block.kind === "browser" ? (
+        <BrowserCard
+          block={block}
+          target={target ?? null}
+          computerReachable={computerReachable}
+          onTakeControl={onOpenComputer ? () => onOpenComputer() : undefined}
+        />
+      ) : null;
+    case "mail":
+      return block.kind === "mail" ? <MailCard block={block} target={target ?? null} /> : null;
+    case "pdf":
+      return block.kind === "pdf" ? (
+        <PdfCard block={block} target={target ?? null} onOpen={onOpenArtifact} />
+      ) : null;
+    case "plan":
+      return block.kind === "plan" ? (
+        <PlanCard block={block} target={target ?? null} onOpenRun={onOpenRun} />
+      ) : null;
+    case "finance":
+      return block.kind === "finance" ? (
+        <FinanceCard block={block} target={target ?? null} />
       ) : null;
     case "delegation":
       return <DelegationChip label={delegationLabel(block)} />;

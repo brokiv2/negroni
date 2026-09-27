@@ -33,9 +33,21 @@ describe("block dispatch", () => {
     }
   });
 
+  it("gives each rich tool card its own renderer rather than a key/value fallback", () => {
+    expect(vesperBlockRenderer("browser")).toBe("browser");
+    expect(vesperBlockRenderer("mail")).toBe("mail");
+    expect(vesperBlockRenderer("pdf")).toBe("pdf");
+    expect(vesperBlockRenderer("plan")).toBe("plan");
+    expect(vesperBlockRenderer("finance")).toBe("finance");
+  });
+
   it("names a block kind from a newer server rather than dropping it", () => {
-    expect(vesperBlockRenderer("browser")).toBe("unknown");
-    expect(vesperBlockRenderer("mail")).toBe("unknown");
+    expect(vesperBlockRenderer("hologram")).toBe("unknown");
+  });
+
+  it("keeps plan apart from steps", () => {
+    // `steps` coalesces one turn's tool calls; `plan` outlives its turn.
+    expect(vesperBlockRenderer("plan")).not.toBe(vesperBlockRenderer("steps"));
   });
 
   it("collapses every delegation flavour into one chip", () => {
@@ -69,8 +81,15 @@ describe("block dispatch", () => {
     expect(isStandaloneBlock("text")).toBe(false);
   });
 
+  it("draws every tool card outside the bubble", () => {
+    for (const kind of ["browser", "mail", "pdf", "plan", "finance"]) {
+      expect(isStandaloneBlock(kind), kind).toBe(true);
+      expect(isBubbleBlock(kind), kind).toBe(false);
+    }
+  });
+
   it("puts an unknown block in neither bucket, so it renders on its own line", () => {
-    expect(isBubbleBlock("browser")).toBe(false);
-    expect(isStandaloneBlock("browser")).toBe(false);
+    expect(isBubbleBlock("hologram")).toBe(false);
+    expect(isStandaloneBlock("hologram")).toBe(false);
   });
 });

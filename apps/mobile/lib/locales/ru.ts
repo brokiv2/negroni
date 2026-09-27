@@ -498,7 +498,6 @@ export const RU_MESSAGES: Record<string, string> = {
   "Waiting…": "Ожидание…",
   "What this bot is for": "Для чего нужен этот бот",
   "While agents are working": "Пока агенты работают",
-  Working: "Выполняется",
   "Working…": "Выполняется…",
   "Work stopped, but the thread could not refresh: {detail}":
     "Работа остановлена, но диалог не удалось обновить: {detail}",
@@ -563,7 +562,6 @@ export const RU_MESSAGES: Record<string, string> = {
   "Opened its thread.": "Диалог открыт.",
   "Paste the OpenAI-compatible address from your server. Rakazo adds /v1 if needed.":
     "Вставьте OpenAI-совместимый адрес со своего сервера. При необходимости Rakazo добавляет /v1.",
-  Paused: "Приостановлено",
   Prompt: "Промпт",
   "Recording a live demonstration needs desktop or web with the full computer view. You can still ask this bot to run saved skills from chat.":
     "Для записи живой демонстрации требуется приложение для компьютера или веб-приложение с полным представлением компьютера. Вы по-прежнему можете попросить этого бота запустить сохранённые навыки из чата.",
@@ -729,4 +727,20 @@ export const RU_MESSAGES: Record<string, string> = {
   "{count} rows": "Строк: {count}",
   "{count} steps · {seconds}s": "Шагов: {count} · {seconds} с",
   "{count} steps": "Шагов: {count}",
+  "Amounts are in the source file's currency.": "Суммы в валюте исходного файла.",
+  Browser: "Браузер",
+  Income: "Доход",
+  "Open email": "Открыть письмо",
+  "Open the run": "Открыть запуск",
+  Remaining: "Остаток",
+  "Showing the first {count} of {total}": "Показано первых: {count} из {total}",
+  Spending: "Расходы",
+  "Tap to read the document": "Нажмите, чтобы открыть документ",
+  "{count} messages": "Сообщений: {count}",
+  "{count} pages": "Страниц: {count}",
+  "{done}/{total} steps": "Шагов: {done}/{total}",
+  Working: "В работе",
+  "Ready to review": "Готово к проверке",
+  Scheduled: "Запланировано",
+  Paused: "На паузе",
 };

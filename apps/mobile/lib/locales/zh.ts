@@ -481,7 +481,6 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Waiting…": "等待中…",
   "What this bot is for": "这个 Bot 的用途",
   "While agents are working": "智能体工作时",
-  Working: "工作中",
   "Working…": "处理中…",
   "Work stopped, but the thread could not refresh: {detail}":
     "工作已停止，但线程无法刷新：{detail}",
@@ -544,7 +543,6 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Opened its thread.": "已打开其对话。",
   "Paste the OpenAI-compatible address from your server. Rakazo adds /v1 if needed.":
     "粘贴你服务器的 OpenAI 兼容地址。如有需要，Rakazo 会自动补上 /v1。",
-  Paused: "已暂停",
   Prompt: "提示词",
   "Recording a live demonstration needs desktop or web with the full computer view. You can still ask this bot to run saved skills from chat.":
     "录制现场演示需要桌面端或网页端的完整电脑视图。你仍可在聊天中让这个 Bot 运行已保存的技能。",
@@ -704,4 +702,20 @@ export const ZH_MESSAGES: Record<string, string> = {
   "{count} rows": "{count} 行",
   "{count} steps · {seconds}s": "{count} 步 · {seconds} 秒",
   "{count} steps": "{count} 步",
+  "Amounts are in the source file's currency.": "金额使用源文件中的货币。",
+  Browser: "浏览器",
+  Income: "收入",
+  "Open email": "打开邮件",
+  "Open the run": "打开这次运行",
+  Remaining: "剩余",
+  "Showing the first {count} of {total}": "显示前 {count} 条，共 {total} 条",
+  Spending: "支出",
+  "Tap to read the document": "点按以阅读文档",
+  "{count} messages": "{count} 封邮件",
+  "{count} pages": "{count} 页",
+  "{done}/{total} steps": "{done}/{total} 步",
+  Working: "进行中",
+  "Ready to review": "待你确认",
+  Scheduled: "已排期",
+  Paused: "已暂停",
 };

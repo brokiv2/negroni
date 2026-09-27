@@ -127,6 +127,7 @@ export default function VesperShell() {
               botId={botId}
               desktop={desktop}
               onBotResolved={setPersonal}
+              computerReachable={pillState !== "offline"}
               onRunsChanged={() => void refreshRuns()}
               onOpenComputer={() => {
                 if (botId) router.push({ pathname: "/computer", params: { botId } });
