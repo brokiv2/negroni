@@ -2,7 +2,7 @@ import type { MessageBlock, PersonalThread } from "@rakazo/contracts";
 import { isActive, isRunTerminalEvent } from "@rakazo/core";
 import { ArrowDown } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
 import {
   applyMobileThreadEvent,
   type MobileSnapshot,
@@ -11,6 +11,12 @@ import {
   subscribeThread,
 } from "../../../lib/api";
 import { t } from "../../../lib/i18n";
+import {
+  type PickedAttachment,
+  pickDocuments,
+  pickFromLibrary,
+  takePhoto,
+} from "../../../lib/pick-attachments";
 import {
   composerReducer,
   initialComposerState,
@@ -51,6 +57,7 @@ export function VesperChatScreen({
   botId,
   onBotResolved,
   onRunsChanged,
+  onThreadEvent,
   onOpenComputer,
   computerReachable,
   desktop,
@@ -59,6 +66,8 @@ export function VesperChatScreen({
   botId: string | null;
   onBotResolved: (thread: PersonalThread) => void;
   onRunsChanged?: (snapshot: MobileSnapshot | null) => void;
+  /** Every stream event, so the shell's pill and bell stay live without polling. */
+  onThreadEvent?: (event: { type: string }) => void;
   onOpenComputer: () => void;
   /** From `computer.status`, so a browser card never asserts its own liveness. */
   computerReachable: boolean;
@@ -73,6 +82,9 @@ export function VesperChatScreen({
   composerRef.current = composer;
   const queue = useMemo(() => new VesperFollowUpQueue(), []);
   const [queueState, setQueueState] = useState<VesperQueueSnapshot>(queue.getSnapshot());
+  // Names for the composer chips. The ids themselves live in the reducer, which
+  // is what `threads.send` takes.
+  const [attachments, setAttachments] = useState<{ id: string; name: string }[]>([]);
   const list = useRef<ScrollView>(null);
   const followLatest = useRef(true);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
@@ -135,6 +147,7 @@ export function VesperChatScreen({
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
               commit(applyMobileThreadEvent(snapRef.current, event));
+              onThreadEvent?.(event);
               if (isRunTerminalEvent(event)) {
                 dispatch({ kind: "run-ended" });
                 void refresh().catch(() => undefined);
@@ -158,7 +171,7 @@ export function VesperChatScreen({
       }
     })();
     return () => abort.abort();
-  }, [commit, queue, refresh, target?.botId]);
+  }, [commit, onThreadEvent, queue, refresh, target?.botId]);
 
   const running = snapshotIsRunning(snap);
   useEffect(() => {
@@ -173,7 +186,10 @@ export function VesperChatScreen({
     followLatest.current = true;
     setAwayFromLatest(false);
     if (shouldQueueSubmit(state)) {
-      // A live run owns the turn; this becomes a durable follow-up.
+      // A live run owns the turn; this becomes a durable follow-up. `followUp`
+      // carries text only, so an attachment stays on the composer for the next
+      // real turn instead of being dropped here.
+      if (!text) return;
       queue.enqueue({ id: newId(), text });
       dispatch({ kind: "draft", text: "" });
       return;
@@ -189,6 +205,7 @@ export function VesperChatScreen({
       .then(() => {
         dispatch({ kind: "submit-succeeded" });
         dispatch({ kind: "run-started" });
+        setAttachments((current) => current.filter((file) => !artifactIds.includes(file.id)));
       })
       .catch((failure: Error) => {
         dispatch({ kind: "submit-failed" });
@@ -205,22 +222,91 @@ export function VesperChatScreen({
   }, [queue, target?.botId]);
 
   const answer = useCallback(
-    (block: MessageBlock, value: string) => {
+    async (block: MessageBlock, value: string, username?: string) => {
       if (!target) return;
       const message = (snapRef.current?.messages ?? []).find((candidate) =>
         candidate.blocks.includes(block),
       );
       const runId = message?.runId ?? snapRef.current?.run?.id;
       if (!message || !runId) return;
-      void rpc("threads/answer", {
+      // A secret answer is posted and forgotten: it is never written back into
+      // the snapshot, and the answered card says "Saved" rather than the value.
+      await rpc("threads/answer", {
         ...target,
         runId,
         messageId: message.id,
         answer: value,
-      }).catch((failure: Error) => setError(failure.message));
+        ...(username ? { username } : {}),
+      });
     },
     [target?.botId],
   );
+
+  /**
+   * `+` → pick → `artifacts.create` → `attachmentIds`.
+   *
+   * Uploading on pick rather than on send means the composer holds ids, not
+   * megabytes of base64, and a failed upload is reported while the person is
+   * still looking at the picker.
+   */
+  const addAttachments = useCallback(
+    async (
+      pick: (existingCount: number) => Promise<{
+        attachments: PickedAttachment[];
+        skipped: Array<{ name: string; reason: string }>;
+      }>,
+    ) => {
+      if (!target) return;
+      const held = composerRef.current.attachmentIds.length;
+      let picked: Awaited<ReturnType<typeof pick>>;
+      try {
+        picked = await pick(held);
+      } catch (failure) {
+        setError(failure instanceof Error ? failure.message : t("Could not open the picker"));
+        return;
+      }
+      for (const file of picked.attachments) {
+        try {
+          const artifact = await rpc<{ id: string }>("artifacts/create", {
+            botId: target.botId,
+            name: file.name,
+            mimeType: file.mimeType,
+            contentBase64: file.contentBase64,
+          });
+          dispatch({ kind: "attach", artifactIds: [artifact.id] });
+          setAttachments((current) => [...current, { id: artifact.id, name: file.name }]);
+        } catch (failure) {
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : t("Could not attach {name}", { name: file.name }),
+          );
+        }
+      }
+      if (picked.skipped.length) {
+        setError(
+          t("Skipped {items}", {
+            items: picked.skipped.map((skip) => `${skip.name} (${skip.reason})`).join(", "),
+          }),
+        );
+      }
+    },
+    [target?.botId],
+  );
+
+  const showAttachMenu = useCallback(() => {
+    Alert.alert(t("Attach"), undefined, [
+      { text: t("Photo library"), onPress: () => void addAttachments(pickFromLibrary) },
+      { text: t("Camera"), onPress: () => void addAttachments(takePhoto) },
+      { text: t("File"), onPress: () => void addAttachments(pickDocuments) },
+      { text: t("Cancel"), style: "cancel" },
+    ]);
+  }, [addAttachments]);
+
+  const removeAttachment = useCallback((artifactId: string) => {
+    dispatch({ kind: "detach", artifactId });
+    setAttachments((current) => current.filter((file) => file.id !== artifactId));
+  }, []);
 
   const messages = snap?.messages ?? [];
   const padding = desktop ? vt.space.chatPaddingHorizontalDesktop : vt.space.chatPaddingHorizontal;
@@ -325,12 +411,12 @@ export function VesperChatScreen({
           state={composer}
           loading={loading}
           error={!!error}
-          attachments={[]}
+          attachments={attachments}
           onDraftChange={(text) => dispatch({ kind: "draft", text })}
           onSubmit={submit}
           onStop={stop}
-          onPickAttachment={() => undefined}
-          onRemoveAttachment={() => undefined}
+          onPickAttachment={showAttachMenu}
+          onRemoveAttachment={removeAttachment}
         />
       </KeyboardAvoidingView>
     </View>

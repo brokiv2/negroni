@@ -718,4 +718,11 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Ready to review": "待你确认",
   Scheduled: "已排期",
   Paused: "已暂停",
+  "One last look": "最后确认一下",
+  "Your answer": "你的回答",
+  "Waiting on someone else to answer this.": "正在等待其他人回答。",
+  "Could not send your answer": "无法发送你的回答",
+  "Send when this finishes": "完成后发送",
+  "Could not attach {name}": "无法附加 {name}",
+  "Could not open the picker": "无法打开选择器",
 };

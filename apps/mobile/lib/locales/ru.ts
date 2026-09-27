@@ -743,4 +743,11 @@ export const RU_MESSAGES: Record<string, string> = {
   "Ready to review": "Готово к проверке",
   Scheduled: "Запланировано",
   Paused: "На паузе",
+  "One last look": "Последняя проверка",
+  "Your answer": "Ваш ответ",
+  "Waiting on someone else to answer this.": "Ждём ответа от другого участника.",
+  "Could not send your answer": "Не удалось отправить ответ",
+  "Send when this finishes": "Отправить, когда закончит",
+  "Could not attach {name}": "Не удалось приложить {name}",
+  "Could not open the picker": "Не удалось открыть выбор файлов",
 };

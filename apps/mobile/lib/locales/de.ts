@@ -744,4 +744,11 @@ export const DE_MESSAGES: Record<string, string> = {
   "Ready to review": "Bereit zur Prüfung",
   Scheduled: "Geplant",
   Paused: "Pausiert",
+  "One last look": "Ein letzter Blick",
+  "Your answer": "Deine Antwort",
+  "Waiting on someone else to answer this.": "Wartet auf die Antwort von jemand anderem.",
+  "Could not send your answer": "Deine Antwort konnte nicht gesendet werden",
+  "Send when this finishes": "Senden, wenn das hier fertig ist",
+  "Could not attach {name}": "{name} konnte nicht angehängt werden",
+  "Could not open the picker": "Die Dateiauswahl konnte nicht geöffnet werden",
 };
