@@ -1,26 +1,25 @@
+import { type ColorTokens, darkTokens, type ResolvedAppearance } from "@rakazo/ui-tokens";
 import Markdown, {
+  createMarkdownIt,
   MarkdownStream,
   type RenderRules,
 } from "@ronradtke/react-native-markdown-display";
-import { memo } from "react";
-import { Linking, StyleSheet, Text, useColorScheme, View } from "react-native";
+import type { ReactNode } from "react";
+import { memo, useMemo, useState } from "react";
+import type { StyleProp, ViewStyle } from "react-native";
+import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { ChatMarkdownProps } from "./markdown";
-import { sanitizeMarkdownUrl } from "./markdown";
+import { linkifyExplicitUrls, sanitizeMarkdownUrl } from "./markdown";
 
-function createStyles(colors: {
-  text: string;
-  strong: string;
-  link: string;
-  codeText: string;
-  codeBackground: string;
-  codeBorder: string;
-  quoteBorder: string;
-}) {
+// One shared parser: the Markdown components memoize on its identity.
+const markdownParser = linkifyExplicitUrls(createMarkdownIt());
+
+function markdownStyles(palette: ColorTokens) {
   return StyleSheet.create({
     body: {
-      color: colors.text,
-      fontSize: 17,
-      lineHeight: 25,
+      color: palette.foreground,
+      fontSize: 15.5,
+      lineHeight: 23,
       width: "100%",
       minWidth: 0,
       flexShrink: 1,
@@ -32,39 +31,39 @@ function createStyles(colors: {
       flexShrink: 1,
     },
     heading1: {
-      color: colors.strong,
+      color: palette.foreground,
       fontSize: 21,
       lineHeight: 27,
       marginTop: 10,
       marginBottom: 5,
     },
     heading2: {
-      color: colors.strong,
+      color: palette.foreground,
       fontSize: 19,
       lineHeight: 25,
       marginTop: 10,
       marginBottom: 5,
     },
     heading3: {
-      color: colors.strong,
+      color: palette.foreground,
       fontSize: 17,
       lineHeight: 23,
       marginTop: 8,
       marginBottom: 4,
     },
     strong: {
-      color: colors.strong,
+      color: palette.foreground,
       fontWeight: "700",
     },
     link: {
-      color: colors.link,
+      color: palette.link,
       textDecorationLine: "underline",
       marginBottom: 0,
     },
     code_inline: {
-      color: colors.codeText,
-      backgroundColor: colors.codeBackground,
-      borderColor: colors.codeBorder,
+      color: palette.foreground,
+      backgroundColor: palette.background,
+      borderColor: palette.border,
       borderWidth: StyleSheet.hairlineWidth,
       padding: 0,
       paddingHorizontal: 4,
@@ -72,29 +71,29 @@ function createStyles(colors: {
       borderRadius: 4,
     },
     code_block: {
-      color: colors.codeText,
-      backgroundColor: colors.codeBackground,
-      borderColor: colors.codeBorder,
+      color: palette.foreground,
+      backgroundColor: palette.background,
+      borderColor: palette.border,
     },
     fence: {
-      backgroundColor: colors.codeBackground,
-      borderColor: colors.codeBorder,
+      backgroundColor: palette.background,
+      borderColor: palette.border,
     },
     fence_code: {
-      backgroundColor: colors.codeBackground,
+      backgroundColor: palette.background,
     },
     blockquote: {
       backgroundColor: "transparent",
-      borderLeftColor: colors.quoteBorder,
+      borderLeftColor: palette.border,
     },
     table: {
-      borderColor: colors.codeBorder,
+      borderColor: palette.border,
     },
     tr: {
-      borderColor: colors.codeBorder,
+      borderColor: palette.border,
     },
     hr: {
-      backgroundColor: colors.codeBorder,
+      backgroundColor: palette.border,
     },
     bullet_list_content: {
       flex: 1,
@@ -109,35 +108,55 @@ function createStyles(colors: {
   });
 }
 
-const darkStyles = createStyles({
-  text: "#DFDFE2",
-  strong: "#F3F3F4",
-  link: "#86B7FF",
-  codeText: "#ECECEE",
-  codeBackground: "#0E0E10",
-  codeBorder: "#34343A",
-  quoteBorder: "#55555C",
-});
-
-const lightStyles = createStyles({
-  text: "#29292D",
-  strong: "#151515",
-  link: "#165CC0",
-  codeText: "#222226",
-  codeBackground: "#F5F5F2",
-  codeBorder: "#D2D2CE",
-  quoteBorder: "#A0A09B",
-});
-
 async function openSafeLink(url: string) {
   const safeUrl = sanitizeMarkdownUrl(url);
   if (!safeUrl) return;
   if (await Linking.canOpenURL(safeUrl)) await Linking.openURL(safeUrl);
 }
 
+// The library lays table rows out as flex rows of equal-width cells bound to the
+// bubble width, so wide tables collapse into unreadable slivers. Give each row a
+// minimum width per column and let wide tables scroll horizontally instead.
+const TABLE_MIN_COLUMN_WIDTH = 96;
+
+function TableScrollView({
+  children,
+  style,
+}: {
+  children?: ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  // Percentage widths do not resolve inside a horizontal ScrollView, so the
+  // content floor comes from the measured viewport: narrow tables still fill
+  // the bubble while wider rows grow the scrollable content.
+  const [viewportWidth, setViewportWidth] = useState(0);
+  return (
+    <ScrollView
+      horizontal
+      style={style}
+      onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
+    >
+      <View style={{ minWidth: viewportWidth }}>{children}</View>
+    </ScrollView>
+  );
+}
+
 // Keep links as Text so they stay inside textgroup; Pressable (a View) is laid out
 // outside the text flow and collapses the bubble height, overlapping later messages.
 const renderRules: RenderRules = {
+  table: (node, children, _parent, styleMap) => (
+    <TableScrollView key={node.key} style={styleMap._VIEW_SAFE_table}>
+      {children}
+    </TableScrollView>
+  ),
+  tr: (node, children, _parent, styleMap) => (
+    <View
+      key={node.key}
+      style={[styleMap._VIEW_SAFE_tr, { minWidth: node.children.length * TABLE_MIN_COLUMN_WIDTH }]}
+    >
+      {children}
+    </View>
+  ),
   link: (node, children, _parent, styleMap) => (
     <Text
       accessibilityRole="link"
@@ -155,13 +174,14 @@ const renderRules: RenderRules = {
 export const ChatMarkdown = memo(function ChatMarkdown({
   children,
   streaming = false,
-  appearance,
-}: ChatMarkdownProps) {
-  const systemColorScheme = useColorScheme();
-  const colorScheme = appearance ?? (systemColorScheme === "light" ? "light" : "dark");
+  palette = darkTokens,
+  colorScheme = "dark",
+}: ChatMarkdownProps & { palette?: ColorTokens; colorScheme?: ResolvedAppearance }) {
+  const styles = useMemo(() => markdownStyles(palette), [palette]);
   const sharedProps = {
     colorScheme,
-    style: colorScheme === "light" ? lightStyles : darkStyles,
+    markdownit: markdownParser,
+    style: styles,
     rules: renderRules,
     allowedImageHandlers: ["https://", "http://"],
     onLinkPress: (url: string) => {
@@ -173,11 +193,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   return (
     <View style={layout.wrap}>
       {streaming ? (
-        <MarkdownStream
-          {...sharedProps}
-          cursorColor={colorScheme === "light" ? "#6C6C70" : "#85858A"}
-          streaming
-        >
+        <MarkdownStream {...sharedProps} cursorColor={palette.mutedForeground} streaming>
           {children}
         </MarkdownStream>
       ) : (

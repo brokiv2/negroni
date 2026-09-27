@@ -23,6 +23,7 @@ import {
   selectSpaceVoicePreference,
 } from "@rakazo/db";
 import type { Context, Hono } from "hono";
+import { readBoundedBody } from "./http-body.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 
 export interface VoiceDeps {
@@ -33,6 +34,8 @@ export interface VoiceDeps {
 export { listVoiceCatalog };
 
 const SPEAK_TIMEOUT_MS = 60_000;
+export const MAX_SPEAK_REQUEST_BYTES = 16 * 1024;
+export const MAX_TRANSCRIBE_REQUEST_BYTES = 4 * Math.ceil(MAX_TRANSCRIBE_BYTES / 3) + 1024;
 
 export function voiceContext(actor: Actor, signal?: AbortSignal): AdapterContext {
   return {
@@ -192,6 +195,43 @@ export async function persistVoiceCredential(
   return toVoiceCredential(cred);
 }
 
+export async function disconnectVoiceCredential(
+  deps: VoiceDeps,
+  actor: Actor,
+  input: { provider: string },
+): Promise<{ ok: true }> {
+  const provider = input.provider.trim();
+  if (!provider) {
+    throw new ORPCError("BAD_REQUEST", { message: "Unknown voice provider." });
+  }
+  await withSerializableRetry(() =>
+    deps.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.userVoiceCredential.findMany({
+          where: { userId: actor.userId, provider },
+        });
+        if (existing.length === 0) return;
+        const ids = existing.map((row) => row.id);
+        await tx.spaceVoicePreference.deleteMany({
+          where: { userId: actor.userId, credentialId: { in: ids } },
+        });
+        await tx.userVoiceCredential.deleteMany({
+          where: { userId: actor.userId, id: { in: ids } },
+        });
+        for (const row of existing) {
+          await deleteUnreferencedCredentialSecret(tx, {
+            credentialKind: "voice",
+            credentialId: row.id,
+            secretId: row.secretId,
+          });
+        }
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ),
+  );
+  return { ok: true as const };
+}
+
 export async function prepareVoice(
   deps: VoiceDeps,
   actor: Actor,
@@ -266,7 +306,9 @@ export function mountVoiceHttpRoutes(
   app.post("/api/voice/speak", async (c) => {
     const actor = await authenticate(c);
     if (!actor) return c.json({ error: "Unauthorized" }, 401);
-    const body = await c.req.json().catch(() => ({}));
+    const raw = await readBoundedBody(c.req.raw, MAX_SPEAK_REQUEST_BYTES);
+    if (raw === null) return c.json({ error: "Request body is too large." }, 413);
+    const body = parseVoiceRequestBody(raw);
     try {
       const clip = await synthesizeVoice(deps, actor, {
         text: String((body as { text?: unknown }).text ?? ""),
@@ -294,7 +336,9 @@ export function mountVoiceHttpRoutes(
   app.post("/api/voice/transcribe", async (c) => {
     const actor = await authenticate(c);
     if (!actor) return c.json({ error: "Unauthorized" }, 401);
-    const body = await c.req.json().catch(() => ({}));
+    const raw = await readBoundedBody(c.req.raw, MAX_TRANSCRIBE_REQUEST_BYTES);
+    if (raw === null) return c.json({ error: "Request body is too large." }, 413);
+    const body = parseVoiceRequestBody(raw);
     const audioBase64 = String((body as { audioBase64?: unknown }).audioBase64 ?? "");
     try {
       const audio = decodeAudioBase64(audioBase64);
@@ -308,6 +352,17 @@ export function mountVoiceHttpRoutes(
       return voiceHttpError(c, error);
     }
   });
+}
+
+function parseVoiceRequestBody(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function optionalString(value: unknown): string | undefined {

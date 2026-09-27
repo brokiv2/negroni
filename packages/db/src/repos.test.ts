@@ -59,6 +59,85 @@ describe("createRepos.listBots", () => {
     ]);
   });
 
+  it("classifies initial preview runs once across bots, including non-peer results", async () => {
+    const prisma = {
+      bot: {
+        findMany: vi.fn(async () =>
+          ["one", "two"].map((id) => ({
+            ...baseBot,
+            id,
+            threads: [
+              {
+                ...baseBot.threads[0],
+                id: `thread-${id}`,
+                messages: [
+                  { runId: `run-${id}`, blocks: [{ kind: "text", text: `Answer ${id}` }] },
+                ],
+              },
+            ],
+          })),
+        ),
+      },
+      run: { findMany: vi.fn(async () => []) },
+    };
+
+    const bots = await createRepos(prisma as unknown as PrismaClient).listBots(actor);
+
+    expect(bots.map((bot) => bot.preview)).toEqual(["Answer one", "Answer two"]);
+    expect(prisma.run.findMany).toHaveBeenCalledExactlyOnceWith({
+      where: { id: { in: ["run-one", "run-two"] }, trigger: "bot_message" },
+      select: { id: true, sourceMessage: { select: { blocks: true } } },
+    });
+  });
+
+  it("classifies unseen runs in older pages and retains negative results between pages", async () => {
+    const prisma = {
+      bot: {
+        findMany: vi.fn(async () => [
+          {
+            ...baseBot,
+            threads: [
+              {
+                ...baseBot.threads[0],
+                messages: [
+                  { seq: 30, runId: "peer-new", blocks: [{ kind: "text", text: "Hidden" }] },
+                ],
+              },
+            ],
+          },
+        ]),
+      },
+      run: {
+        findMany: vi
+          .fn()
+          .mockResolvedValueOnce([{ id: "peer-new" }])
+          .mockResolvedValueOnce([{ id: "peer-old" }]),
+      },
+      message: {
+        findMany: vi
+          .fn()
+          .mockResolvedValueOnce([
+            { seq: 20, runId: "peer-old", blocks: [{ kind: "text", text: "Also hidden" }] },
+            { seq: 19, runId: "user-old", blocks: [] },
+          ])
+          .mockResolvedValueOnce([
+            { seq: 10, runId: "peer-old", blocks: [{ kind: "text", text: "Still hidden" }] },
+            { seq: 9, runId: "user-old", blocks: [{ kind: "text", text: "Visible answer" }] },
+          ]),
+      },
+    };
+
+    const bots = await createRepos(prisma as unknown as PrismaClient).listBots(actor);
+
+    expect(bots[0]?.preview).toBe("Visible answer");
+    expect(prisma.run.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.run.findMany).toHaveBeenNthCalledWith(2, {
+      where: { id: { in: ["peer-old", "user-old"] }, trigger: "bot_message" },
+      select: { id: true, sourceMessage: { select: { blocks: true } } },
+    });
+    expect(prisma.message.findMany).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps bot-to-bot run output out of sidebar previews", async () => {
     const findMany = vi.fn(async () => [
       {
@@ -246,6 +325,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         pinned: true,
         sectionId: null,
         updatedAt: new Date("2026-08-20T00:00:00.000Z"),
+        parentBotId: null,
         threads: [
           {
             unread: true,
@@ -268,6 +348,7 @@ describe("createRepos.listSpaceBotsForSpaces", () => {
         pinned: true,
         sectionId: null,
         unread: true,
+        parentBotId: null,
         preview: "Waiting for a reply",
         status: "running",
         updatedAt: "2026-08-20T00:00:00.000Z",

@@ -34,11 +34,11 @@ export class ScriptedAgentRuntime implements AgentRuntime {
         throw new Error("Scripted run failure");
       }
       if (shouldHang(request.prompt)) {
-        yield { type: "progress", text: "still working…" };
+        yield { type: "progress", text: "still working…", activity: true };
         while (!controller.signal.aborted && !signal.aborted) {
           await abortableDelay(50, controller.signal);
           if (controller.signal.aborted || signal.aborted) break;
-          yield { type: "progress", text: "still working…" };
+          yield { type: "progress", text: "still working…", activity: true };
         }
         yield { type: "done", text: "stopped" };
         return;
@@ -53,7 +53,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
           return;
         }
         if (turn.assistant) {
-          yield { type: "progress", text: "working…" };
+          yield { type: "progress", text: "working…", activity: true };
           yield { type: "text", text: turn.assistant };
         }
         for (const call of turn.toolCalls ?? []) {
@@ -111,6 +111,8 @@ export class ScriptedAgentRuntime implements AgentRuntime {
             type: "usage",
             inputTokens: 12,
             outputTokens: 40,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
             provider: "scripted",
             model: "scripted",
           };
@@ -169,6 +171,96 @@ export function inferScript(
             },
           },
         ],
+        complete: true,
+      },
+    ];
+  }
+  if (
+    lower.includes("launch a cloud agent") ||
+    lower.includes("start a cloud agent") ||
+    lower.includes("cloud coding agent")
+  ) {
+    return [
+      {
+        assistant: "launching a cloud agent for that.",
+        toolCalls: [
+          {
+            name: "cloud_agent_launch",
+            args: {
+              prompt: "Add a README with setup instructions",
+              repository: "https://github.com/example/demo",
+              openPr: true,
+            },
+          },
+        ],
+        complete: true,
+      },
+    ];
+  }
+  if (lower.includes("show a login card")) {
+    return [
+      {
+        assistant: "i need that sign-in in a protected card.",
+        toolCalls: [
+          {
+            name: "request_secret",
+            args: {
+              label: "Example sign-in",
+              purpose: "password",
+              credential: {
+                name: "example_login",
+                origin: "https://login.example.test",
+                auth: { type: "login" },
+              },
+            },
+          },
+        ],
+      },
+    ];
+  }
+  if (
+    lower.includes("masked secret card") ||
+    lower.includes("show a secret card") ||
+    lower.includes("request a masked api key")
+  ) {
+    return [
+      {
+        assistant: "i need that value in a protected field.",
+        toolCalls: [
+          {
+            name: "request_secret",
+            args: {
+              label: "API key",
+              purpose: "api_key",
+              credential: {
+                name: "example_api",
+                origin: "https://api.example.test",
+                auth: { type: "bearer" },
+              },
+            },
+          },
+        ],
+      },
+    ];
+  }
+  if (lower.includes("quote markdown fixture")) {
+    const marker = /quote markdown fixture\s+(\S+)/i.exec(prompt)?.[1] ?? "md-fixture";
+    return [
+      {
+        assistant: `${marker}
+1. list-a
+2. list-b
+
+| k | v |
+| --- | --- |
+| cell-a | cell-b |
+| cell-c | cell-d |
+
+\`\`\`
+code-a
+---
+code-b
+\`\`\``,
         complete: true,
       },
     ];
@@ -289,6 +381,30 @@ export function inferScript(
       },
     ];
   }
+  if (
+    lower.includes("silence finish notifications") ||
+    lower.includes("turn off finish notifications")
+  ) {
+    return [
+      {
+        assistant: "silencing finish notifications.",
+        toolCalls: [{ name: "update_bot", args: { notifyOnFinish: false } }],
+        complete: true,
+      },
+    ];
+  }
+  if (
+    lower.includes("resume finish notifications") ||
+    lower.includes("turn on finish notifications")
+  ) {
+    return [
+      {
+        assistant: "enabling finish notifications.",
+        toolCalls: [{ name: "update_bot", args: { notifyOnFinish: true } }],
+        complete: true,
+      },
+    ];
+  }
   if (lower.includes("subagent") || lower.includes("delegate to a helper")) {
     return [
       {
@@ -373,11 +489,8 @@ export function inferScript(
     const filePath =
       /(?:called|named)\s+([A-Za-z0-9._/-]+)/i.exec(prompt)?.[1] ?? "notes/result.txt";
     return [
-      { assistant: "writing that into my home now." },
-      {
-        toolCalls: [{ name: "write_file", args: { path: filePath, content } }],
-        complete: true,
-      },
+      { toolCalls: [{ name: "write_file", args: { path: filePath, content } }] },
+      { assistant: "writing that into my home now.", complete: true },
     ];
   }
   if (lower.includes("remember")) {

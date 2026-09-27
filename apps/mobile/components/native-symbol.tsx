@@ -1,8 +1,8 @@
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { SymbolView } from "expo-symbols";
 import type { ComponentProps } from "react";
-import { mobileTokens } from "../lib/appearance";
-import { useResolvedAppearance } from "../lib/native";
+import type { ColorValue } from "react-native";
+import { useMobileTokens } from "../lib/native";
 
 export function NativeSymbol({
   ios,
@@ -13,10 +13,10 @@ export function NativeSymbol({
   ios: string;
   android: ComponentProps<typeof Ionicons>["name"];
   size?: number;
-  color?: string;
+  color?: ColorValue;
 }) {
-  useResolvedAppearance();
-  const tint = color ?? mobileTokens().ink;
+  const tokens = useMobileTokens();
+  const tint = color ?? tokens.foreground;
   return (
     <SymbolView
       name={ios as never}

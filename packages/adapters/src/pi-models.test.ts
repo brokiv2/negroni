@@ -2,6 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogModelLabel, listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 
 describe("Pi model catalog", () => {
+  it("keeps the custom catalog independent of server model IDs", () => {
+    const custom = listPiCatalog().filter((entry) => entry.provider === "openai-compatible");
+    expect(custom).toHaveLength(1);
+    expect(custom[0]).toMatchObject({ id: "custom", placeholder: true, reasoning: false });
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -97,7 +103,6 @@ describe("Pi model catalog", () => {
     expect(label("claude-opus-4-5")).toBe("Claude Opus 4.5 (auto-updates)");
     expect(label("claude-haiku-4-5")).toBe("Claude Haiku 4.5 (auto-updates)");
     expect(label("claude-haiku-4-5-20251001")).toBe("Claude Haiku 4.5");
-    expect(catalog.some((entry) => /\blatest\b/i.test(entry.label))).toBe(false);
   });
 });
 

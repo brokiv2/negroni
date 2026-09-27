@@ -10,24 +10,29 @@ import type {
   Space,
   SpaceNavigation,
 } from "@rakazo/contracts";
+import type { ThreadHistory } from "@rakazo/core";
 import {
+  aiConsentTarget,
+  aiDataUsesForProcedure,
+  cancelResponseBody,
+  ensureAiDataConsent,
   isRunTerminalEvent,
   mergeThreadHistory,
   prependThreadHistoryPage,
   progressMessageId,
+  readBoundedJsonResponse,
   reduceLiveMessageBlocks,
   runFailureError,
-  type ThreadHistory,
+  signupRequiresEmailVerification,
+  takeLiveMessage,
+  updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
-import {
-  defaultApiBase,
-  displayApiHost,
-  migrateLegacyApiBase,
-  type EndpointResult,
-  normalizeApiBase,
-} from "./endpoint";
+import { promptAiConsent } from "./ai-consent";
+import type { EndpointResult } from "./endpoint";
+import { defaultApiBase, migrateLegacyApiBase, normalizeApiBase } from "./endpoint";
+import { t } from "./i18n";
 import { resumeLiveNotifications } from "./live-notifications";
 import {
   clearSessionToken,
@@ -43,32 +48,19 @@ const ENDPOINT_KEY = "rakazo.api_base";
 const SPACE_KEY = "rakazo.space_id";
 const SPACE_ROLLBACK_KEY = "rakazo.space_rollback";
 const RPC_TIMEOUT_MS = 8_000;
-const CONNECTION_TIMEOUT_MS = 12_000;
+export const MAX_MOBILE_AUTH_RESPONSE_BYTES = 256 * 1024;
+export const MAX_MOBILE_RPC_RESPONSE_BYTES = 16 * 1024 * 1024;
+/** Inbox bootstrap reads safe to replay without a Space header during auth recovery. */
+const SPACE_AUTH_RECOVERY_SAFE_PROCS = new Set(["spaces/list", "me"]);
 
 let cachedApiBase: string | undefined;
 let cachedSpaceId = "";
+/** Bumped on every in-memory Space selection change so a delayed response
+ * cannot treat a later reselection of the same Space id as its own. */
+let spaceSelectionGeneration = 0;
 
-async function serverFetch(
-  apiBase: string,
-  path: string,
-  init?: RequestInit,
-): Promise<Response> {
-  const controller = new AbortController();
-  const callerSignal = init?.signal;
-  const abortFromCaller = () => controller.abort();
-  if (callerSignal?.aborted) controller.abort();
-  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  const timer = setTimeout(() => controller.abort(), CONNECTION_TIMEOUT_MS);
-  try {
-    return await fetch(`${apiBase}${path}`, { ...init, signal: controller.signal });
-  } catch {
-    throw new Error(
-      `Could not connect to ${displayApiHost(apiBase)}. Keep Negroni running on the Mac and check Wi-Fi or VPN local-network access.`,
-    );
-  } finally {
-    clearTimeout(timer);
-    callerSignal?.removeEventListener("abort", abortFromCaller);
-  }
+function bumpSpaceSelectionGeneration(): void {
+  spaceSelectionGeneration += 1;
 }
 
 function responseErrorMessage(body: unknown, fallback: string): string {
@@ -88,6 +80,7 @@ export async function loadApiBase() {
   try {
     const stored = await SecureStore.getItemAsync(ENDPOINT_KEY);
     if (stored) {
+      // A stored dev-tunnel or old LAN address must not outlive the build it came from.
       const migrated = migrateLegacyApiBase(
         stored,
         apiBase,
@@ -96,7 +89,9 @@ export async function loadApiBase() {
       const parsed = normalizeApiBase(migrated);
       if (parsed.ok) {
         apiBase = parsed.url;
-        if (migrated !== stored) await SecureStore.deleteItemAsync(ENDPOINT_KEY).catch(() => undefined);
+        if (migrated !== stored) {
+          await SecureStore.deleteItemAsync(ENDPOINT_KEY).catch(() => undefined);
+        }
       }
     }
   } catch {
@@ -106,7 +101,10 @@ export async function loadApiBase() {
   try {
     const storedSpace = (await SecureStore.getItemAsync(SPACE_KEY)) ?? "";
     cachedSpaceId = storedSpace;
-    if (!storedSpace) await recoverSpaceRollback(cachedApiBase);
+    bumpSpaceSelectionGeneration();
+    // A deletion fallback must override the now-invalid saved Space even when
+    // the device failed to replace that value before the previous process exited.
+    await recoverSpaceRollback(cachedApiBase);
   } catch {
     // Keep any in-memory selection when SecureStore is temporarily unavailable.
   }
@@ -115,20 +113,78 @@ export async function loadApiBase() {
 
 export async function selectSpace(id: string) {
   if (!(await clearStoredValue(SPACE_ROLLBACK_KEY))) return false;
+  // Claim memory before persisting: recovery paths reconcile against the
+  // in-memory selection, so a durable write must never precede its owner.
+  const previousSpaceId = cachedSpaceId;
+  cachedSpaceId = id;
+  bumpSpaceSelectionGeneration();
+  // Generation ownership distinguishes A→B→A from "we still own this claim":
+  // an ID-only check would treat a later same-id selection as ours.
+  const claimGeneration = spaceSelectionGeneration;
   try {
     await SecureStore.setItemAsync(SPACE_KEY, id);
-    cachedSpaceId = id;
-    await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
-      () => undefined,
-    );
-    return true;
+    // Our write may have landed stale behind a newer overlapping selection's
+    // write. Re-assert the live selection best-effort so durable converges
+    // to it; each selector heals at most once, so overlapping chains settle
+    // on the latest claim. Never delete here: a missing memory owner means
+    // another path (recovery, sign-out) owns cleanup.
+    const liveSpaceId = cachedSpaceId;
+    if (liveSpaceId && liveSpaceId !== id) {
+      await writeStoredValue(SPACE_KEY, liveSpaceId);
+    }
   } catch {
+    // Roll back the claim and heal durable state: a concurrent recovery may
+    // have persisted the rolled-back id after reading it, which would leave
+    // restart opening a Space the live session is not using. A newer
+    // overlapping selection owns both by now, so only heal a claim we hold.
+    if (cachedSpaceId === id && spaceSelectionGeneration === claimGeneration) {
+      cachedSpaceId = previousSpaceId;
+      bumpSpaceSelectionGeneration();
+      if (previousSpaceId) await writeStoredValue(SPACE_KEY, previousSpaceId);
+    }
     return false;
   }
+  await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
+    () => undefined,
+  );
+  return true;
 }
 
 export function selectedSpaceId(): string | null {
   return cachedSpaceId || null;
+}
+
+/** Keep requests usable after the server deleted the selected Space but native
+ * storage could not replace it. Neutralize any same-endpoint rollback before
+ * writing the replacement selection so a cleanup failure cannot leave the new
+ * id beside a stale record that recoverSpaceRollback would prefer on restart. */
+export async function adoptDeletedSpaceFallback(id: string): Promise<boolean> {
+  cachedSpaceId = id;
+  bumpSpaceSelectionGeneration();
+  // Neutralize any same-endpoint rollback before writing SPACE_KEY. Writing the
+  // selection first can leave it beside a stale record that recoverSpaceRollback
+  // would prefer on restart if later cleanup fails.
+  const rollbackNeutralized =
+    (await clearStoredValue(SPACE_ROLLBACK_KEY)) || (await saveSpaceRollback(id));
+  if (rollbackNeutralized && (await writeStoredValue(SPACE_KEY, id))) {
+    // SPACE_KEY is authoritative; drop a rollback we may have written only to
+    // overwrite a stale record (best-effort).
+    await clearStoredValue(SPACE_ROLLBACK_KEY);
+    await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
+      () => undefined,
+    );
+    return true;
+  }
+  // Clear before saving recovery: an empty selection lets startup resolve the
+  // server default even when the recovery record cannot be written.
+  const staleSelectionCleared = await clearStoredValue(SPACE_KEY);
+  const recoverySaved = await saveSpaceRollback(id);
+  await resumeLiveNotifications(currentApiBase(), await loadSessionToken(), id).catch(
+    () => undefined,
+  );
+  // Only treat a cleared selection as durable success when no same-endpoint
+  // rollback remains to override it after restart.
+  return recoverySaved || (staleSelectionCleared && (await clearStoredValue(SPACE_ROLLBACK_KEY)));
 }
 
 export async function selectInitialSpace(id: string) {
@@ -141,6 +197,7 @@ async function clearSpace(): Promise<boolean> {
   const rollbackCleared = await clearStoredValue(SPACE_ROLLBACK_KEY);
   if (!spaceCleared || !rollbackCleared) return false;
   cachedSpaceId = "";
+  bumpSpaceSelectionGeneration();
   return true;
 }
 
@@ -149,12 +206,16 @@ async function clearStoredValue(key: string): Promise<boolean> {
     await SecureStore.deleteItemAsync(key);
     return true;
   } catch {
-    try {
-      await SecureStore.setItemAsync(key, "");
-      return true;
-    } catch {
-      return false;
-    }
+    return writeStoredValue(key, "");
+  }
+}
+
+async function writeStoredValue(key: string, value: string): Promise<boolean> {
+  try {
+    await SecureStore.setItemAsync(key, value);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -176,7 +237,7 @@ async function clearCredentialsForEndpointChange(): Promise<
   if (!previousToken.ok || !previousSpace.ok) {
     return {
       ok: false,
-      result: { ok: false, error: "Could not clear the previous server session" },
+      result: { ok: false, error: t("Could not clear the previous server session") },
     };
   }
   const rollbackReady = previousSpace.value
@@ -185,24 +246,29 @@ async function clearCredentialsForEndpointChange(): Promise<
   if (!rollbackReady) {
     return {
       ok: false,
-      result: { ok: false, error: "Could not clear the previous server session" },
+      result: { ok: false, error: t("Could not clear the previous server session") },
     };
   }
   const sessionCleared = await clearSessionToken();
   cachedSpaceId = "";
+  bumpSpaceSelectionGeneration();
   const spaceCleared = await clearStoredValue(SPACE_KEY);
   if (sessionCleared && spaceCleared) {
     return { ok: true, previousToken: previousToken.value, previousSpace: previousSpace.value };
   }
 
   await restoreCredentials(previousToken.value, previousSpace.value);
-  return { ok: false, result: { ok: false, error: "Could not clear the previous server session" } };
+  return {
+    ok: false,
+    result: { ok: false, error: t("Could not clear the previous server session") },
+  };
 }
 
 async function restoreCredentials(previousToken: string, previousSpace: string) {
   if (previousToken) await restoreSessionToken(previousToken);
   if (previousSpace) {
     cachedSpaceId = previousSpace;
+    bumpSpaceSelectionGeneration();
     try {
       await SecureStore.setItemAsync(SPACE_KEY, previousSpace);
       await clearStoredValue(SPACE_ROLLBACK_KEY);
@@ -218,15 +284,10 @@ async function restoreCredentials(previousToken: string, previousSpace: string) 
 }
 
 async function saveSpaceRollback(spaceId: string): Promise<boolean> {
-  try {
-    await SecureStore.setItemAsync(
-      SPACE_ROLLBACK_KEY,
-      JSON.stringify({ apiBase: currentApiBase(), spaceId }),
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return writeStoredValue(
+    SPACE_ROLLBACK_KEY,
+    JSON.stringify({ apiBase: currentApiBase(), spaceId }),
+  );
 }
 
 async function recoverSpaceRollback(apiBase: string) {
@@ -248,13 +309,15 @@ async function recoverSpaceRollback(apiBase: string) {
     await clearStoredValue(SPACE_ROLLBACK_KEY);
     return;
   }
-  try {
-    cachedSpaceId = rollback.spaceId;
-    await SecureStore.setItemAsync(SPACE_KEY, rollback.spaceId);
+  cachedSpaceId = rollback.spaceId;
+  bumpSpaceSelectionGeneration();
+  if (await writeStoredValue(SPACE_KEY, rollback.spaceId)) {
     await clearStoredValue(SPACE_ROLLBACK_KEY);
-  } catch {
-    // Keep a valid recovery record for the next launch when storage is writable.
+    return;
   }
+  // Could not replace the selection yet. Drop the deleted id so startup RPCs
+  // are not scoped to an inaccessible Space; keep the recovery record.
+  await clearStoredValue(SPACE_KEY);
 }
 
 export async function saveApiBase(input: string): Promise<EndpointResult> {
@@ -272,7 +335,7 @@ export async function saveApiBase(input: string): Promise<EndpointResult> {
     await SecureStore.setItemAsync(ENDPOINT_KEY, parsed.url);
   } catch {
     if (cleared) await restoreCredentials(cleared.previousToken, cleared.previousSpace);
-    return { ok: false, error: "Could not save the server URL" };
+    return { ok: false, error: t("Could not save the server URL") };
   }
   cachedApiBase = parsed.url;
   await clearStoredValue(SPACE_ROLLBACK_KEY);
@@ -293,7 +356,7 @@ export async function resetApiBase(): Promise<EndpointResult> {
   } catch {
     if (cleared) {
       await restoreCredentials(cleared.previousToken, cleared.previousSpace);
-      return { ok: false, error: "Could not clear the custom server URL" };
+      return { ok: false, error: t("Could not clear the custom server URL") };
     }
   }
   cachedApiBase = url;
@@ -306,6 +369,8 @@ export async function authHeaders(
 ): Promise<Record<string, string>> {
   const token = await loadSessionToken();
   return {
+    // The public tunnel gates every request; without its header the phone only
+    // reaches the API over the LAN.
     ...tunnelHeaders(),
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
@@ -321,7 +386,7 @@ export async function captureApiRequestContext(): Promise<ApiRequestContext> {
   const apiBase = currentApiBase();
   const headers = await authHeaders(selectedSpaceId());
   if (apiBase !== currentApiBase()) {
-    throw new Error("The server changed while starting the request");
+    throw new Error(t("The server changed while starting the request"));
   }
   return { apiBase, headers };
 }
@@ -330,20 +395,66 @@ async function authenticateWithEmail(
   action: "sign-in" | "sign-up",
   input: { email: string; password: string; name?: string },
 ) {
-  const apiBase = currentApiBase();
-  const res = await serverFetch(apiBase, `/api/auth/${action}/email`, {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
-    body: JSON.stringify(input),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  const { response, body } = await fetchMobileJson<unknown>(
+    `${currentApiBase()}/api/auth/${action}/email`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "rakazo://" },
+      body: JSON.stringify(input),
+    },
+    {},
+  );
+  if (!response.ok) {
     throw new Error(responseErrorMessage(body, `Could not ${action.replace("-", " ")}`));
   }
-  const token = tokenFromAuthResponse(res, body);
+  const token = tokenFromAuthResponse(response, body);
+  if (action === "sign-up" && signupRequiresEmailVerification(body))
+    return { verificationRequired: true };
   if (!token)
-    throw new Error(`${action === "sign-in" ? "Sign-in" : "Sign-up"} did not return a session`);
-  if (!(await clearSpace())) throw new Error("Could not clear the previous space");
+    throw new Error(
+      t(
+        action === "sign-in"
+          ? "Sign-in did not return a session"
+          : "Sign-up did not return a session",
+      ),
+    );
+  if (!(await clearSpace())) throw new Error(t("Could not clear the previous space"));
+  await saveSessionToken(token);
+  return { verificationRequired: false };
+}
+
+/** Better Auth reports an unknown Apple ID as a disabled signup / unlinked account. */
+function appleAccountNotLinked(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) return false;
+  const record = body as { code?: unknown; message?: unknown };
+  const detail = [record.code, record.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return detail.includes("signup disabled") || detail.includes("account not linked");
+}
+
+/** Native Sign in with Apple: the phone supplies a signed identity token and nonce. */
+export async function signInWithApple(identityToken: string, nonce: string): Promise<void> {
+  const { response, body } = await fetchMobileJson<unknown>(
+    `${currentApiBase()}/api/auth/sign-in/social`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "rakazo://" },
+      body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
+    },
+    {},
+  );
+  if (!response.ok) {
+    throw new Error(
+      appleAccountNotLinked(body)
+        ? t("Connect this Apple ID first: sign in with email, then open Account.")
+        : t("Apple sign-in couldn\u2019t be verified. Try again."),
+    );
+  }
+  const token = tokenFromAuthResponse(response, body);
+  if (!token) throw new Error(t("Apple sign-in did not return a session"));
+  if (!(await clearSpace())) throw new Error(t("Could not clear the previous space"));
   await saveSessionToken(token);
 }
 
@@ -355,112 +466,139 @@ export function signUp(email: string, password: string, name: string) {
   return authenticateWithEmail("sign-up", { email, password, name });
 }
 
-export async function signInWithApple(identityToken: string, nonce: string): Promise<void> {
-  const apiBase = currentApiBase();
-  const res = await serverFetch(apiBase, "/api/auth/sign-in/social", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
-    body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message = responseErrorMessage(body, "").toLowerCase();
-    if (message.includes("signup disabled") || message.includes("account not linked")) {
-      throw new Error("Connect this Apple ID first: sign in with email, then open Account.");
-    }
-    throw new Error("Apple sign-in couldn't be verified. Try again.");
-  }
-  const token = tokenFromAuthResponse(res, body);
-  if (!token) throw new Error("Apple sign-in did not return a session");
-  if (!(await clearSpace())) throw new Error("Could not clear the previous space");
-  await saveSessionToken(token);
-}
-
-export async function linkAppleId(identityToken: string, nonce: string): Promise<void> {
-  const apiBase = currentApiBase();
-  const headers = await authHeaders();
-  if (!headers.authorization) throw new Error("Sign in to Negroni before connecting Apple ID");
-  const res = await serverFetch(apiBase, "/api/auth/link-social", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
-    body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message = responseErrorMessage(body, "").toLowerCase();
-    if (message.includes("unable to create account") || message.includes("linking_failed")) {
-      throw new Error("This Apple ID may already be connected to another Negroni account.");
-    }
-    throw new Error("Couldn't connect this Apple ID. Try again.");
-  }
-}
-
-export async function linkedAppleIds(): Promise<number> {
-  const res = await serverFetch(currentApiBase(), "/api/auth/list-accounts", {
-    headers: { origin: "rakazo://", ...(await authHeaders()) },
-  });
-  if (!res.ok) throw new Error("Could not load linked Apple IDs");
-  const accounts = await res.json() as Array<{ providerId?: string }>;
-  return accounts.filter((account) => account.providerId === "apple").length;
-}
-
 export type PasswordResetCapabilities = { passwordReset: boolean; resetUrl: string | null };
 
 export async function passwordResetCapabilities(): Promise<PasswordResetCapabilities> {
-  const apiBase = currentApiBase();
-  const response = await serverFetch(apiBase, "/api/auth/capabilities", {
-    headers: { origin: "rakazo://", ...tunnelHeaders() },
-  });
+  const { response, body } = await fetchMobileJson<PasswordResetCapabilities>(
+    `${currentApiBase()}/api/auth/capabilities`,
+    { headers: { origin: "rakazo://" } },
+    { passwordReset: false, resetUrl: null },
+  );
   if (!response.ok) throw new Error("Could not load password recovery settings");
-  return (await response.json()) as PasswordResetCapabilities;
+  return body;
 }
 
 export async function requestPasswordReset(email: string, redirectTo: string): Promise<void> {
-  const apiBase = currentApiBase();
-  const response = await serverFetch(apiBase, "/api/auth/request-password-reset", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...tunnelHeaders() },
-    body: JSON.stringify({ email, redirectTo }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(responseErrorMessage(body, "Could not send reset email"));
+  const { response, body } = await fetchMobileJson<unknown>(
+    `${currentApiBase()}/api/auth/request-password-reset`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "rakazo://" },
+      body: JSON.stringify({ email, redirectTo }),
+    },
+    {},
+  );
+  if (!response.ok) throw new Error(responseErrorMessage(body, t("Could not send reset email")));
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const apiBase = currentApiBase();
-  const response = await serverFetch(apiBase, "/api/auth/change-password", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...(await authHeaders()) },
-    body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(responseErrorMessage(body, "Could not change password"));
+  const { response, body } = await fetchMobileJson<unknown>(
+    `${currentApiBase()}/api/auth/change-password`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "rakazo://",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions: true }),
+    },
+    {},
+  );
+  if (!response.ok) throw new Error(responseErrorMessage(body, t("Could not change password")));
+}
+
+async function fetchMobileJson<T>(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  invalidJsonFallback?: T,
+): Promise<{ response: Response; body: T }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("Request timed out")), RPC_TIMEOUT_MS);
+  try {
+    const response = await withAbort(
+      fetch(input, {
+        ...init,
+        headers: { ...tunnelHeaders(), ...(init.headers as Record<string, string> | undefined) },
+        signal: controller.signal,
+      }),
+      controller.signal,
+    );
+    try {
+      const body = await readBoundedJsonResponse<T>(
+        response,
+        MAX_MOBILE_AUTH_RESPONSE_BYTES,
+        controller.signal,
+      );
+      return { response, body };
+    } catch (error) {
+      if (invalidJsonFallback !== undefined && error instanceof SyntaxError) {
+        return { response, body: invalidJsonFallback };
+      }
+      throw error;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function signOut() {
   await rpc("notifications/unregisterPush").catch(() => undefined);
   const headers = await authHeaders();
-  const apiBase = currentApiBase();
-  await serverFetch(apiBase, "/api/auth/sign-out", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
-  }).catch(() => undefined);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+  try {
+    await withAbort(
+      fetch(`${currentApiBase()}/api/auth/sign-out`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
+        signal: controller.signal,
+      }),
+      controller.signal,
+    ).catch(() => undefined);
+  } finally {
+    clearTimeout(timer);
+  }
   const sessionCleared = await clearSessionToken();
   const spaceCleared = await clearSpace();
-  if (!sessionCleared || !spaceCleared) throw new Error("Could not clear the local session");
+  if (!sessionCleared || !spaceCleared) throw new Error(t("Could not clear the local session"));
+}
+
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Request timed out"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error("Request timed out"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 export async function deleteAccount(password: string) {
   await rpc("notifications/unregisterPush").catch(() => undefined);
-  const apiBase = currentApiBase();
-  const res = await serverFetch(apiBase, "/api/auth/delete-user", {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: "rakazo://", ...(await authHeaders()) },
-    body: JSON.stringify({ password }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(responseErrorMessage(body, "Could not delete account"));
+  const { response, body } = await fetchMobileJson<unknown>(
+    `${currentApiBase()}/api/auth/delete-user`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "rakazo://",
+        ...(await authHeaders()),
+      },
+      body: JSON.stringify({ password }),
+    },
+    {},
+  );
+  if (!response.ok) {
+    throw new Error(responseErrorMessage(body, t("Could not delete account")));
   }
   await clearSessionToken();
   await clearSpace();
@@ -473,33 +611,152 @@ export async function rpc<T>(
     signal?: AbortSignal;
     timeoutMs?: number | null;
     requestContext?: ApiRequestContext;
+    skipSpaceAuthRecovery?: boolean;
   } = {},
 ): Promise<T> {
+  const requestSpaceGeneration = spaceSelectionGeneration;
+  const uses = aiDataUsesForProcedure(proc, body);
+  const consentContext =
+    options.requestContext ?? (uses.length ? await captureApiRequestContext() : undefined);
+  await ensureAiDataConsent({
+    uses,
+    status: () =>
+      rpc(
+        "aiConsent/status",
+        { uses, ...aiConsentTarget(body) },
+        { requestContext: consentContext },
+      ),
+    prompt: promptAiConsent,
+    allow: (input) => rpc("aiConsent/allow", input, { requestContext: consentContext }),
+  });
+  // Abort with an explicit reason so every consumer of the signal (the fetch, the bounded body
+  // read, and nested recovery calls that share this signal) reports the same cause.
   const controller = new AbortController();
-  const abort = () => controller.abort();
-  if (options.signal?.aborted) abort();
-  else options.signal?.addEventListener("abort", abort, { once: true });
+  const cancel = () => controller.abort(options.signal?.reason ?? new Error("Request canceled"));
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener("abort", cancel, { once: true });
   const timer =
-    options.timeoutMs === null ? undefined : setTimeout(abort, options.timeoutMs ?? RPC_TIMEOUT_MS);
+    options.timeoutMs === null
+      ? undefined
+      : setTimeout(
+          () => controller.abort(new Error("Request timed out")),
+          options.timeoutMs ?? RPC_TIMEOUT_MS,
+        );
+  const abortReason = (error: unknown) =>
+    controller.signal.aborted ? (controller.signal.reason ?? error) : error;
+  // Bind recovery to the Space + selection epoch this request was sent with:
+  // a 401 arriving after the user switched Spaces — including A → B → A —
+  // belongs to a stale request and must not touch the current selection.
+  const requestHeaders = consentContext?.headers ?? (await authHeaders());
+  const requestSpaceId = requestHeaders["x-rakazo-space-id"];
   try {
-    const apiBase = options.requestContext?.apiBase ?? currentApiBase();
-    const res = await serverFetch(apiBase, `/rpc/${proc}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        origin: "rakazo://",
-        ...(options.requestContext?.headers ?? (await authHeaders())),
-      },
-      body: JSON.stringify({ json: body }),
-      signal: controller.signal,
+    let res: Response;
+    try {
+      res = await fetch(`${consentContext?.apiBase ?? currentApiBase()}/rpc/${proc}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "rakazo://",
+          ...requestHeaders,
+        },
+        body: JSON.stringify({ json: body }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      // The native fetch reports an aborted request with an implementation detail
+      // ("FetchRequestCanceledException"); say what happened instead.
+      throw abortReason(error);
+    }
+    if (proc === "aiConsent/status" && res.status === 404) {
+      cancelResponseBody(res);
+      throw new Error(t("Update your server to use AI data sharing in this mobile version."));
+    }
+    const parsed = await readBoundedJsonResponse<{ json?: T; error?: { message?: string } }>(
+      res,
+      MAX_MOBILE_RPC_RESPONSE_BYTES,
+      controller.signal,
+    ).catch((error: unknown) => {
+      throw abortReason(error);
     });
-    if (res.status === 401) throw new Error("SESSION_EXPIRED");
-    const parsed = (await res.json()) as { json?: T; error?: { message?: string } };
-    if (!res.ok || parsed.error) throw new Error(parsed.error?.message ?? `rpc ${proc} failed`);
+    if (!res.ok || parsed.error) {
+      const message = parsed.error?.message ?? `rpc ${proc} failed`;
+      const unauthorized = res.status === 401 || /unauthorized/i.test(message);
+      // After a delete where SecureStore could not clear the stale id, restart
+      // reloads it and the first RPCs 401. Probe once without a Space header:
+      // success means the selection was inaccessible (clear it); failure means
+      // the session itself is bad (restore the selection so a later sign-in
+      // keeps the user's Space). Never replay a mutation against the default
+      // Space — only safe reads may retry as themselves; other procs probe
+      // with spaces/list, then fail the original call.
+      const previousSpaceId = selectedSpaceId();
+      // Clear stale selection records, then re-persist a Space selected while
+      // cleanup was in flight: check-then-clear cannot be atomic on
+      // SecureStore, so reconcile afterwards instead of trusting the check.
+      const clearStaleSpaceSelection = async () => {
+        await clearStoredValue(SPACE_KEY);
+        await clearStoredValue(SPACE_ROLLBACK_KEY);
+        const reselected = selectedSpaceId();
+        if (!reselected) return;
+        // Own the reconcile write by generation: a newer selection that
+        // persists between snapshot and write must not be overwritten by
+        // this stale id, and a write that lands stale heals once to live.
+        const writeGeneration = spaceSelectionGeneration;
+        await writeStoredValue(SPACE_KEY, reselected);
+        if (spaceSelectionGeneration !== writeGeneration) {
+          const live = selectedSpaceId();
+          if (live) await writeStoredValue(SPACE_KEY, live);
+        }
+      };
+      if (
+        unauthorized &&
+        previousSpaceId &&
+        requestSpaceId &&
+        selectedSpaceId() === requestSpaceId &&
+        spaceSelectionGeneration === requestSpaceGeneration &&
+        !options.requestContext &&
+        !options.skipSpaceAuthRecovery
+      ) {
+        cachedSpaceId = "";
+        bumpSpaceSelectionGeneration();
+        const retrySameProc = SPACE_AUTH_RECOVERY_SAFE_PROCS.has(proc);
+        // Share the original deadline/cancellation with recovery calls instead
+        // of starting a second full timeout behind the first request.
+        const recoveryOptions: {
+          signal?: AbortSignal;
+          timeoutMs?: number | null;
+          requestContext?: ApiRequestContext;
+          skipSpaceAuthRecovery?: boolean;
+        } = {
+          ...options,
+          timeoutMs: null,
+          signal: controller.signal,
+          skipSpaceAuthRecovery: true,
+        };
+        try {
+          if (retrySameProc) {
+            const result = await rpc<T>(proc, body, recoveryOptions);
+            // A Space selected while the retry was in flight already owns both
+            // the in-memory and durable selection; leave it alone.
+            if (!selectedSpaceId()) await clearStaleSpaceSelection();
+            return result;
+          }
+          await rpc("spaces/list", {}, recoveryOptions);
+        } catch (retryError) {
+          if (!selectedSpaceId()) {
+            cachedSpaceId = previousSpaceId;
+            bumpSpaceSelectionGeneration();
+          }
+          throw retryError;
+        }
+        if (!selectedSpaceId()) await clearStaleSpaceSelection();
+        throw new Error(message);
+      }
+      throw new Error(message);
+    }
     return parsed.json as T;
   } finally {
     if (timer) clearTimeout(timer);
-    options.signal?.removeEventListener("abort", abort);
+    options.signal?.removeEventListener("abort", cancel);
   }
 }
 
@@ -518,8 +775,11 @@ export type MobileBot = Pick<
   | "archivedAt"
   | "unread"
   | "updatedAt"
-  | "createdAt"
   | "computerMode"
+  | "modelProvider"
+  | "modelId"
+  | "thinkingLevel"
+  | "autoSpeak"
 > &
   Partial<Pick<Bot, "parentBotId" | "spaceId">>;
 
@@ -527,7 +787,14 @@ export type MobileBotSection = BotSection;
 
 export type MobileMe = Pick<
   Me,
-  "name" | "email" | "spaceId" | "defaultProvider" | "defaultModel" | "needsModel" | "avatarStyle"
+  | "name"
+  | "email"
+  | "spaceId"
+  | "defaultProvider"
+  | "defaultModel"
+  | "needsModel"
+  | "avatarStyle"
+  | "isDeploymentOwner"
 >;
 
 export type MobileModel = ModelCatalogEntry;
@@ -542,7 +809,8 @@ export type MobileMessage = {
   role: "user" | "bot" | "system";
   botId?: string;
   replyToMessageId?: string;
-  thumbsUp?: boolean;
+  replyQuote?: string;
+  createdAt?: string;
   blocks: MessageBlock[];
 };
 
@@ -620,18 +888,39 @@ const MESSAGING_PROVIDER_LABELS: Record<string, string> = {
   slack: "Slack",
   whatsapp: "WhatsApp",
   telegram: "Telegram",
+  lark: "Feishu",
 };
 
-export function messagingProviderLabel(provider: string): string {
+export function messagingProviderLabel(provider: string, transport?: string): string {
+  if (provider === "sendblue" && ["iMessage", "SMS", "RCS"].includes(transport ?? "")) {
+    return transport!;
+  }
   return MESSAGING_PROVIDER_LABELS[provider] ?? provider;
+}
+
+export function copyableMobileMessageText(message: MobileMessage): string {
+  return message.blocks
+    .map((block) => {
+      if (block.kind === "channel_message") {
+        return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
+      }
+      if (block.kind === "text" || block.kind === "progress" || block.kind === "ask")
+        return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 export function blockText(message: MobileMessage) {
   return message.blocks
     .map((block) => {
       if (block.kind === "channel_message") {
-        return `${messagingProviderLabel(block.provider)} · ${block.fromLabel}: ${block.text}`;
+        return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
       }
+      if (block.kind === "cloud_agent")
+        return `${block.title}: ${block.status}${block.prUrl ? ` ${block.prUrl}` : ""}`;
       if (block.kind === "subagent") {
         return `${block.name ?? "subagent"}: ${block.result || block.progress || block.task || ""}`;
       }
@@ -663,30 +952,13 @@ type ThreadEvent = {
   payload?: Record<string, unknown>;
 };
 
-function takeMobileLiveMessage(
-  snapshot: MobileSnapshot,
-  liveId: string,
-): { previous: MobileMessage | undefined; remaining: MobileMessage[] } {
-  let previous: MobileMessage | undefined;
-  const remaining: MobileMessage[] = [];
-  for (const message of snapshot.messages) {
-    if (message.id === liveId) {
-      previous = message;
-    } else if (!message.id.startsWith("progress:") || message.runId) {
-      remaining.push(message);
-    }
-  }
-  return { previous, remaining };
-}
-
 export async function subscribeThread(
-  target: { botId: string; threadKind?: "team" | "personal" } | { groupId: string },
+  target: { botId: string } | { groupId: string },
   cursor: number,
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
 ) {
-  const apiBase = currentApiBase();
-  const res = await serverFetch(apiBase, "/rpc/threads/subscribe", {
+  const res = await fetch(`${currentApiBase()}/rpc/threads/subscribe`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -739,27 +1011,62 @@ export function applyMobileThreadEvent(
       activeRuns: [],
     };
   }
-  if (event.type === "run.waiting_input") {
+  if (event.type === "run.waiting_input" || event.type === "computer.takeover.requested") {
+    const status = event.type === "run.waiting_input" ? "waiting_input" : "waiting_takeover";
     const progressId = progressMessageId(event);
+    // Waiting pauses drop live progress server-side; clear a leftover bubble so
+    // the waiting footer is not hidden behind a stale "Working…" row.
     const messages = prev.messages.filter((message) => message.id !== progressId);
     const progressCleared = messages.length !== prev.messages.length;
-    const runChanged = Boolean(
-      prev.run && prev.run.id === event.runId && prev.run.status !== "waiting_input",
+    const runId = event.runId;
+    const knownInRun = Boolean(runId && prev.run?.id === runId);
+    const knownInActive = Boolean(
+      runId && prev.activeRuns?.some((candidate) => candidate.id === runId),
     );
-    const activeRunChanged = prev.activeRuns?.some(
-      (candidate) => candidate.id === event.runId && candidate.status !== "waiting_input",
+    // Peer bot_message runs are omitted from snapshots while busy; the first wait
+    // event is how an open thread learns they need ask/takeover UI.
+    const needsInsert = Boolean(runId) && !knownInRun && !knownInActive;
+    const runChanged = Boolean(knownInRun && prev.run && prev.run.status !== status);
+    const activeRunChanged = Boolean(
+      knownInActive &&
+        prev.activeRuns?.some((candidate) => candidate.id === runId && candidate.status !== status),
     );
+    const computer =
+      event.type === "computer.takeover.requested" && prev.computer?.busyBotName
+        ? { ...prev.computer, busyBotName: null }
+        : prev.computer;
+    const computerChanged = computer !== prev.computer;
     const cursor = event.seq ?? prev.cursor;
-    if (!runChanged && !activeRunChanged && !progressCleared) {
+    if (!runChanged && !activeRunChanged && !progressCleared && !needsInsert && !computerChanged) {
       return cursor === prev.cursor ? prev : { ...prev, cursor };
     }
-    const run = runChanged && prev.run ? { ...prev.run, status: "waiting_input" } : prev.run;
+    if (needsInsert && runId) {
+      const waitingRun = {
+        id: runId,
+        status,
+        ...(event.botId ? { botId: event.botId } : {}),
+      };
+      const baseActive = prev.activeRuns ?? (prev.run ? [prev.run] : []);
+      const activeRuns = [...baseActive.filter((candidate) => candidate.id !== runId), waitingRun];
+      const promoteWaiting =
+        !prev.run ||
+        (prev.run.status !== "waiting_input" && prev.run.status !== "waiting_takeover");
+      return {
+        ...prev,
+        cursor,
+        messages,
+        computer,
+        run: promoteWaiting ? waitingRun : prev.run,
+        activeRuns,
+      };
+    }
+    const run = runChanged && prev.run ? { ...prev.run, status } : prev.run;
     const activeRuns = activeRunChanged
       ? prev.activeRuns?.map((candidate) =>
-          candidate.id === event.runId ? { ...candidate, status: "waiting_input" } : candidate,
+          candidate.id === runId ? { ...candidate, status } : candidate,
         )
       : prev.activeRuns;
-    return { ...prev, cursor, run, activeRuns, messages };
+    return { ...prev, cursor, run, activeRuns, messages, computer };
   }
   if (isRunTerminalEvent(event)) {
     const activeRuns = prev.activeRuns?.filter((candidate) => candidate.id !== event.runId);
@@ -784,7 +1091,7 @@ export function applyMobileThreadEvent(
   }
   if (event.type === "thread.progress") {
     const progressId = progressMessageId(event);
-    const { previous, remaining } = takeMobileLiveMessage(prev, progressId);
+    const { previous, remaining } = takeLiveMessage(prev.messages, progressId);
     const streaming: MobileMessage = {
       id: progressId,
       role: "bot",
@@ -803,7 +1110,7 @@ export function applyMobileThreadEvent(
   }
   if (event.type === "agent.tool.called") {
     const progressId = progressMessageId(event);
-    const { previous, remaining } = takeMobileLiveMessage(prev, progressId);
+    const { previous, remaining } = takeLiveMessage(prev.messages, progressId);
     const streaming: MobileMessage = {
       id: progressId,
       role: "bot",
@@ -819,6 +1126,9 @@ export function applyMobileThreadEvent(
       cursor: event.seq ?? prev.cursor,
       messages: [...remaining, streaming],
     };
+  }
+  if (event.type === "agent.tool.completed") {
+    return { ...prev, cursor: event.seq ?? prev.cursor };
   }
   if (event.type === "thread.subagent") {
     const agentId = String(event.payload?.agentId ?? event.id ?? "live");
@@ -846,20 +1156,15 @@ export function applyMobileThreadEvent(
       messages: [...prev.messages.filter((message) => message.id !== streaming.id), streaming],
     };
   }
-  if (event.type === "thread.message.reaction") {
-    const messageId = String(event.payload?.messageId ?? "");
+  if (event.type === "thread.cloud_agent") {
     return {
       ...prev,
       cursor: event.seq ?? prev.cursor,
-      messages: prev.messages.map((message) =>
-        message.id === messageId
-          ? { ...message, thumbsUp: event.payload?.thumbsUp === true }
-          : message,
-      ),
+      messages: updateCloudAgentMessages(prev.messages, event.payload ?? {}),
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
-    const { remaining } = takeMobileLiveMessage(prev, progressMessageId(event));
+    const { remaining } = takeLiveMessage(prev.messages, progressMessageId(event));
     const next: MobileMessage = {
       id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
       runId: event.runId ? String(event.runId) : undefined,
@@ -869,7 +1174,7 @@ export function applyMobileThreadEvent(
       replyToMessageId: event.payload?.replyToMessageId
         ? String(event.payload.replyToMessageId)
         : undefined,
-      thumbsUp: event.payload?.thumbsUp === true,
+      replyQuote: event.payload?.replyQuote ? String(event.payload.replyQuote) : undefined,
     };
     return {
       ...prev,

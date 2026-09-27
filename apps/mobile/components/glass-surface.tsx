@@ -1,6 +1,6 @@
 import { GlassView, isGlassEffectAPIAvailable } from "expo-glass-effect";
 import type { ReactNode } from "react";
-import { Platform, type StyleProp, type ViewStyle, View } from "react-native";
+import { Platform, type StyleProp, View, type ViewStyle } from "react-native";
 import type { ResolvedAppearance } from "../lib/appearance";
 
 type GlassSurfaceProps = {

@@ -30,7 +30,8 @@ describe("Android mobile platform contract", () => {
     expect(thread).not.toContain("KeyboardAvoidingView");
     expect(thread).not.toContain("keyboardVerticalOffset");
     expect(thread).toContain("useSafeAreaInsets");
-    expect(thread).toContain("offset={insets.bottom}");
+    expect(thread).toContain("useKeyboardState");
+    expect(thread).toContain("keyboardVisible ? 12 : Math.max(insets.bottom + 12, 24)");
   });
 
   it("requests live-update promotion and exposes its Android settings", () => {
@@ -140,6 +141,17 @@ describe("Android mobile platform contract", () => {
     expect(notifications).toContain("dismissNotificationAsync");
   });
 
+  it("renders the per-message transport in every native channel-message path", () => {
+    const thread = readFileSync(resolve(mobileRoot, "app/thread.tsx"), "utf8");
+    expect(
+      thread.match(/messagingProviderLabel\(block\.provider, block\.transport\)/g),
+    ).toHaveLength(2);
+    expect(thread).toContain(
+      "messagingProviderLabel(channelMessage.provider, channelMessage.transport)",
+    );
+    expect(thread).not.toMatch(/messagingProviderLabel\((?:block|channelMessage)\.provider\)/);
+  });
+
   it("reconciles finished agents and opens ordinary chats at the latest message", () => {
     const thread = readFileSync(resolve(mobileRoot, "app/thread.tsx"), "utf8");
     const scroll = readFileSync(resolve(mobileRoot, "lib/thread-scroll.ts"), "utf8");
@@ -156,6 +168,13 @@ describe("Android mobile platform contract", () => {
     expect(thread).toContain("inGroup && workingGroupBots.length > 0 ?");
     expect(thread).toContain("workingGroupBots.length - index");
     expect(thread).toContain("agents working");
+    // Visible chrome is avatar-only; copy stays on accessibilityLabel.
+    expect(thread).toMatch(
+      /accessibilityLabel=\{\s*workingGroupBots\.length === 1[\s\S]*agents working/,
+    );
+    expect(thread).not.toMatch(
+      /workingGroupBots\.length === 1\s*\?[\s\S]*<Text[^>]*>\s*\{t\("\{name\} is working"/,
+    );
   });
 
   it("keeps send and stop separate while steering active work", () => {
@@ -163,12 +182,12 @@ describe("Android mobile platform contract", () => {
     const stopStart = thread.indexOf("async function stop()");
     const stopSource = thread.slice(stopStart, thread.indexOf("const answerMessage", stopStart));
     expect(stopStart).toBeGreaterThan(-1);
-    expect(thread).toContain('accessibilityLabel="Send"');
-    expect(thread).toContain('accessibilityLabel="Stop"');
+    expect(thread).toContain('accessibilityLabel={t("Send")}');
+    expect(thread).toContain('accessibilityLabel={t("Stop")}');
     expect(thread).not.toContain("Messages sent now guide the next turn.");
     expect(thread).not.toContain("Steer ");
     expect(thread).not.toContain("steering message");
-    expect(thread).toContain("`Message ${name}`");
+    expect(thread).toContain('t("Message {name}"');
     expect(thread).toContain("const clientNonce = newClientNonce()");
     expect(thread).toContain("Work stopped, but the thread could not refresh");
     expect(stopSource).toContain("const targetBotId = botId;");
@@ -177,10 +196,10 @@ describe("Android mobile platform contract", () => {
       "targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!),",
     );
     expect(stopSource).toMatch(
-      /if \(isCurrentTarget\(targetBotId, targetGroupId\)\) \{\s*setError\(err instanceof Error \? err\.message : "Failed to stop work"\);/,
+      /if \(isCurrentTarget\(targetBotId, targetGroupId\)\) \{\s*setError\(err instanceof Error \? err\.message : t\("Failed to stop work"\)\);/,
     );
     expect(stopSource).toMatch(
-      /if \(isCurrentTarget\(targetBotId, targetGroupId\)\) \{\s*(?:const detail = [^\n]+;\s*)?setError\(`Work stopped, but the thread could not refresh: \$\{detail\}`\);/,
+      /if \(isCurrentTarget\(targetBotId, targetGroupId\)\) \{\s*(?:const detail = [^\n]+;\s*)?setError\(t\("Work stopped, but the thread could not refresh: \{detail\}", \{ detail \}\)\);/,
     );
   });
 
@@ -189,11 +208,11 @@ describe("Android mobile platform contract", () => {
     const thread = readFileSync(resolve(mobileRoot, "app/thread.tsx"), "utf8");
     const avatar = readFileSync(resolve(mobileRoot, "components/bot-avatar.tsx"), "utf8");
     const menu = readFileSync(resolve(mobileRoot, "components/bot-organize-modal.tsx"), "utf8");
-    expect(menu).toContain("Mute notifications");
-    expect(menu).toContain("Unmute notifications");
+    expect(menu).toContain("Silence notifications");
+    expect(menu).toContain("Resume notifications");
     expect(index).toContain("muted={!bot.notifyOnFinish}");
     expect(thread).toContain("muted={!currentBot.notifyOnFinish}");
-    expect(avatar).toContain('accessibilityLabel="Notifications silenced"');
+    expect(avatar).toContain('accessibilityLabel={t("Notifications silenced")}');
     expect(avatar).toContain('android="notifications-off"');
     expect(thread.match(/muted=\{/g)).toHaveLength(1);
   });

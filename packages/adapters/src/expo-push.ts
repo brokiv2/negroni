@@ -1,17 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import type {
   AdapterContext,
   NotificationMessage,
   NotificationProvider,
 } from "@rakazo/adapter-kit";
+import { getLogger } from "@rakazo/logging";
 import {
   type ApnsConfig,
   type ApnsEnvironment,
   isInvalidApnsToken,
   sendApnsNotification,
 } from "./apns-push.js";
+import { combineSignals } from "./connector-safety.js";
+import { readBodyCapped, withAbort } from "./web-ssrf.js";
+
+const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+const EXPO_PUSH_TIMEOUT_MS = 15_000;
+export const MAX_EXPO_PUSH_RESPONSE_BYTES = 64 * 1024;
 
 export type PushRegistration =
   | { provider: "expo"; token: string; updatedAt: string }
@@ -35,7 +43,7 @@ export async function loadPushRegistrations(
   userId: string,
 ): Promise<PushRegistration[]> {
   try {
-    const parsed = JSON.parse(await readFile(pushRegistrationsPath(dataDir, userId), "utf8"));
+    const parsed = JSON.parse(await readRegistrationsFile(dataDir, userId));
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item): item is PushRegistration => {
       if (!item || typeof item !== "object" || typeof item.token !== "string") return false;
@@ -53,10 +61,28 @@ export async function loadPushRegistrations(
   }
 }
 
+/** O_NOFOLLOW so a planted symlink in the data dir cannot redirect the read. */
+async function readRegistrationsFile(dataDir: string, userId: string): Promise<string> {
+  const handle = await open(
+    pushRegistrationsPath(dataDir, userId),
+    constants.O_RDONLY | O_NOFOLLOW,
+  );
+  try {
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 async function loadLegacyPushToken(dataDir: string, userId: string) {
   try {
-    const token = (await readFile(pushTokenPath(dataDir, userId), "utf8")).trim();
-    return token || undefined;
+    const handle = await open(pushTokenPath(dataDir, userId), constants.O_RDONLY | O_NOFOLLOW);
+    try {
+      const token = (await handle.readFile("utf8")).trim();
+      return token || undefined;
+    } finally {
+      await handle.close();
+    }
   } catch {
     return undefined;
   }
@@ -97,8 +123,25 @@ async function writePushRegistrations(
 ): Promise<void> {
   const target = pushRegistrationsPath(dataDir, userId);
   await mkdir(path.dirname(target), { recursive: true });
+  // rename() replaces a symlink rather than following it, so refuse outright:
+  // a planted link means the store was tampered with, not that it moved.
+  const existing = await lstat(target).catch(() => null);
+  if (existing?.isSymbolicLink()) {
+    throw new Error("Push registration path is a symlink");
+  }
   const temporary = `${target}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(registrations, null, 2)}\n`, "utf8");
+  // O_NOFOLLOW + 0600 so a planted symlink in the data dir cannot redirect the write.
+  const handle = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(`${JSON.stringify(registrations, null, 2)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
   await rename(temporary, target);
 }
 
@@ -186,7 +229,7 @@ export class ExpoPushProvider implements NotificationProvider {
       registrations.map((registration) =>
         registration.provider === "apns"
           ? this.sendToApns(registration, message, context)
-          : this.sendToExpo(registration.token, message),
+          : this.sendToExpo(registration.token, message, context),
       ),
     );
     if (results.some((result) => result.status === "fulfilled")) return;
@@ -220,7 +263,12 @@ export class ExpoPushProvider implements NotificationProvider {
     }
   }
 
-  private async sendToExpo(token: string, message: NotificationMessage): Promise<void> {
+  private async sendToExpo(
+    token: string,
+    message: NotificationMessage,
+    context: AdapterContext,
+  ): Promise<void> {
+    const signal = combineSignals(context.signal, AbortSignal.timeout(EXPO_PUSH_TIMEOUT_MS));
     let response: Response;
     try {
       response = await fetch("https://exp.host/--/api/v2/push/send", {
@@ -234,15 +282,42 @@ export class ExpoPushProvider implements NotificationProvider {
           tag: message.threadId,
           data: { kind: message.kind, botId: message.botId, threadId: message.threadId },
         }),
+        signal,
       });
     } catch (error) {
-      console.error("expo push request failed", error);
+      getLogger().error("expo push request failed", error);
       throw error;
     }
-    const body = await response.json().catch(() => undefined);
+    const body = await readExpoPushBody(response, signal);
+    if (response.ok && body === undefined) {
+      throw new Error("Expo push returned an invalid response.");
+    }
     const failure = expoPushErrorMessage(body, response.status);
     if (!failure) return;
-    console.error(failure);
+    getLogger().error(failure);
     throw new Error(failure);
+  }
+}
+
+async function readExpoPushBody(response: Response, signal: AbortSignal): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_EXPO_PUSH_RESPONSE_BYTES) {
+    const cancel = response.body?.cancel() ?? Promise.resolve();
+    await withAbort(
+      cancel.catch(() => undefined),
+      signal,
+    ).catch(() => undefined);
+    throw new Error("Expo push response is too large.");
+  }
+  try {
+    const bytes = await readBodyCapped(response, MAX_EXPO_PUSH_RESPONSE_BYTES, signal);
+    if (bytes.byteLength === 0) return undefined;
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch (error) {
+    if (error instanceof Error && error.message === "Response is too large") {
+      throw new Error("Expo push response is too large.");
+    }
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
   }
 }

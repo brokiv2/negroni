@@ -1,7 +1,9 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakeAgentState = vi.hoisted(() => ({
   thinkingLevels: [] as string[],
+  transforms: [] as Array<(messages: AgentMessage[]) => Promise<AgentMessage[]>>,
   models: [] as Array<{
     id: string;
     provider: string;
@@ -10,7 +12,10 @@ const fakeAgentState = vi.hoisted(() => ({
     maxTokens?: number;
   }>,
   sessionIds: [] as Array<string | undefined>,
+  subagentArgs: { name: "helper", task: "help" } as Record<string, unknown>,
+  lastSubagentResult: undefined as unknown,
   failPrompt: false,
+  abortCalls: 0,
 }));
 
 type FakeAgentTool = {
@@ -25,6 +30,7 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
 
     constructor(options: {
       sessionId?: string;
+      transformContext: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
       initialState: {
         thinkingLevel: string;
         tools: FakeAgentTool[];
@@ -32,6 +38,7 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
       };
     }) {
       this.tools = options.initialState.tools;
+      fakeAgentState.transforms.push(options.transformContext);
       fakeAgentState.sessionIds.push(options.sessionId);
       fakeAgentState.thinkingLevels.push(options.initialState.thinkingLevel);
       fakeAgentState.models.push(options.initialState.model);
@@ -41,10 +48,15 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
     async prompt() {
       if (fakeAgentState.failPrompt) throw new Error("prompt failed");
       const runSubagent = this.tools.find((tool) => tool.name === "run_subagent");
-      await runSubagent?.execute("subagent-call", { name: "helper", task: "help" });
+      fakeAgentState.lastSubagentResult = await runSubagent?.execute(
+        "subagent-call",
+        fakeAgentState.subagentArgs,
+      );
     }
     async waitForIdle() {}
-    abort() {}
+    abort() {
+      fakeAgentState.abortCalls += 1;
+    }
   },
 }));
 
@@ -89,12 +101,24 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 }));
 
 import { PiAgentRuntime } from "./pi-runtime.js";
+import { REASONING_MODEL_MAX_TOKENS } from "./pi-runtime-limits.js";
 
 async function runWithModel(
   modelId: string,
   provider = "test",
   signal = new AbortController().signal,
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null,
+  resolveModel?: (
+    provider: string,
+    modelId: string,
+  ) => Promise<{
+    provider: string;
+    id: string;
+    apiKey?: string;
+    maxImagesPerPrompt?: number;
+    thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  }>,
+  maxImagesPerPrompt?: number,
   interactionMode?: "chat" | "voice",
 ) {
   const runtime = new PiAgentRuntime();
@@ -107,8 +131,9 @@ async function runWithModel(
       instructions: "",
       history: [],
       tools: [],
-      model: { provider, id: modelId, thinkingLevel, interactionMode },
+      model: { provider, id: modelId, thinkingLevel, maxImagesPerPrompt, interactionMode },
       executeTool: vi.fn(async () => ({ ok: true })),
+      resolveModel,
     },
     {
       operationId: "1",
@@ -126,8 +151,11 @@ async function runWithModel(
 describe("Pi agent thinking level", () => {
   beforeEach(() => {
     fakeAgentState.thinkingLevels = [];
+    fakeAgentState.transforms = [];
     fakeAgentState.models = [];
     fakeAgentState.sessionIds = [];
+    fakeAgentState.subagentArgs = { name: "helper", task: "help" };
+    fakeAgentState.lastSubagentResult = undefined;
     fakeAgentState.failPrompt = false;
     vi.unstubAllEnvs();
     vi.stubEnv("DATA_DIR", "/nonexistent-negroni-test-catalog");
@@ -143,17 +171,41 @@ describe("Pi agent thinking level", () => {
 
   it("uses the lowest supported voice effort for main and nested agents without changing chat effort", async () => {
     expect(
-      await runWithModel("grok-4.6", "xai", new AbortController().signal, "high", "voice"),
+      await runWithModel(
+        "grok-4.6",
+        "xai",
+        new AbortController().signal,
+        "high",
+        undefined,
+        undefined,
+        "voice",
+      ),
     ).toEqual(["low", "low"]);
     fakeAgentState.thinkingLevels = [];
     expect(
-      await runWithModel("grok-4.6", "xai", new AbortController().signal, "high", "chat"),
+      await runWithModel(
+        "grok-4.6",
+        "xai",
+        new AbortController().signal,
+        "high",
+        undefined,
+        undefined,
+        "chat",
+      ),
     ).toEqual(["high", "high"]);
   });
 
   it("turns reasoning off for voice when supported", async () => {
     expect(
-      await runWithModel("reasoning-model", "test", new AbortController().signal, "high", "voice"),
+      await runWithModel(
+        "reasoning-model",
+        "test",
+        new AbortController().signal,
+        "high",
+        undefined,
+        undefined,
+        "voice",
+      ),
     ).toEqual(["off", "off"]);
   });
 
@@ -166,6 +218,8 @@ describe("Pi agent thinking level", () => {
         "openrouter",
         new AbortController().signal,
         "high",
+        undefined,
+        undefined,
         "voice",
       ),
     ).toEqual(["minimal", "minimal"]);
@@ -180,6 +234,119 @@ describe("Pi agent thinking level", () => {
   it("honors a per-bot thinking level on reasoning models", async () => {
     const levels = await runWithModel("grok-4.6", "xai", new AbortController().signal, "high");
     expect(levels).toEqual(["high", "high"]);
+  });
+
+  it("resolves and runs an explicitly selected subagent model", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "xai",
+      model_id: "grok-4.6",
+    };
+    const resolveModel = vi.fn(async (provider: string, modelId: string) => ({
+      provider,
+      id: modelId,
+      apiKey: "subagent-key",
+      thinkingLevel: "high" as const,
+    }));
+
+    const levels = await runWithModel(
+      "plain-model",
+      "test",
+      new AbortController().signal,
+      null,
+      resolveModel,
+    );
+
+    expect(resolveModel).toHaveBeenCalledWith("xai", "grok-4.6");
+    expect(fakeAgentState.models.map((model) => `${model.provider}/${model.id}`)).toEqual([
+      "test/plain-model",
+      "xai/grok-4.6",
+    ]);
+    expect(levels).toEqual(["off", "high"]);
+  });
+
+  it.each([
+    { parentLimit: 2, childLimit: 1, expected: 1 },
+    { parentLimit: 1, childLimit: 2, expected: 2 },
+    { parentLimit: 2, childLimit: 0, expected: 0 },
+    { parentLimit: 0, childLimit: undefined, expected: 2 },
+  ])(
+    "uses the selected subagent image budget: $parentLimit -> $childLimit",
+    async ({ parentLimit, childLimit, expected }) => {
+      fakeAgentState.subagentArgs = {
+        name: "helper",
+        task: "inspect screenshots",
+        model_provider: "test",
+        model_id: "plain-model",
+      };
+      await runWithModel(
+        "plain-model",
+        "test",
+        new AbortController().signal,
+        null,
+        async () => ({ provider: "test", id: "plain-model", maxImagesPerPrompt: childLimit }),
+        parentLimit,
+      );
+      const screenshots: AgentMessage[] = [0, 1].map((index) => ({
+        role: "toolResult",
+        toolCallId: `capture-${index}`,
+        toolName: "computer_observe",
+        content: [{ type: "image", data: "fake-image", mimeType: "image/png" }],
+        details: { frameId: `frame-${index}` },
+        isError: false,
+        timestamp: index,
+      }));
+      const countImages = (messages: AgentMessage[]) =>
+        messages.reduce(
+          (count, message) =>
+            count +
+            ("content" in message && Array.isArray(message.content)
+              ? message.content.filter((part) => part.type === "image").length
+              : 0),
+          0,
+        );
+      const [parentTransform, childTransform] = fakeAgentState.transforms;
+      if (!parentTransform || !childTransform) throw new Error("missing agent transforms");
+      expect(countImages(await parentTransform(screenshots))).toBe(parentLimit);
+      expect(countImages(await childTransform(screenshots))).toBe(expected);
+    },
+  );
+
+  it("rejects an incomplete per-call subagent model pair", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "xai",
+    };
+    const resolveModel = vi.fn();
+
+    await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
+
+    expect(resolveModel).not.toHaveBeenCalled();
+    expect(fakeAgentState.lastSubagentResult).toMatchObject({
+      details: { result: "Subagent failed: model_provider and model_id must both be set" },
+    });
+  });
+
+  it("surfaces a scoped model-resolution failure without starting the helper", async () => {
+    fakeAgentState.subagentArgs = {
+      name: "helper",
+      task: "help",
+      model_provider: "anthropic",
+      model_id: "claude-opus-4-6",
+    };
+    const resolveModel = vi.fn(async () => {
+      throw new Error("Connect that model provider first");
+    });
+
+    await runWithModel("plain-model", "test", new AbortController().signal, null, resolveModel);
+
+    expect(resolveModel).toHaveBeenCalledWith("anthropic", "claude-opus-4-6");
+    expect(fakeAgentState.models).toHaveLength(1);
+    expect(fakeAgentState.lastSubagentResult).toMatchObject({
+      details: { result: "Subagent failed: Connect that model provider first" },
+    });
   });
 
   it("keeps reasoning off for the main agent and subagent", async () => {
@@ -198,7 +365,9 @@ describe("Pi agent thinking level", () => {
       provider: "openrouter",
       reasoning: true,
       contextWindow: 16_384,
-      maxTokens: 4_096,
+      // Marked as a reasoning model, so the ceiling has to cover thinking plus a
+      // reply, and it can never outgrow the window this placeholder assumes.
+      maxTokens: Math.min(REASONING_MODEL_MAX_TOKENS, 16_384),
     });
     // Unknown OpenRouter PI_DEFAULT_MODEL must not force thinking off (#114).
     expect(levels).toEqual(["medium", "medium"]);
@@ -215,13 +384,14 @@ describe("Pi agent thinking level", () => {
 
   it("removes the abort listener when prompting fails", async () => {
     const controller = new AbortController();
-    const removeEventListener = vi.spyOn(controller.signal, "removeEventListener");
+    fakeAgentState.abortCalls = 0;
     fakeAgentState.failPrompt = true;
 
     await expect(runWithModel("plain-model", "test", controller.signal)).rejects.toThrow(
       "prompt failed",
     );
 
-    expect(removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+    controller.abort();
+    expect(fakeAgentState.abortCalls).toBe(0);
   });
 });

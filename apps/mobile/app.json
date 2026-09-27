@@ -22,7 +22,8 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Negroni uses the microphone to transcribe messages for your bots."
+          "microphonePermission": "Negroni uses the microphone to transcribe messages for your bots.",
+          "enableBackgroundPlayback": false
         }
       ],
       "expo-localization",
@@ -44,7 +45,8 @@
         }
       ],
       "expo-sharing",
-      "./plugins/with-worklets-headers"
+      "./plugins/with-worklets-headers",
+      "./plugins/with-scene-lifecycle"
     ],
     "ios": {
       "bundleIdentifier": "com.artempaskov.aisy",
@@ -74,7 +76,7 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochromeImage": "./assets/monochrome-icon.png",
-        "backgroundColor": "#2965EC"
+        "backgroundImage": "./assets/icon-background.png"
       }
     },
     "web": {

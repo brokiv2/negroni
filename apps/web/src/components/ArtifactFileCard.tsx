@@ -2,14 +2,14 @@ import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
-import { Download, FileText, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
-import {
-  type ArtifactTarget,
-  downloadArtifact,
-  downloadArtifactBytes,
-  fetchArtifactBytes,
-} from "../lib/artifact-open";
+import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { Code2, Download, FileText, X } from "lucide-react";
+import type { RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ArtifactTarget } from "../lib/artifact-open";
+import { downloadArtifact, downloadArtifactBytes, fetchArtifactBytes } from "../lib/artifact-open";
+import { PdfViewer } from "./PdfViewer";
+import { SandboxedHtmlViewer } from "./SandboxedHtmlViewer";
 
 type ArtifactFileCardProps = {
   target: ArtifactTarget;
@@ -19,10 +19,14 @@ type ArtifactFileCardProps = {
   size: number;
 };
 
+const PREVIEWABLE_MIME_TYPES = new Set(["text/markdown", "text/html", "application/pdf"]);
+const TEXT_MIME_TYPES = new Set(["text/markdown", "text/html"]);
+
 export function ArtifactFileCard(props: ArtifactFileCardProps) {
   const { t } = useLingui();
-  const markdown = props.mimeType === "text/markdown";
+  const previewable = PREVIEWABLE_MIME_TYPES.has(props.mimeType);
   const previewButton = useRef<HTMLButtonElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -35,21 +39,16 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
     }
   }
 
-  function closePreview() {
-    setPreviewOpen(false);
-    window.requestAnimationFrame(() => previewButton.current?.focus());
-  }
-
-  if (!markdown) {
+  if (!previewable) {
     return (
       <div>
         <button
           type="button"
           onClick={() => void startDownload()}
-          className="rounded-[20px] border border-[var(--rk-border)] bg-[var(--rk-hairline)] px-4 py-3 text-left text-[14px] text-[var(--rk-body)] hover:bg-[var(--rk-elevated)]"
+          className="rounded-2xl border border-border bg-card px-4 py-3 text-left text-[14px] text-foreground hover:bg-accent"
         >
           <div className="font-medium">{props.name}</div>
-          <div className="mt-1 text-[var(--rk-muted)]">
+          <div className="mt-1 text-muted-foreground">
             {props.mimeType} · {formatBytes(props.size)}
           </div>
         </button>
@@ -61,20 +60,24 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
   return (
     <>
       <div>
-        <div className="flex min-w-[280px] overflow-hidden rounded-[20px] border border-[var(--rk-border)] bg-[var(--rk-elevated)] text-left text-[var(--rk-body)]">
+        <div className="flex min-w-[280px] overflow-hidden rounded-2xl border border-border bg-card text-left text-foreground">
           <button
             ref={previewButton}
             type="button"
             aria-label={t`Preview ${props.name}`}
             onClick={() => setPreviewOpen(true)}
-            className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left hover:bg-[var(--rk-scroll)]"
+            className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left hover:bg-accent"
           >
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] bg-[#24344A] text-[#68A7FF]">
-              <FileText size={21} strokeWidth={1.8} />
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] bg-muted text-foreground">
+              {props.mimeType === "text/html" ? (
+                <Code2 size={21} strokeWidth={1.8} />
+              ) : (
+                <FileText size={21} strokeWidth={1.8} />
+              )}
             </span>
             <span className="min-w-0">
               <span className="block truncate text-[14px] font-medium">{props.name}</span>
-              <span className="mt-0.5 block text-[13px] text-[var(--rk-muted)]">
+              <span className="mt-0.5 block text-[13px] text-muted-foreground">
                 {formatBytes(props.size)}
               </span>
             </span>
@@ -84,69 +87,43 @@ export function ArtifactFileCard(props: ArtifactFileCardProps) {
             aria-label={t`Download ${props.name}`}
             title={t`Download ${props.name}`}
             onClick={() => void startDownload()}
-            className="grid w-14 shrink-0 place-items-center border-l border-[var(--rk-elevated)] text-[var(--rk-muted)] hover:bg-[var(--rk-scroll)] hover:text-[var(--rk-ink)]"
+            className="grid w-14 shrink-0 place-items-center border-l border-border text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <Download size={19} strokeWidth={1.8} />
           </button>
         </div>
         {downloadError ? <DownloadError message={downloadError} /> : null}
       </div>
-      {previewOpen ? <MarkdownPreview {...props} onClose={closePreview} /> : null}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent
+          showCloseButton={false}
+          initialFocus={closeButton}
+          finalFocus={previewButton}
+          className="flex h-[min(88vh,900px)] w-[min(960px,94vw)] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        >
+          <FilePreview {...props} closeButtonRef={closeButton} />
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
-function MarkdownPreview({
+function FilePreview({
   target,
   artifactId,
   name,
   mimeType,
-  onClose,
-}: ArtifactFileCardProps & { onClose: () => void }) {
+  closeButtonRef,
+}: ArtifactFileCardProps & { closeButtonRef: RefObject<HTMLButtonElement | null> }) {
   const { t } = useLingui();
-  const titleId = useId();
-  const dialog = useRef<HTMLElement>(null);
-  const closeButton = useRef<HTMLButtonElement>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [state, setState] = useState<
     | { status: "loading" }
-    | { status: "ready"; bytes: Uint8Array; markdown: string }
+    | { status: "ready"; bytes: Uint8Array; text?: string }
     | { status: "error"; message: string }
   >({ status: "loading" });
   const targetBotId = "botId" in target ? target.botId : undefined;
   const targetGroupId = "groupId" in target ? target.groupId : undefined;
-
-  useEffect(() => {
-    closeButton.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialog.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) {
-        event.preventDefault();
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,11 +132,15 @@ function MarkdownPreview({
     void fetchArtifactBytes(artifactTarget, artifactId)
       .then((bytes) => {
         if (cancelled) return;
+        if (!TEXT_MIME_TYPES.has(mimeType)) {
+          setState({ status: "ready", bytes });
+          return;
+        }
         try {
-          const markdown = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-          setState({ status: "ready", bytes, markdown });
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          setState({ status: "ready", bytes, text });
         } catch {
-          setState({ status: "error", message: t`This file is not valid UTF-8 Markdown.` });
+          setState({ status: "error", message: t`This file is not valid UTF-8 text.` });
         }
       })
       .catch((error) => {
@@ -172,88 +153,75 @@ function MarkdownPreview({
     return () => {
       cancelled = true;
     };
-  }, [artifactId, targetBotId, targetGroupId, t]);
+  }, [artifactId, targetBotId, targetGroupId, mimeType, t]);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-5 backdrop-blur-sm">
-      <button
-        type="button"
-        tabIndex={-1}
-        aria-label={t`Close preview`}
-        onClick={onClose}
-        className="absolute inset-0 cursor-default"
-      />
-      <section
-        ref={dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="relative flex h-[min(88vh,900px)] w-[min(960px,94vw)] flex-col overflow-hidden rounded-[18px] border border-[#2B2B2F] bg-[#0D0D0F] shadow-2xl"
-      >
-        <header className="flex h-14 shrink-0 items-center border-b border-[#27272B] px-5">
-          <h2
-            id={titleId}
-            className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#E7E7E9]"
-          >
-            {name}
-          </h2>
-          <button
-            type="button"
-            aria-label={t`Download ${name}`}
-            title={t`Download ${name}`}
-            onClick={() =>
-              void (async () => {
-                setDownloadError(null);
-                try {
-                  if (state.status === "ready") downloadArtifactBytes(name, mimeType, state.bytes);
-                  else await downloadArtifact(target, artifactId, name, mimeType);
-                } catch {
-                  setDownloadError(t`Could not download ${name}. Try again.`);
-                }
-              })()
-            }
-            className="grid h-9 w-9 place-items-center rounded-full text-[#929298] hover:bg-[var(--rk-elevated)] hover:text-[var(--rk-ink)]"
-          >
-            <Download size={18} strokeWidth={1.8} />
-          </button>
-          <button
-            ref={closeButton}
-            type="button"
-            aria-label={t`Close preview`}
-            onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-full text-[#929298] hover:bg-[var(--rk-elevated)] hover:text-[var(--rk-ink)]"
-          >
-            <X size={19} strokeWidth={1.8} />
-          </button>
-        </header>
-        {downloadError ? (
-          <div className="shrink-0 px-5 pt-4">
-            <DownloadError message={downloadError} />
-          </div>
-        ) : null}
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <article className="mx-auto w-full max-w-[760px] px-8 py-10 text-[16px] leading-7 text-[#D5D5D8] sm:px-12 sm:py-12">
-            {state.status === "loading" ? (
-              <div className="text-[var(--rk-muted)]">
-                <Trans>Loading preview…</Trans>
-              </div>
-            ) : state.status === "error" ? (
-              <div className="rounded-[14px] border border-[#5A2A2A] bg-[#2A1717] px-4 py-3 text-[var(--rk-danger-soft)]">
-                {state.message}
-              </div>
-            ) : (
-              <ChatMarkdown>{state.markdown}</ChatMarkdown>
-            )}
-          </article>
+    <>
+      <header className="flex h-14 shrink-0 items-center gap-1 border-b border-border px-5">
+        <DialogTitle className="min-w-0 flex-1 truncate text-[14px] leading-5 font-medium text-foreground">
+          {name}
+        </DialogTitle>
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          className="rounded-full text-muted-foreground"
+          aria-label={t`Download ${name}`}
+          title={t`Download ${name}`}
+          onClick={() =>
+            void (async () => {
+              setDownloadError(null);
+              try {
+                if (state.status === "ready") downloadArtifactBytes(name, mimeType, state.bytes);
+                else await downloadArtifact(target, artifactId, name, mimeType);
+              } catch {
+                setDownloadError(t`Could not download ${name}. Try again.`);
+              }
+            })()
+          }
+        >
+          <Download />
+        </Button>
+        <DialogClose
+          ref={closeButtonRef}
+          aria-label={t`Close preview`}
+          render={
+            <Button variant="ghost" size="icon-lg" className="rounded-full text-muted-foreground" />
+          }
+        >
+          <X />
+        </DialogClose>
+      </header>
+      {downloadError ? (
+        <div className="shrink-0 px-5 pt-4">
+          <DownloadError message={downloadError} />
         </div>
-      </section>
-    </div>
+      ) : null}
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
+        {state.status === "loading" ? (
+          <div className="p-8 text-muted-foreground">
+            <Trans>Loading preview…</Trans>
+          </div>
+        ) : state.status === "error" ? (
+          <div className="m-5 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-destructive">
+            {state.message}
+          </div>
+        ) : mimeType === "text/html" && state.text !== undefined ? (
+          <SandboxedHtmlViewer html={state.text} title={name} />
+        ) : mimeType === "application/pdf" ? (
+          <PdfViewer bytes={state.bytes} title={name} />
+        ) : state.text !== undefined ? (
+          <article className="mx-auto w-full max-w-[760px] px-8 py-10 text-[16px] leading-7 text-foreground sm:px-12 sm:py-12">
+            <ChatMarkdown>{state.text}</ChatMarkdown>
+          </article>
+        ) : null}
+      </div>
+    </>
   );
 }
 
 function DownloadError({ message }: { message: string }) {
   return (
-    <div role="alert" className="mt-2 text-left text-[13px] text-[var(--rk-danger)]">
+    <div role="alert" className="mt-2 text-left text-[13px] text-destructive">
       {message}
     </div>
   );

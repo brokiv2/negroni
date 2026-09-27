@@ -4,13 +4,8 @@ const { resolveTypeScriptSource } = require("./metro-resolver");
 const projectRoot = __dirname;
 const config = getDefaultConfig(projectRoot);
 const escapedProjectRoot = projectRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const privateLocalEnvFiles = new RegExp(
-  `^${escapedProjectRoot}/\\.env(?:\\.[^/]+)?\\.local$`
-);
-config.resolver.blockList = [
-  ...(config.resolver.blockList ?? []),
-  privateLocalEnvFiles,
-];
+const privateLocalEnvFiles = new RegExp(`^${escapedProjectRoot}/\\.env(?:\\.[^/]+)?\\.local$`);
+config.resolver.blockList = [...(config.resolver.blockList ?? []), privateLocalEnvFiles];
 const defaultResolveRequest = config.resolver.resolveRequest;
 const pinned = new Set(["react", "react/jsx-runtime", "react/jsx-dev-runtime", "react-native"]);
 

@@ -47,7 +47,10 @@ vi.mock("../lib/rpc", () => ({
       catalog: vi.fn(async () => catalog),
       list: vi.fn(async () => []),
     },
-    capabilities: { list: vi.fn(async () => []) },
+    capabilities: {
+      list: vi.fn(async () => []),
+      catalogSearch: vi.fn(async () => ({ items: [], enabled: false })),
+    },
   },
 }));
 
@@ -61,13 +64,16 @@ describe("PluginsOverlay", () => {
     await act(async () => {
       root.render(<PluginsOverlay onClose={() => undefined} />);
     });
-    const connected = container.querySelector('[data-testid="connected-integrations"]');
+    // Upstream moved the overlay into a portalled Dialog, so query the document.
+    const connected = document.body.querySelector('[data-testid="connected-integrations"]');
     expect(connected?.textContent).toContain("Gmail");
     expect(connected?.querySelector("img")?.getAttribute("src")).toBe(
       "https://logos.example/gmail",
     );
     const headers = [
-      ...container.querySelectorAll('[data-testid="integration-categories"] button[aria-expanded]'),
+      ...document.body.querySelectorAll(
+        '[data-testid="integration-categories"] button[aria-expanded]',
+      ),
     ];
     expect(headers.map((header) => header.textContent)).toEqual([
       "Popular1›",
@@ -76,10 +82,10 @@ describe("PluginsOverlay", () => {
     ]);
     const developer = headers[1] as HTMLButtonElement;
     expect(developer.getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).not.toContain("GitHub");
+    expect(document.body.textContent).not.toContain("GitHub");
     await act(async () => developer.click());
     expect(developer.getAttribute("aria-expanded")).toBe("true");
-    expect(container.textContent).toContain("GitHub");
+    expect(document.body.textContent).toContain("GitHub");
     act(() => root.unmount());
   });
 });

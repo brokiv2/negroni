@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { allowlistDrift, McpConnector } from "./mcp-connector.js";
+import { type McpOAuthBroker, StoredMcpOAuthProvider } from "./mcp-oauth.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -23,6 +24,21 @@ const ASSIGNMENT = {
   server: SERVER,
 };
 
+const TEST_NETWORK = {
+  // Read the global per call so a fetch stubbed after construction still wins.
+  fetch: (input: string | URL | Request, init?: RequestInit) => globalThis.fetch(input, init),
+  resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+};
+
+function logicalHref(input: string | URL | Request, init?: RequestInit): string {
+  const url = new URL(
+    typeof input === "string" || input instanceof URL ? String(input) : input.url,
+  );
+  const host = new Headers(input instanceof Request ? input.headers : init?.headers).get("host");
+  if (host) url.host = host;
+  return url.href;
+}
+
 function mcpFetch(
   state: {
     failNext: boolean;
@@ -36,8 +52,8 @@ function mcpFetch(
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     state.headers?.push(Object.fromEntries(request.headers.entries()));
-    if (new URL(request.url).href !== expectedUrl)
-      throw new Error(`Unexpected request: ${request.url}`);
+    if (logicalHref(input, init) !== expectedUrl)
+      throw new Error(`Unexpected request: ${logicalHref(input, init)}`);
     if (request.method !== "POST") return new Response(null, { status: 405 });
     if (state.failNext) return new Response("boom", { status: 500 });
     const message = JSON.parse(await request.text()) as {
@@ -101,7 +117,7 @@ describe("MCP connector session cache", () => {
       },
     };
     const connector = new McpConnector(prisma as never, {} as never, {
-      network: { resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] },
+      network: TEST_NETWORK,
     });
     const context = {
       spaceId: "w1",
@@ -114,10 +130,12 @@ describe("MCP connector session cache", () => {
 
     expect(tools).toHaveLength(3);
     expect(tools.map((tool) => tool.name)).toEqual([
-      "mcp_search_tools",
-      "mcp_load_tool",
-      "mcp_execute_tool",
+      "connectors_search_tools",
+      "connectors_load_tool",
+      "connectors_execute_tool",
     ]);
+    // Anthropic rejects Claude Code OAuth requests carrying any `mcp_`-prefixed tool name.
+    expect(tools.every((tool) => !tool.name.startsWith("mcp_"))).toBe(true);
     expect(JSON.stringify(tools)).not.toContain("schema-marker");
     await connector.close();
   });
@@ -147,7 +165,7 @@ describe("MCP connector session cache", () => {
           },
         } as never,
         {} as never,
-        { network: { resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] } },
+        { network: TEST_NETWORK },
       );
       const tools = await connector.discoverTools(context);
       if (count === 20) {
@@ -155,13 +173,197 @@ describe("MCP connector session cache", () => {
         expect(tools[0]?.name).toMatch(/^mcp__demo__/);
       } else {
         expect(tools.map((tool) => tool.name)).toEqual([
-          "mcp_search_tools",
-          "mcp_load_tool",
-          "mcp_execute_tool",
+          "connectors_search_tools",
+          "connectors_load_tool",
+          "connectors_execute_tool",
         ]);
       }
       await connector.close();
     }
+  });
+
+  it("records a discovery failure as a failed tool completion", async () => {
+    vi.stubGlobal("fetch", mcpFetch({ failNext: true, initializations: 0 }));
+    const append = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      botMcpServer: { findMany: vi.fn().mockResolvedValue([ASSIGNMENT]) },
+      run: { findUnique: vi.fn().mockResolvedValue({ threadId: "thread-1" }) },
+    };
+    const connector = new McpConnector(prisma as never, {} as never, {
+      network: TEST_NETWORK,
+      events: { append },
+    });
+
+    await expect(
+      connector.discoverTools({
+        spaceId: "w1",
+        userId: "u1",
+        botId: "bot-1",
+        runId: "run-1",
+        signal: new AbortController().signal,
+      } as never),
+    ).resolves.toEqual([]);
+
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0]?.[0]).toMatchObject({
+      spaceId: "w1",
+      threadId: "thread-1",
+      botId: "bot-1",
+      runId: "run-1",
+      type: "agent.tool.completed",
+      payload: {
+        name: "mcp__demo__discovery",
+        executionId: "mcp-discovery-demo-run-1-0",
+        outcome: "error",
+      },
+    });
+    expect(append.mock.calls[0]?.[0].payload.error).toEqual(expect.any(String));
+    await connector.close();
+  });
+
+  it("redacts credentials of a connect that failed before the session was cached", async () => {
+    const localAssignment = {
+      ...ASSIGNMENT,
+      server: { ...SERVER, endpoint: "http://localhost:8123/api/mcp", secretId: "secret-1" },
+    };
+    // The connect itself fails, so the session never reaches the cache. The upstream
+    // body quotes back the header it was sent, the way a strict server rejects one.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("rejected credential local-key", { status: 500 })),
+    );
+    const append = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      botMcpServer: { findMany: vi.fn().mockResolvedValue([localAssignment]) },
+      secret: { findFirst: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "encrypted" }) },
+      run: { findUnique: vi.fn().mockResolvedValue({ threadId: "thread-1" }) },
+    };
+    const connector = new McpConnector(
+      prisma as never,
+      {
+        load: vi.fn().mockReturnValue(JSON.stringify({ headers: { "X-Api-Key": "local-key" } })),
+      } as never,
+      { network: TEST_NETWORK, events: { append } },
+    );
+
+    await expect(
+      connector.discoverTools({
+        spaceId: "w1",
+        userId: "u1",
+        botId: "bot-1",
+        runId: "run-1",
+        signal: new AbortController().signal,
+      } as never),
+    ).resolves.toEqual([]);
+
+    expect(append).toHaveBeenCalledTimes(1);
+    const reason = String(append.mock.calls[0]?.[0].payload.error);
+    expect(reason).not.toContain("local-key");
+    expect(reason).toContain("[redacted]");
+    await connector.close();
+  });
+
+  it("redacts the same failed connect for every concurrent waiter", async () => {
+    const localAssignment = {
+      ...ASSIGNMENT,
+      server: { ...SERVER, endpoint: "http://localhost:8123/api/mcp", secretId: "secret-1" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("rejected credential local-key", { status: 500 })),
+    );
+    const append = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      botMcpServer: {
+        findMany: vi.fn().mockResolvedValue([localAssignment]),
+        findFirst: vi.fn().mockResolvedValue(localAssignment),
+      },
+      secret: { findFirst: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "encrypted" }) },
+      run: { findUnique: vi.fn().mockResolvedValue({ threadId: "thread-1" }) },
+    };
+    const connector = new McpConnector(
+      prisma as never,
+      {
+        load: vi.fn().mockReturnValue(JSON.stringify({ headers: { "X-Api-Key": "local-key" } })),
+      } as never,
+      { network: TEST_NETWORK, events: { append } },
+    );
+    const context = {
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      runId: "run-1",
+      signal: new AbortController().signal,
+    };
+
+    // Both callers land on the same pending connect, so both receive the one
+    // rejection it produces. Neither may see the credential it reflected.
+    const [first, second] = await Promise.all([
+      connector.discoverTools(context as never),
+      connector.discoverTools(context as never),
+    ]);
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(append).toHaveBeenCalledTimes(2);
+    for (const call of append.mock.calls) {
+      const message = String(call[0].payload.error);
+      expect(message).not.toContain("local-key");
+      expect(message).toContain("[redacted]");
+    }
+    await connector.close();
+  });
+
+  it("gives every discovery failure of one run its own executionId", async () => {
+    vi.stubGlobal("fetch", mcpFetch({ failNext: true, initializations: 0 }));
+    const append = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      botMcpServer: { findMany: vi.fn().mockResolvedValue([ASSIGNMENT]) },
+      run: { findUnique: vi.fn().mockResolvedValue({ threadId: "thread-1" }) },
+    };
+    const connector = new McpConnector(prisma as never, {} as never, {
+      network: TEST_NETWORK,
+      events: { append },
+    });
+    const context = {
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      runId: "run-1",
+      signal: new AbortController().signal,
+    };
+
+    // Discovery is reached again on every lazy catalog access inside the same run.
+    await connector.discoverTools(context as never);
+    await connector.discoverTools(context as never);
+
+    expect(append).toHaveBeenCalledTimes(2);
+    const ids = append.mock.calls.map((call) => call[0].payload.executionId);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) expect(id).toMatch(/^mcp-discovery-demo-run-1-\d+$/);
+    await connector.close();
+  });
+
+  it("leaves no discovery event when the failure happens outside a run", async () => {
+    vi.stubGlobal("fetch", mcpFetch({ failNext: true, initializations: 0 }));
+    const append = vi.fn().mockResolvedValue(undefined);
+    const connector = new McpConnector(
+      { botMcpServer: { findMany: vi.fn().mockResolvedValue([ASSIGNMENT]) } } as never,
+      {} as never,
+      { network: TEST_NETWORK, events: { append } },
+    );
+
+    await expect(
+      connector.discoverTools({
+        spaceId: "w1",
+        userId: "u1",
+        botId: "bot-1",
+        signal: new AbortController().signal,
+      } as never),
+    ).resolves.toEqual([]);
+
+    expect(append).not.toHaveBeenCalled();
+    await connector.close();
   });
 
   it("returns no tools when the MCP catalog is empty", async () => {
@@ -204,7 +406,7 @@ describe("MCP connector session cache", () => {
       },
     };
     const connector = new McpConnector(prisma as never, {} as never, {
-      network: { resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] },
+      network: TEST_NETWORK,
     });
     const context = {
       spaceId: "w1",
@@ -363,7 +565,7 @@ describe("MCP connector session cache", () => {
       },
     };
     const connector = new McpConnector(prisma as never, {} as never, {
-      network: { resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] },
+      network: TEST_NETWORK,
     });
     const context = {
       spaceId: "w1",
@@ -382,6 +584,93 @@ describe("MCP connector session cache", () => {
     expect(state.calls).toEqual(["__catalog_search", "__catalog_load", "__catalog_execute"]);
     await connector.close();
   });
+
+  it.each(["localhost", "127.0.0.1", "[::1]"])(
+    "blocks OAuth rediscovery to HTTP %s after invalid_client from a public server",
+    async (host) => {
+      const requests: Array<{ method: string; url: string }> = [];
+      const metadataUrl = `http://${host}:8123/private-probe`;
+      const provider = new StoredMcpOAuthProvider(
+        "server-1",
+        {
+          oauth: {
+            redirectUri: "https://app.example.test/mcp/oauth/callback",
+            tokens: {
+              access_token: "fake-stale-access",
+              refresh_token: "fake-refresh",
+              token_type: "bearer",
+            },
+            clientInformation: { client_id: "fake-client" },
+            discoveryState: {
+              authorizationServerUrl: "https://auth.example.test",
+              resourceMetadata: {
+                resource: SERVER.endpoint,
+                authorization_servers: ["https://auth.example.test"],
+              },
+              authorizationServerMetadata: {
+                issuer: "https://auth.example.test",
+                authorization_endpoint: "https://auth.example.test/authorize",
+                token_endpoint: "https://auth.example.test/token",
+                response_types_supported: ["code"],
+              },
+            },
+          },
+        },
+        async () => undefined,
+      );
+      const invalidate = vi.spyOn(provider, "invalidateCredentials");
+      const connector = new McpConnector(
+        { botMcpServer: { findMany: vi.fn().mockResolvedValue([ASSIGNMENT]) } } as never,
+        {} as never,
+        {
+          network: {
+            resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+            fetch: vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+              const request = new Request(input, init);
+              const url = logicalHref(input, init);
+              requests.push({ method: request.method, url });
+              if (url === SERVER.endpoint) {
+                return new Response(null, {
+                  status: 401,
+                  headers: { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"` },
+                });
+              }
+              if (url === "https://auth.example.test/token") {
+                return Response.json({ error: "invalid_client" }, { status: 400 });
+              }
+              return new Response(null, { status: 404 });
+            }),
+          },
+        },
+        { providerFor: vi.fn().mockResolvedValue(provider) } as unknown as McpOAuthBroker,
+      );
+
+      try {
+        await expect(
+          connector.discoverTools({
+            spaceId: "w1",
+            userId: "u1",
+            botId: "bot-1",
+            signal: new AbortController().signal,
+          } as never),
+        ).resolves.toEqual([]);
+
+        expect(requests.slice(0, 2).map((request) => `${request.method} ${request.url}`)).toEqual([
+          `POST ${SERVER.endpoint}`,
+          "POST https://auth.example.test/token",
+        ]);
+        expect(invalidate).toHaveBeenCalledWith("all");
+        expect(requests.some((request) => request.url === metadataUrl)).toBe(false);
+        // The endpoint-origin compatibility retry remains allowed, through remote policy.
+        expect(
+          requests.some((request) => request.url === "https://mcp.example.test/private-probe"),
+        ).toBe(true);
+        expect(requests.every((request) => new URL(request.url).protocol === "https:")).toBe(true);
+      } finally {
+        await connector.close();
+      }
+    },
+  );
 
   it("connects to an explicitly configured localhost HTTP server", async () => {
     const state = { failNext: false, initializations: 0 };
@@ -450,9 +739,7 @@ describe("MCP connector session cache", () => {
       },
     };
     const connector = new McpConnector(prisma as never, {} as never, {
-      network: {
-        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
-      },
+      network: TEST_NETWORK,
     });
     const context = {
       spaceId: "w1",
@@ -494,7 +781,7 @@ describe("MCP connector session cache", () => {
       },
     };
     const connector = new McpConnector(prisma as never, {} as never, {
-      network: { resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] },
+      network: TEST_NETWORK,
     });
     const contextFor = (spaceId: string, userId: string) =>
       ({ spaceId, userId, botId: "bot-1", signal: new AbortController().signal }) as never;
@@ -511,6 +798,91 @@ describe("MCP connector session cache", () => {
     await connector.discoverTools(contextFor("w1", "u1"));
     expect(state.initializations).toBe(3);
 
+    await connector.close();
+  });
+});
+
+describe("MCP connector private endpoints", () => {
+  const privateAssignment = {
+    ...ASSIGNMENT,
+    server: { ...SERVER, endpoint: "http://10.0.0.8:3927/mcp" },
+  };
+  const lanDnsAssignment = {
+    ...ASSIGNMENT,
+    server: { ...SERVER, endpoint: "https://mcp.lan.test/mcp" },
+  };
+
+  it("does not connect a private IP for a non-owner when the instance escape is off", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const connector = new McpConnector(
+      {
+        botMcpServer: { findMany: vi.fn().mockResolvedValue([privateAssignment]) },
+        deploymentSettings: { findUnique: vi.fn(async () => ({ ownerUserId: "owner" })) },
+      } as never,
+      {} as never,
+      { network: { fetch, resolveHostname: async () => [{ address: "10.0.0.8", family: 4 }] } },
+    );
+    const tools = await connector.discoverTools({
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      signal: new AbortController().signal,
+    } as never);
+    expect(tools).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+    await connector.close();
+  });
+
+  it("connects a private IP when the current user is the deployment owner", async () => {
+    const state = { failNext: false, initializations: 0 };
+    vi.stubGlobal("fetch", mcpFetch(state, "http://10.0.0.8:3927/mcp"));
+    const connector = new McpConnector(
+      {
+        botMcpServer: { findMany: vi.fn().mockResolvedValue([privateAssignment]) },
+        deploymentSettings: { findUnique: vi.fn(async () => ({ ownerUserId: "u1" })) },
+      } as never,
+      {} as never,
+      {
+        network: {
+          fetch: (input, init) => globalThis.fetch(input, init),
+          resolveHostname: async () => [{ address: "10.0.0.8", family: 4 }],
+        },
+      },
+    );
+    const tools = await connector.discoverTools({
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      signal: new AbortController().signal,
+    } as never);
+    expect(tools.map((tool) => tool.name)).toEqual(["mcp__demo__echo"]);
+    await connector.close();
+  });
+
+  it("connects a private-resolving DNS name when the current user is the deployment owner", async () => {
+    const state = { failNext: false, initializations: 0 };
+    vi.stubGlobal("fetch", mcpFetch(state, "https://mcp.lan.test/mcp"));
+    const connector = new McpConnector(
+      {
+        botMcpServer: { findMany: vi.fn().mockResolvedValue([lanDnsAssignment]) },
+        deploymentSettings: { findUnique: vi.fn(async () => ({ ownerUserId: "u1" })) },
+      } as never,
+      {} as never,
+      {
+        network: {
+          fetch: (input, init) => globalThis.fetch(input, init),
+          resolveHostname: async () => [{ address: "10.0.0.8", family: 4 }],
+        },
+      },
+    );
+    const tools = await connector.discoverTools({
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      signal: new AbortController().signal,
+    } as never);
+    expect(tools.map((tool) => tool.name)).toEqual(["mcp__demo__echo"]);
     await connector.close();
   });
 });

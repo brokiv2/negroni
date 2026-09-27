@@ -20,10 +20,12 @@ describe("mainAssistantBot", () => {
   });
 
   it("does not route to an archived bot", () => {
-    expect(mainAssistantBot([
-      { id: "old", pinned: true, parentBotId: null, archivedAt: "2026-01-01" },
-      { id: "active", pinned: false, parentBotId: null, archivedAt: null },
-    ])?.id).toBe("active");
+    expect(
+      mainAssistantBot([
+        { id: "old", pinned: true, parentBotId: null, archivedAt: "2026-01-01" },
+        { id: "active", pinned: false, parentBotId: null, archivedAt: null },
+      ])?.id,
+    ).toBe("active");
   });
 });
 
@@ -35,7 +37,11 @@ describe("assistantHierarchyIds", () => {
       { id: "child", parentBotId: "chief" },
       { id: "other", parentBotId: null },
     ];
-    expect([...assistantHierarchyIds("chief", bots)].sort()).toEqual(["chief", "child", "grandchild"]);
+    expect([...assistantHierarchyIds("chief", bots)].sort()).toEqual([
+      "chief",
+      "child",
+      "grandchild",
+    ]);
   });
 });
 

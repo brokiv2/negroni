@@ -1,28 +1,52 @@
-import type { Bot, ComputerStatus, Me, ThinkingLevel, VoiceInfo } from "@rakazo/contracts";
+import type { Bot, VoiceInfo } from "@rakazo/contracts";
 import {
+  BOT_COLORS,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   type ComputerMode,
   normalizeCreateBotProfile,
+  type ThinkingLevel,
 } from "@rakazo/contracts";
-import { connectedModelOptions, modelOptionKey, parseModelOptionKey } from "@rakazo/core";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
+import { BotAvatar } from "../components/bot-avatar";
 import { ComputerModePicker } from "../components/computer-mode-picker";
-import { type MobileBot, type MobileModel, type MobileModelCredential, rpc } from "../lib/api";
-import { native, useResolvedAppearance } from "../lib/native";
+import {
+  type MobileBot,
+  type MobileMe,
+  type MobileModel,
+  type MobileModelCredential,
+  rpc,
+} from "../lib/api";
+import { COMPUTER_LIFECYCLE_TIMEOUT_MS } from "../lib/computer";
+import { useI18n } from "../lib/i18n";
+import { presentMessageActionSheet } from "../lib/message-action-sheet";
+import { useMobileTokens, useResolvedAppearance } from "../lib/native";
 
 type BotSettingsRecord = MobileBot &
-  Pick<Bot, "modelProvider" | "modelId" | "voiceId" | "autoSpeak"> & {
+  Pick<Bot, "voiceId"> & {
     description?: string;
   };
 
+type ModelOption = {
+  key: string;
+  provider: string;
+  modelId: string;
+  label: string;
+};
+
+type PickerChoice = {
+  key: string;
+  label: string;
+};
+
 export default function BotSettingsScreen() {
+  const tokens = useMobileTokens();
+  const colorScheme = useResolvedAppearance();
+  const { t } = useI18n();
   const router = useRouter();
-  useResolvedAppearance();
   const { botId, section } = useLocalSearchParams<{ botId: string; section?: string }>();
   // The Personal menu opens this screen on just the assistant's voice.
   const voiceOnly = section === "voice";
@@ -30,50 +54,42 @@ export default function BotSettingsScreen() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [color, setColor] = useState<string>(BOT_COLORS[0]);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
-  const [computer, setComputer] = useState<ComputerStatus | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [modelKey, setModelKey] = useState("");
+  const [thinkingLevel, setThinkingLevel] = useState("");
+  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [voiceId, setVoiceId] = useState("");
+  const [voices, setVoices] = useState<VoiceInfo[] | null>(null);
+  const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
+  const [catalog, setCatalog] = useState<MobileModel[]>([]);
+  const [me, setMe] = useState<MobileMe | null>(null);
+  const [modelMetaReady, setModelMetaReady] = useState(false);
+  const [modelMetaError, setModelMetaError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [modelKey, setModelKey] = useState("");
-  const [catalog, setCatalog] = useState<MobileModel[]>([]);
-  const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
-  const [defaultModel, setDefaultModel] = useState<string | null>(null);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [modelLoadError, setModelLoadError] = useState(false);
-  const [voiceId, setVoiceId] = useState("");
-  const [autoSpeak, setAutoSpeak] = useState(false);
-  const [voices, setVoices] = useState<VoiceInfo[] | null>(null);
-  const voiceLabel = voiceId
-    ? (voices?.find((voice) => voice.id === voiceId)?.label ?? voiceId)
-    : "Account default";
-  const connectedOptions = connectedModelOptions(credentials, catalog);
-  const selectedModel = connectedOptions.find((entry) => entry.key === modelKey);
-  const modelLabel = modelKey
-    ? (selectedModel?.label ?? parseModelOptionKey(modelKey)?.modelId ?? modelKey)
-    : `Space default${defaultModel ? ` (${defaultModel})` : ""}`;
 
   useEffect(() => {
     if (!botId) return;
-    void Promise.all([
-      rpc<BotSettingsRecord>("bots/get", { botId }),
-      rpc<ComputerStatus>("computer/status", { botId }).catch(() => null),
-    ])
-      .then(([next, status]) => {
+    void rpc<BotSettingsRecord>("bots/get", { botId })
+      .then((next) => {
         setBot(next);
+        setName(next.name);
+        setTitle(next.title);
+        setDescription(next.description ?? "");
+        setColor(next.color);
+        setComputerMode(next.computerMode);
         setModelKey(
           next.modelProvider && next.modelId
             ? modelOptionKey(next.modelProvider, next.modelId)
             : "",
         );
-        setName(next.name);
-        setTitle(next.title);
-        setDescription(next.description ?? "");
-        setComputerMode(next.computerMode);
-        setComputer(status);
+        setThinkingLevel(next.thinkingLevel ?? "");
+        setAutoSpeak(next.autoSpeak);
         setVoiceId(next.voiceId ?? "");
-        setAutoSpeak(next.autoSpeak ?? false);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load bot"));
+      .catch((err) => setError(err instanceof Error ? err.message : t("Could not load bot")));
   }, [botId]);
 
   useEffect(() => {
@@ -91,25 +107,148 @@ export default function BotSettingsScreen() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
     void Promise.all([
+      rpc<MobileMe>("me"),
       rpc<MobileModel[]>("models/list"),
       rpc<MobileModelCredential[]>("models/credentials"),
-      rpc<Me>("me"),
     ])
-      .then(([nextCatalog, nextCredentials, me]) => {
-        if (cancelled) return;
+      .then(([nextMe, nextCatalog, nextCredentials]) => {
+        setMe(nextMe);
         setCatalog(nextCatalog);
         setCredentials(nextCredentials);
-        setDefaultModel(me.defaultModel);
+        setModelMetaError(null);
+        setModelMetaReady(true);
       })
-      .catch(() => {
-        if (!cancelled) setModelLoadError(true);
+      .catch((err) => {
+        setModelMetaReady(false);
+        setModelMetaError(err instanceof Error ? err.message : t("Could not load model settings"));
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [t]);
+
+  const connectedOptions = useMemo(() => {
+    const options: ModelOption[] = [];
+    const seen = new Set<string>();
+    for (const credential of credentials) {
+      const providerModels = catalog.filter(
+        (entry) => entry.provider === credential.provider && !entry.placeholder,
+      );
+      const credentialInCatalog = Boolean(
+        credential.modelId && providerModels.some((entry) => entry.id === credential.modelId),
+      );
+      const nextOptions =
+        credential.modelId && !credentialInCatalog
+          ? [
+              {
+                key: modelOptionKey(credential.provider, credential.modelId),
+                provider: credential.provider,
+                modelId: credential.modelId,
+                label: `${credential.label} · ${credential.modelId}`,
+              },
+            ]
+          : providerModels.map((entry) => ({
+              key: modelOptionKey(entry.provider, entry.id),
+              provider: entry.provider,
+              modelId: entry.id,
+              label: `${entry.providerName ?? entry.provider} · ${entry.label}`,
+            }));
+      for (const option of nextOptions) {
+        if (seen.has(option.key)) continue;
+        seen.add(option.key);
+        options.push(option);
+      }
+    }
+    return options;
+  }, [catalog, credentials]);
+
+  const effectiveProvider = modelKey
+    ? parseModelOptionKey(modelKey)?.provider
+    : (me?.defaultProvider ?? null);
+  const effectiveModelId = modelKey
+    ? parseModelOptionKey(modelKey)?.modelId
+    : (me?.defaultModel ?? null);
+  const effectiveEntry =
+    effectiveProvider && effectiveModelId
+      ? catalog.find(
+          (entry) => entry.provider === effectiveProvider && entry.id === effectiveModelId,
+        )
+      : undefined;
+  const effectiveCredential = credentials.find(
+    (entry) => entry.provider === effectiveProvider && entry.modelId === effectiveModelId,
+  );
+  const thinkingOptions = (
+    effectiveCredential?.thinkingLevels ??
+    effectiveEntry?.thinkingLevels ??
+    []
+  ).filter((level) => level !== "off");
+
+  const spaceDefaultLabel = me?.defaultModel
+    ? `${t("Space default")} (${catalogLabel(catalog, me.defaultProvider, me.defaultModel) ?? me.defaultModel})`
+    : t("Space default");
+
+  const modelChoices: PickerChoice[] = useMemo(() => {
+    const choices: PickerChoice[] = [{ key: "", label: spaceDefaultLabel }];
+    if (modelKey && !connectedOptions.some((option) => option.key === modelKey)) {
+      choices.push({
+        key: modelKey,
+        label: parseModelOptionKey(modelKey)?.modelId ?? modelKey,
+      });
+    }
+    for (const option of connectedOptions) {
+      choices.push({ key: option.key, label: option.label });
+    }
+    return choices;
+  }, [connectedOptions, modelKey, spaceDefaultLabel]);
+
+  const thinkingChoices: PickerChoice[] = useMemo(
+    () => [
+      { key: "", label: t("Default (medium)") },
+      ...thinkingOptions.map((level) => ({
+        key: level,
+        label: thinkingLevelLabel(level, t),
+      })),
+    ],
+    [t, thinkingOptions],
+  );
+
+  const selectedModelLabel =
+    modelChoices.find((choice) => choice.key === modelKey)?.label ?? spaceDefaultLabel;
+  const selectedThinkingLabel =
+    thinkingChoices.find((choice) => choice.key === thinkingLevel)?.label ?? t("Default (medium)");
+  const selectedVoiceLabel = voiceId
+    ? (voices?.find((voice) => voice.id === voiceId)?.label ?? voiceId)
+    : t("Account default");
+
+  function selectModel(key: string) {
+    if (key === modelKey) return;
+    setModelKey(key);
+    setThinkingLevel("");
+  }
+
+  function openModelPicker() {
+    presentMessageActionSheet({
+      title: t("Model"),
+      actions: modelChoices.map((choice) => ({
+        text: choice.label,
+        onPress: () => selectModel(choice.key),
+      })),
+      colorScheme,
+      cancel: t("Cancel"),
+      more: t("More"),
+    });
+  }
+
+  function openThinkingPicker() {
+    presentMessageActionSheet({
+      title: t("Thinking"),
+      actions: thinkingChoices.map((choice) => ({
+        text: choice.label,
+        onPress: () => setThinkingLevel(choice.key),
+      })),
+      colorScheme,
+      cancel: t("Cancel"),
+      more: t("More"),
+    });
+  }
 
   async function save() {
     if (!botId || !bot || pending) return;
@@ -117,20 +256,20 @@ export default function BotSettingsScreen() {
     setError(null);
     try {
       const profile = normalizeCreateBotProfile({ name, title, description });
+      const selected = modelKey ? parseModelOptionKey(modelKey) : null;
       const input: {
         botId: string;
         name?: string;
         title?: string;
         description?: string;
         instructions?: string;
+        color?: string;
         modelProvider?: string | null;
         modelId?: string | null;
         thinkingLevel?: ThinkingLevel | null;
         voiceId?: string | null;
         autoSpeak?: boolean;
       } = { botId };
-      if ((voiceId || null) !== (bot.voiceId ?? null)) input.voiceId = voiceId || null;
-      if (autoSpeak !== (bot.autoSpeak ?? false)) input.autoSpeak = autoSpeak;
       if (profile.name !== bot.name) input.name = profile.name;
       if (profile.title !== bot.title) input.title = profile.title;
       if (profile.description !== (bot.description ?? "")) {
@@ -138,17 +277,28 @@ export default function BotSettingsScreen() {
         // Keep instructions in sync with description (same as web BotSettings).
         input.instructions = profile.instructions;
       }
-      const storedModelKey =
-        bot.modelProvider && bot.modelId ? modelOptionKey(bot.modelProvider, bot.modelId) : "";
-      if (modelKey !== storedModelKey) {
-        const selection = parseModelOptionKey(modelKey);
-        input.modelProvider = selection?.provider ?? null;
-        input.modelId = selection?.modelId ?? null;
-        // A reasoning override from the previous model may not be supported.
-        input.thinkingLevel = null;
+      if (color !== bot.color) input.color = color;
+      const modelChanged =
+        (selected?.provider ?? null) !== (bot.modelProvider ?? null) ||
+        (selected?.modelId ?? null) !== (bot.modelId ?? null);
+      const thinkingChanged = (thinkingLevel || null) !== (bot.thinkingLevel ?? null);
+      if (modelChanged) {
+        input.modelProvider = selected?.provider ?? null;
+        input.modelId = selected?.modelId ?? null;
       }
+      if (modelMetaReady && (modelChanged || thinkingChanged)) {
+        input.thinkingLevel = thinkingOptions.length
+          ? ((thinkingLevel || null) as ThinkingLevel | null)
+          : null;
+      }
+      if ((voiceId || null) !== (bot.voiceId ?? null)) input.voiceId = voiceId || null;
+      if (autoSpeak !== bot.autoSpeak) input.autoSpeak = autoSpeak;
       if (computerMode !== bot.computerMode) {
-        await rpc("bots/setComputer", { botId, mode: computerMode });
+        await rpc(
+          "bots/setComputer",
+          { botId, mode: computerMode },
+          { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS },
+        );
       }
       // Use key presence so clearing title/description to "" still persists.
       if (Object.keys(input).length > 1) {
@@ -156,7 +306,7 @@ export default function BotSettingsScreen() {
       }
       router.back();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save bot");
+      setError(err instanceof Error ? err.message : t("Could not save bot"));
     } finally {
       setPending(false);
     }
@@ -164,188 +314,302 @@ export default function BotSettingsScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: voiceOnly ? "Voice" : "Chat settings" }} />
+      <Stack.Screen options={{ title: voiceOnly ? t("Voice") : t("Chat settings") }} />
       <ScrollView
-        style={{ flex: 1, backgroundColor: "#050506" }}
+        style={{ flex: 1, backgroundColor: tokens.background }}
         contentContainerStyle={{ padding: 24 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
       >
         {voiceOnly ? null : (
           <>
-            <Text style={{ color: "#85858A", fontSize: 14 }}>Name</Text>
+            {bot ? (
+              <View style={{ alignItems: "center", marginBottom: 24 }}>
+                <BotAvatar color={color} identity={bot.id} size={64} status={bot.status} />
+              </View>
+            ) : null}
+            <Text style={{ color: tokens.mutedForeground, fontSize: 14 }}>{t("Name")}</Text>
             <TextInput
               value={name}
               maxLength={BOT_NAME_MAX_LENGTH}
               onChangeText={setName}
-              placeholder="Name this bot"
-              placeholderTextColor="#6C6C70"
+              placeholder={t("Name this bot")}
+              placeholderTextColor={tokens.mutedForeground}
               style={{
                 marginTop: 8,
-                backgroundColor: "#1A1A1D",
+                backgroundColor: tokens.muted,
                 borderRadius: 11,
                 padding: 16,
-                color: "#ECECEE",
+                color: tokens.foreground,
               }}
             />
-            <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Title</Text>
+            <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
+              {t("Title")}
+            </Text>
             <TextInput
               value={title}
               maxLength={BOT_TITLE_MAX_LENGTH}
               onChangeText={setTitle}
-              placeholder="Describe what this bot does"
-              placeholderTextColor="#6C6C70"
+              placeholder={t("Describe what this bot does")}
+              placeholderTextColor={tokens.mutedForeground}
               style={{
                 marginTop: 8,
-                backgroundColor: "#1A1A1D",
+                backgroundColor: tokens.muted,
                 borderRadius: 11,
                 padding: 16,
-                color: "#ECECEE",
+                color: tokens.foreground,
               }}
             />
-            <Text style={{ color: "#85858A", marginTop: 16, fontSize: 14 }}>Description</Text>
+            <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
+              {t("Description")}
+            </Text>
             <TextInput
               value={description}
               maxLength={BOT_DESCRIPTION_MAX_LENGTH}
               onChangeText={setDescription}
-              placeholder="What this bot is for"
-              placeholderTextColor="#6C6C70"
+              placeholder={t("What this bot is for")}
+              placeholderTextColor={tokens.mutedForeground}
               multiline
               style={{
                 marginTop: 8,
-                backgroundColor: "#1A1A1D",
+                backgroundColor: tokens.muted,
                 borderRadius: 11,
                 padding: 16,
-                color: "#ECECEE",
+                color: tokens.foreground,
                 minHeight: 120,
                 textAlignVertical: "top",
               }}
             />
-            <Text style={{ color: native.secondaryLabel, marginTop: 20, fontSize: 14 }}>Model</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Model: ${modelLabel}`}
-              accessibilityState={{ expanded: modelPickerOpen }}
-              onPress={() => setModelPickerOpen((value) => !value)}
-              disabled={pending || !bot}
-              style={{ marginTop: 8, padding: 16, borderRadius: 14, backgroundColor: native.fill }}
+            <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
+              {t("Color")}
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 10, marginTop: 8 }}
+              accessibilityRole="radiogroup"
             >
-              <Text style={{ color: native.label, fontSize: 16 }}>{modelLabel}</Text>
-            </Pressable>
-            {modelPickerOpen ? (
-              <>
-                {[
-                  { key: "", label: `Space default${defaultModel ? ` (${defaultModel})` : ""}` },
-                  ...connectedOptions,
-                ].map((option) => (
-                  <Pressable
-                    key={option.key}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: option.key === modelKey }}
-                    disabled={pending}
-                    onPress={() => {
-                      setModelKey(option.key);
-                      setModelPickerOpen(false);
-                    }}
-                    style={{
-                      marginTop: 4,
-                      padding: 14,
-                      borderRadius: 12,
-                      backgroundColor: option.key === modelKey ? native.fillPressed : native.fill,
-                    }}
-                  >
-                    <Text style={{ color: native.label, fontSize: 15 }}>{option.label}</Text>
-                  </Pressable>
-                ))}
-                {modelLoadError ? (
-                  <Text style={{ color: native.secondaryLabel, marginTop: 8 }}>
-                    Could not load connected models.
-                  </Text>
-                ) : null}
-              </>
-            ) : null}
+              {BOT_COLORS.map((option, index) => (
+                <Pressable
+                  key={option}
+                  accessibilityRole="radio"
+                  accessibilityLabel={t("Color {number}", { number: index + 1 })}
+                  accessibilityState={{ checked: color === option }}
+                  onPress={() => setColor(option)}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 18,
+                    backgroundColor: option,
+                    borderWidth: 3,
+                    borderColor: color === option ? tokens.foreground : "transparent",
+                  }}
+                />
+              ))}
+            </ScrollView>
             <ComputerModePicker value={computerMode} onChange={setComputerMode} />
-            <ComputerMaintenanceActions
-              botId={botId}
-              computer={computer}
-              onChanged={async () => {
-                const status = await rpc<ComputerStatus>("computer/status", { botId });
-                setComputer(status);
-              }}
-            />
           </>
         )}
-        <Text style={{ color: native.secondaryLabel, marginTop: voiceOnly ? 0 : 24, fontSize: 14 }}>
-          Voice
-        </Text>
         <View
           style={{
-            marginTop: 8,
-            paddingHorizontal: 16,
-            paddingVertical: 12,
-            borderRadius: 14,
-            backgroundColor: native.fill,
+            marginTop: voiceOnly ? 0 : 20,
+            minHeight: 44,
             flexDirection: "row",
             alignItems: "center",
             justifyContent: "space-between",
             gap: 12,
           }}
         >
-          <Text style={{ color: native.label, fontSize: 16, flex: 1 }}>Read replies aloud</Text>
+          <Text style={{ color: tokens.mutedForeground, fontSize: 14, flex: 1 }}>
+            {t("Read replies aloud")}
+          </Text>
           <Switch
-            accessibilityLabel="Read replies aloud"
+            accessibilityLabel={t("Read replies aloud")}
             value={autoSpeak}
             disabled={pending || !bot}
             onValueChange={setAutoSpeak}
           />
         </View>
+        <Text style={{ color: tokens.mutedForeground, marginTop: 20, fontSize: 14 }}>
+          {t("Voice")}
+        </Text>
         {voices === null ? null : voices.length ? (
-          [{ id: "", label: "Account default" }, ...voices].map((voice) => (
-            <Pressable
-              key={voice.id || "default"}
-              accessibilityRole="radio"
-              accessibilityLabel={`Voice: ${voice.label}`}
-              accessibilityState={{ checked: voice.id === voiceId }}
-              disabled={pending || !bot}
-              onPress={() => setVoiceId(voice.id)}
-              style={{
-                marginTop: 4,
-                padding: 14,
-                borderRadius: 12,
-                backgroundColor: voice.id === voiceId ? native.fillPressed : native.fill,
-              }}
-            >
-              <Text style={{ color: native.label, fontSize: 15 }}>{voice.label}</Text>
-            </Pressable>
-          ))
+          <View accessibilityRole="radiogroup">
+            {[{ id: "", label: t("Account default") }, ...voices].map((voice) => (
+              <Pressable
+                key={voice.id || "default"}
+                accessibilityRole="radio"
+                accessibilityLabel={t("Voice: {label}", { label: voice.label })}
+                accessibilityState={{ checked: voice.id === voiceId }}
+                disabled={pending || !bot}
+                onPress={() => setVoiceId(voice.id)}
+                style={{
+                  marginTop: 8,
+                  paddingVertical: 12,
+                  paddingHorizontal: 16,
+                  borderRadius: 11,
+                  borderWidth: 1,
+                  borderColor: voice.id === voiceId ? tokens.ring : tokens.border,
+                  backgroundColor: tokens.muted,
+                }}
+              >
+                <Text style={{ color: tokens.foreground }}>{voice.label}</Text>
+              </Pressable>
+            ))}
+          </View>
         ) : (
           <Pressable
             accessibilityRole="button"
             onPress={() => router.push("/voice")}
-            style={{ marginTop: 4, padding: 14, borderRadius: 12, backgroundColor: native.fill }}
+            style={{
+              marginTop: 8,
+              paddingVertical: 12,
+              paddingHorizontal: 16,
+              borderRadius: 11,
+              borderWidth: 1,
+              borderColor: tokens.border,
+              backgroundColor: tokens.muted,
+            }}
           >
-            <Text style={{ color: native.secondaryLabel, fontSize: 15 }}>
-              {voiceId ? `${voiceLabel}. ` : ""}Connect a voice provider to choose a voice.
+            <Text style={{ color: tokens.mutedForeground }}>
+              {voiceId ? `${selectedVoiceLabel}. ` : ""}
+              {t("Connect a voice provider to choose a voice.")}
             </Text>
           </Pressable>
         )}
-        {error ? <Text style={{ color: "#EF4444", marginTop: 16 }}>{error}</Text> : null}
+        {voiceOnly ? null : (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("Advanced")}
+              accessibilityState={{ expanded: advancedOpen }}
+              onPress={() => setAdvancedOpen((open) => !open)}
+              style={{
+                marginTop: 20,
+                minHeight: 44,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <Text style={{ color: tokens.mutedForeground, fontSize: 14 }}>{t("Advanced")}</Text>
+              <Text style={{ color: tokens.mutedForeground, fontSize: 18 }}>
+                {advancedOpen ? "⌃" : "⌄"}
+              </Text>
+            </Pressable>
+            {advancedOpen ? (
+              <View>
+                <Text
+                  style={{
+                    color: tokens.mutedForeground,
+                    marginTop: 8,
+                    marginBottom: 8,
+                    fontSize: 14,
+                  }}
+                >
+                  {t("Model")}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("Model")}
+                  onPress={openModelPicker}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: tokens.border,
+                    backgroundColor: tokens.muted,
+                    borderRadius: 11,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                  }}
+                >
+                  <Text style={{ color: tokens.foreground }}>{selectedModelLabel}</Text>
+                </Pressable>
+                {thinkingOptions.length ? (
+                  <>
+                    <Text
+                      style={{
+                        color: tokens.mutedForeground,
+                        marginTop: 16,
+                        marginBottom: 8,
+                        fontSize: 14,
+                      }}
+                    >
+                      {t("Thinking")}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("Thinking")}
+                      onPress={openThinkingPicker}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: tokens.border,
+                        backgroundColor: tokens.muted,
+                        borderRadius: 11,
+                        paddingVertical: 12,
+                        paddingHorizontal: 16,
+                      }}
+                    >
+                      <Text style={{ color: tokens.foreground }}>{selectedThinkingLabel}</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+                {modelMetaError ? (
+                  <Text style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13 }}>
+                    {modelMetaError}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </>
+        )}
+        {error ? <Text style={{ color: tokens.destructive, marginTop: 16 }}>{error}</Text> : null}
         <Pressable
+          accessibilityRole="button"
           onPress={() => void save()}
           disabled={!name.trim() || pending || !bot}
-          accessibilityRole="button"
           style={{
             marginTop: 24,
-            backgroundColor: "#F1F1EF",
+            backgroundColor: tokens.primary,
             borderRadius: 11,
             padding: 16,
             alignItems: "center",
             opacity: !name.trim() || pending || !bot ? 0.4 : 1,
           }}
         >
-          <Text style={{ color: "#17171A", fontSize: 16 }}>{pending ? "Saving…" : "Save"}</Text>
+          <Text style={{ color: tokens.primaryForeground, fontSize: 16 }}>
+            {pending ? t("Saving…") : t("Save")}
+          </Text>
         </Pressable>
       </ScrollView>
     </>
   );
+}
+
+function modelOptionKey(provider: string, modelId: string) {
+  return `${provider}::${modelId}`;
+}
+
+function parseModelOptionKey(key: string) {
+  const separator = key.indexOf("::");
+  if (separator <= 0) return null;
+  return { provider: key.slice(0, separator), modelId: key.slice(separator + 2) };
+}
+
+function catalogLabel(
+  catalog: MobileModel[],
+  provider: string | null | undefined,
+  modelId: string,
+) {
+  if (!provider) return undefined;
+  return catalog.find((entry) => entry.provider === provider && entry.id === modelId)?.label;
+}
+
+function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string) {
+  if (level === "xhigh") return t("Extra high");
+  if (level === "low") return t("Low");
+  if (level === "medium") return t("Medium");
+  if (level === "high") return t("High");
+  if (level === "minimal") return t("Minimal");
+  if (level === "max") return t("Max");
+  return `${level.slice(0, 1).toUpperCase()}${level.slice(1)}`;
 }

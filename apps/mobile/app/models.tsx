@@ -1,10 +1,17 @@
-import type { ModelOAuthBegin } from "@rakazo/contracts";
+import type { ModelOAuthBegin, ThinkingLevel } from "@rakazo/contracts";
 import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  DEFAULT_MODEL_MAX_TOKENS,
+  MAX_MODEL_CONTEXT_WINDOW,
+  MAX_MODEL_MAX_TOKENS,
   OPENAI_COMPATIBLE_BASE_URL_HINT,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   openAiCompatibleConnectReady,
-  openAiCompatibleProbeSuccessMessage,
+  parseModelContextWindow,
+  parseModelMaxImagesPerPrompt,
+  parseModelMaxTokens,
 } from "@rakazo/contracts";
+import { createModelProbe, featuredModelProviders, initialModelProbeState } from "@rakazo/core";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -13,18 +20,48 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type MobileMe, type MobileModel, type MobileModelCredential, rpc } from "../lib/api";
+import { mobileTokens } from "../lib/appearance";
+import { useI18n } from "../lib/i18n";
+import { presentMessageActionSheet } from "../lib/message-action-sheet";
 import {
   cancelModelOAuthAttempt,
   finishModelOAuthAttempt,
   waitForModelOAuth,
 } from "../lib/model-auth";
-import { native, useThemedStyles } from "../lib/native";
+import { native, useResolvedAppearance, useThemedStyles } from "../lib/native";
+
+function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
+  if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID) {
+    return String(stored ?? DEFAULT_MODEL_MAX_TOKENS);
+  }
+  return stored !== undefined ? String(stored) : "";
+}
+
+const THINKING_LEVEL_OPTIONS: ThinkingLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+function thinkingLevelLabel(level: ThinkingLevel, t: (message: string) => string): string {
+  if (level === "xhigh") return t("Extra high");
+  if (level === "low") return t("Low");
+  if (level === "medium") return t("Medium");
+  if (level === "high") return t("High");
+  if (level === "minimal") return t("Minimal");
+  if (level === "max") return t("Max");
+  return level;
+}
 
 type ModelSelection = {
   provider?: string;
@@ -33,18 +70,28 @@ type ModelSelection = {
 
 export default function Models() {
   const styles = useThemedStyles(createModelsStyles);
+  const { t } = useI18n();
+  const colorScheme = useResolvedAppearance();
   const [catalog, setCatalog] = useState<MobileModel[]>([]);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
   const [provider, setProvider] = useState("");
+  const [showAllProviders, setShowAllProviders] = useState(false);
   const [modelId, setModelId] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [reasoning, setReasoning] = useState(false);
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | null>(null);
+  const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
+  const [contextWindow, setContextWindow] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW));
+  const [supportsImages, setSupportsImages] = useState(false);
+  const [maxImagesPerPrompt, setMaxImagesPerPrompt] = useState("");
   const [showEndpointHelp, setShowEndpointHelp] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [probeModels, setProbeModels] = useState<string[]>([]);
-  const [probedBaseUrl, setProbedBaseUrl] = useState<string | null>(null);
-  const [probing, setProbing] = useState(false);
+  const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
+  const [modelProbe] = useState(() => createModelProbe(setProbe));
+  const resetOpenAiCompatibleProbe = modelProbe.reset;
   const [oauth, setOauth] = useState<ModelOAuthBegin | null>(null);
   const [pasteCode, setPasteCode] = useState("");
   const [loading, setLoading] = useState(true);
@@ -55,7 +102,6 @@ export default function Models() {
   const oauthAbortRef = useRef<AbortController | null>(null);
   const oauthLoginIdRef = useRef<string | null>(null);
   const oauthCodeSubmittingRef = useRef(false);
-  const probeRequestIdRef = useRef(0);
 
   const cancelOAuth = useCallback(() => {
     const loginId = oauthLoginIdRef.current;
@@ -98,26 +144,29 @@ export default function Models() {
     setMe(nextMe);
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
-    probeRequestIdRef.current += 1;
-    setProbeModels([]);
-    setProbedBaseUrl(null);
-    setProbing(false);
+    resetOpenAiCompatibleProbe();
     setProvider(nextProvider);
     setModelId(nextModel);
     if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
       setBaseUrl(nextCredential?.baseUrl ?? "");
+      setReasoning(nextCredential?.reasoning ?? false);
+      setThinkingLevel(nextCredential?.thinkingLevel ?? null);
+      setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
+      setSupportsImages(nextCredential?.supportsImages ?? false);
+      setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     }
+    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       void load()
         .catch((err: unknown) =>
-          setError(err instanceof Error ? err.message : "Could not load model settings"),
+          setError(err instanceof Error ? err.message : t("Could not load model settings")),
         )
         .finally(() => setLoading(false));
       return () => {
-        probeRequestIdRef.current += 1;
+        modelProbe.invalidate();
         cancelOAuth();
       };
     }, [cancelOAuth, load]),
@@ -136,6 +185,19 @@ export default function Models() {
       entries,
     }));
   }, [catalog]);
+  const featuredProviders = useMemo(
+    () =>
+      featuredModelProviders(
+        groups.map((group) => group.entries[0]!),
+        provider,
+      ),
+    [groups, provider],
+  );
+  const visibleGroups = useMemo(() => {
+    if (showAllProviders) return groups;
+    const byId = new Map(groups.map((group) => [group.id, group]));
+    return featuredProviders.map((entry) => byId.get(entry.provider)!);
+  }, [groups, featuredProviders, showAllProviders]);
   const modelsForProvider = catalog.filter((entry) => entry.provider === provider);
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
   const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
@@ -153,16 +215,8 @@ export default function Models() {
   const openAiCompatibleReady = openAiCompatibleConnectReady({
     baseUrl: effectiveBaseUrl,
     modelId,
-    probedBaseUrl,
-    storedBaseUrl: credential?.baseUrl,
   });
-
-  function resetOpenAiCompatibleProbe() {
-    probeRequestIdRef.current += 1;
-    setProbeModels([]);
-    setProbedBaseUrl(null);
-    setProbing(false);
-  }
+  const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
 
   function updateBaseUrl(nextBaseUrl: string) {
     setBaseUrl(nextBaseUrl);
@@ -178,16 +232,21 @@ export default function Models() {
 
   function chooseProvider(nextProvider: string) {
     cancelOAuth();
+    const nextCredential = credentials.find((entry) => entry.provider === nextProvider);
     setProvider(nextProvider);
+    setReasoning(nextCredential?.reasoning ?? false);
+    setThinkingLevel(nextCredential?.thinkingLevel ?? null);
+    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
+    setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
+    setSupportsImages(nextCredential?.supportsImages ?? false);
+    setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (credentials.find((entry) => entry.provider === nextProvider)?.modelId ?? "")
+        ? (nextCredential?.modelId ?? "")
         : (catalog.find((entry) => entry.provider === nextProvider)?.id ?? ""),
     );
     setBaseUrl(
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (credentials.find((entry) => entry.provider === nextProvider)?.baseUrl ?? "")
-        : "",
+      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
     );
     setApiKey("");
     resetOpenAiCompatibleProbe();
@@ -196,29 +255,26 @@ export default function Models() {
   }
 
   async function probeServerModels() {
-    const trimmedBaseUrl = effectiveBaseUrl;
-    if (!trimmedBaseUrl) return;
-    resetOpenAiCompatibleProbe();
-    const requestId = probeRequestIdRef.current;
-    setProbing(true);
+    if (!baseUrl.trim()) return;
     setError(null);
     setNotice(null);
-    try {
-      const result = await rpc<{ models: string[] }>("models/probeOpenAiCompatible", {
-        baseUrl: trimmedBaseUrl,
-        apiKey: apiKey.trim() || undefined,
-      });
-      if (requestId !== probeRequestIdRef.current) return;
-      setProbeModels(result.models);
-      setProbedBaseUrl(trimmedBaseUrl);
-      setModelId((current) => current.trim() || result.models[0] || "");
-      setNotice(openAiCompatibleProbeSuccessMessage(result.models.length));
-    } catch (err) {
-      if (requestId !== probeRequestIdRef.current) return;
-      setError(err instanceof Error ? err.message : "Could not reach this model server");
-    } finally {
-      if (requestId === probeRequestIdRef.current) setProbing(false);
-    }
+    await modelProbe.probe({
+      baseUrl,
+      apiKey,
+      request: (input) => rpc<{ models: string[] }>("models/probeOpenAiCompatible", input),
+      onSuccess: (models) => {
+        setModelId((current) => current.trim() || models[0] || "");
+        setNotice(
+          models.length === 0
+            ? t("Server found. Enter a model name.")
+            : models.length === 1
+              ? t("Found {count} model.", { count: 1 })
+              : t("Found {count} models.", { count: models.length }),
+        );
+      },
+      onError: (err) =>
+        setError(err instanceof Error ? err.message : t("Could not reach this model server")),
+    });
   }
 
   async function setModelDefault() {
@@ -231,9 +287,13 @@ export default function Models() {
     try {
       await rpc("models/setDefault", { provider: selected.provider, modelId: activeModelId });
       await load({ provider, modelId: activeModelId });
-      setNotice(isOpenAiCompatible ? "Model updated." : `Now using ${selected.label}.`);
+      setNotice(
+        isOpenAiCompatible
+          ? t("Model updated.")
+          : t("Now using {label}.", { label: selected.label }),
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change the default model");
+      setError(err instanceof Error ? err.message : t("Could not change the default model"));
     } finally {
       setPending(null);
     }
@@ -241,11 +301,49 @@ export default function Models() {
 
   async function connectKey() {
     if (!selected) return;
+    const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
     if (isOpenAiCompatible) {
       if (!effectiveBaseUrl || !modelId.trim()) return;
-    } else if (!apiKey.trim()) {
+    } else if (savingLimitOnly) {
+      if (!credential) return;
+    } else if (apiKey.trim().length < 8) {
       return;
     }
+    const parsedMaxTokens = maxTokens.trim() ? parseModelMaxTokens(maxTokens) : undefined;
+    if ((isOpenAiCompatible || maxTokens.trim()) && parsedMaxTokens === undefined) {
+      setError(
+        t("Enter a whole number from 1 to {max} for maximum output tokens.", {
+          max: MAX_MODEL_MAX_TOKENS,
+        }),
+      );
+      return;
+    }
+    const parsedMaxImagesPerPrompt = isOpenAiCompatible
+      ? parseModelMaxImagesPerPrompt(maxImagesPerPrompt, supportsImages)
+      : undefined;
+    if (
+      isOpenAiCompatible &&
+      supportsImages &&
+      maxImagesPerPrompt.trim() &&
+      parsedMaxImagesPerPrompt === undefined
+    ) {
+      setError(t("Enter a whole number from 1 to 1000 for the image limit."));
+      return;
+    }
+    const maxImagesPerPromptInput =
+      supportsImages && !maxImagesPerPrompt.trim() ? null : parsedMaxImagesPerPrompt;
+    const parsedContextWindow = isOpenAiCompatible
+      ? parseModelContextWindow(contextWindow)
+      : undefined;
+    if (isOpenAiCompatible && parsedContextWindow === undefined) {
+      setError(
+        t("Enter a whole number from 1 to {max} for the context limit.", {
+          max: MAX_MODEL_CONTEXT_WINDOW,
+        }),
+      );
+      return;
+    }
+    if (isOpenAiCompatible && parsedMaxTokens === undefined) return;
     setError(null);
     setNotice(null);
     setPending("connect");
@@ -257,21 +355,32 @@ export default function Models() {
               provider: selected.provider,
               baseUrl: effectiveBaseUrl,
               modelId: modelId.trim(),
+              reasoning,
+              thinkingLevel: reasoning ? thinkingLevel : null,
+              maxTokens: parsedMaxTokens,
+              contextWindow: parsedContextWindow,
+              supportsImages,
+              maxImagesPerPrompt: maxImagesPerPromptInput,
               apiKey: apiKey.trim() || undefined,
               label: selected.providerName ?? selected.provider,
             }
           : {
               provider: selected.provider,
-              apiKey: apiKey.trim(),
+              ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
               modelId: selected.id,
+              maxTokens: parsedMaxTokens ?? null,
               label: selected.providerName ?? selected.provider,
             },
       );
       setApiKey("");
       await load({ provider, modelId });
-      setNotice(isOpenAiCompatible ? "Saved." : `Connected and using ${selected.label}.`);
+      setNotice(
+        isOpenAiCompatible || savingLimitOnly
+          ? t("Saved.")
+          : t("Connected and using {label}.", { label: selected.label }),
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not connect this provider");
+      setError(err instanceof Error ? err.message : t("Could not connect this provider"));
     } finally {
       setPending(null);
     }
@@ -286,7 +395,7 @@ export default function Models() {
     setOauth(null);
     await load({ provider, modelId });
     if (controller.signal.aborted) return;
-    setNotice(`Connected and using ${selected?.label ?? "this model"}.`);
+    setNotice(t("Connected and using {label}.", { label: selected?.label ?? t("this model") }));
   }
 
   async function startSubscriptionSignIn() {
@@ -319,7 +428,7 @@ export default function Models() {
       const loginId = oauthLoginIdRef.current;
       oauthLoginIdRef.current = null;
       if (loginId) void rpc("models/cancelOAuth", { loginId }).catch(() => undefined);
-      setError(err instanceof Error ? err.message : "Could not start sign-in");
+      setError(err instanceof Error ? err.message : t("Could not start sign-in"));
       setOauth(null);
     } finally {
       if (!waitingForCode) {
@@ -358,7 +467,7 @@ export default function Models() {
         retryable = true;
         setPasteCode(code);
       }
-      setError(err instanceof Error ? err.message : "Could not finish sign-in");
+      setError(err instanceof Error ? err.message : t("Could not finish sign-in"));
     } finally {
       oauthCodeSubmittingRef.current = false;
       if (!retryable) {
@@ -379,26 +488,27 @@ export default function Models() {
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.activeCard}>
-          <Text style={styles.eyebrow}>Active model</Text>
+          <Text style={styles.eyebrow}>{t("Active model")}</Text>
           <Text style={styles.activeModel}>
-            {currentEntry?.label ?? me?.defaultModel ?? "Deployment default"}
+            {currentEntry?.label ?? me?.defaultModel ?? t("Deployment default")}
           </Text>
           <Text style={styles.secondary}>
-            {currentEntry?.providerName ?? me?.defaultProvider ?? "Configured by deployment"}
+            {currentEntry?.providerName ?? me?.defaultProvider ?? t("Configured by deployment")}
           </Text>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
-        <Text style={styles.sectionTitle}>Providers</Text>
+        <Text style={styles.sectionTitle}>{t("Providers")}</Text>
         <View style={styles.card}>
-          {groups.map((group) => {
+          {visibleGroups.map((group) => {
             const connected = credentials.some((entry) => entry.provider === group.id);
             return (
               <Pressable
                 key={group.id}
                 accessibilityRole="button"
+                accessibilityState={{ selected: group.id === provider }}
                 onPress={() => chooseProvider(group.id)}
                 style={({ pressed }) => [
                   styles.providerRow,
@@ -409,28 +519,42 @@ export default function Models() {
                 <View style={styles.providerCopy}>
                   <Text style={styles.providerName}>{group.name}</Text>
                   <Text style={styles.secondary}>
-                    {group.entries.length} model{group.entries.length === 1 ? "" : "s"}
+                    {t(group.entries.length === 1 ? "{count} model" : "{count} models", {
+                      count: group.entries.length,
+                    })}
                   </Text>
                 </View>
-                {connected ? <Text style={styles.connected}>Connected</Text> : null}
+                {connected ? <Text style={styles.connected}>{t("Connected")}</Text> : null}
               </Pressable>
             );
           })}
+          {groups.length > featuredProviders.length ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showAllProviders }}
+              onPress={() => setShowAllProviders((value) => !value)}
+              style={styles.providerRow}
+            >
+              <Text style={styles.providerName}>
+                {showAllProviders ? t("Show less") : t("Show more")}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {selected ? (
           <>
-            {!isOpenAiCompatible ? <Text style={styles.sectionTitle}>Model</Text> : null}
+            {!isOpenAiCompatible ? <Text style={styles.sectionTitle}>{t("Model")}</Text> : null}
             {isOpenAiCompatible ? (
               <>
-                <Text style={styles.sectionTitle}>Server URL</Text>
+                <Text style={styles.sectionTitle}>{t("Server URL")}</Text>
                 <TextInput
-                  accessibilityLabel="OpenAI-compatible server URL"
+                  accessibilityLabel={t("OpenAI-compatible server URL")}
                   autoCapitalize="none"
                   autoCorrect={false}
                   editable={!busy}
                   onChangeText={updateBaseUrl}
-                  placeholder="http://127.0.0.1:8000/v1"
+                  placeholder={t("http://127.0.0.1:8000/v1")}
                   placeholderTextColor={native.tertiaryLabel}
                   style={styles.keyInput}
                   value={baseUrl}
@@ -440,10 +564,10 @@ export default function Models() {
                   accessibilityState={{ expanded: showEndpointHelp }}
                   onPress={() => setShowEndpointHelp((visible) => !visible)}
                 >
-                  <Text style={styles.helpLabel}>Setup help</Text>
+                  <Text style={styles.helpLabel}>{t("Setup help")}</Text>
                 </Pressable>
                 {showEndpointHelp ? (
-                  <Text style={styles.hint}>{OPENAI_COMPATIBLE_BASE_URL_HINT}</Text>
+                  <Text style={styles.hint}>{t(OPENAI_COMPATIBLE_BASE_URL_HINT)}</Text>
                 ) : null}
                 <Pressable
                   accessibilityRole="button"
@@ -455,9 +579,11 @@ export default function Models() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.outlineLabel}>{probing ? "Finding…" : "Find models"}</Text>
+                  <Text style={styles.outlineLabel}>
+                    {probing ? t("Finding…") : t("Find models")}
+                  </Text>
                 </Pressable>
-                <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Model</Text>
+                <Text style={[styles.sectionTitle, { marginTop: 12 }]}>{t("Model")}</Text>
                 {probeModels.length && probeModels.includes(modelId) ? (
                   <View style={styles.card}>
                     {probeModels.map((entry) => (
@@ -492,18 +618,18 @@ export default function Models() {
                       ]}
                     >
                       <View style={styles.radio} />
-                      <Text style={styles.modelLabel}>Other model…</Text>
+                      <Text style={styles.modelLabel}>{t("Other model…")}</Text>
                     </Pressable>
                   </View>
                 ) : (
                   <>
                     <TextInput
-                      accessibilityLabel="Model id"
+                      accessibilityLabel={t("Model id")}
                       autoCapitalize="none"
                       autoCorrect={false}
                       editable={!busy && !probing}
                       onChangeText={setModelId}
-                      placeholder="exact-model-id"
+                      placeholder={t("exact-model-id")}
                       placeholderTextColor={native.tertiaryLabel}
                       style={styles.keyInput}
                       value={modelId}
@@ -513,11 +639,116 @@ export default function Models() {
                         accessibilityRole="button"
                         onPress={() => setModelId(probeModels[0] ?? "")}
                       >
-                        <Text style={styles.helpLabel}>Use a found model</Text>
+                        <Text style={styles.helpLabel}>{t("Use a found model")}</Text>
                       </Pressable>
                     ) : null}
                   </>
                 )}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showAdvanced }}
+                  onPress={() => setShowAdvanced((visible) => !visible)}
+                >
+                  <Text style={styles.helpLabel}>{t("Advanced")}</Text>
+                </Pressable>
+                {showAdvanced ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Supports thinking")}</Text>
+                    <Switch
+                      accessibilityLabel={t("Supports thinking")}
+                      value={reasoning}
+                      onValueChange={(value) => {
+                        setReasoning(value);
+                        if (!value) setThinkingLevel(null);
+                      }}
+                      disabled={busy}
+                    />
+                  </View>
+                ) : null}
+                {showAdvanced && reasoning ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("Reasoning effort")}
+                    disabled={busy}
+                    onPress={() => {
+                      presentMessageActionSheet({
+                        title: t("Reasoning effort"),
+                        cancel: t("Cancel"),
+                        more: t("More"),
+                        colorScheme,
+                        actions: [
+                          {
+                            text: t("Default"),
+                            onPress: () => setThinkingLevel(null),
+                          },
+                          ...THINKING_LEVEL_OPTIONS.map((level) => ({
+                            text: thinkingLevelLabel(level, t),
+                            onPress: () => setThinkingLevel(level),
+                          })),
+                        ],
+                      });
+                    }}
+                    style={styles.modelRow}
+                  >
+                    <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+                    <Text style={styles.helpLabel}>
+                      {thinkingLevel ? thinkingLevelLabel(thinkingLevel, t) : t("Default")}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {showAdvanced ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Context limit")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("Context limit")}
+                      editable={!busy}
+                      keyboardType="number-pad"
+                      maxLength={7}
+                      onChangeText={setContextWindow}
+                      style={[styles.keyInput, styles.maxImagesInput]}
+                      value={contextWindow}
+                    />
+                  </View>
+                ) : null}
+                {showAdvanced ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Maximum output tokens")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("Maximum output tokens")}
+                      editable={!busy}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      onChangeText={setMaxTokens}
+                      style={[styles.keyInput, styles.maxImagesInput]}
+                      value={maxTokens}
+                    />
+                  </View>
+                ) : null}
+                {showAdvanced ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Supports images")}</Text>
+                    <Switch
+                      accessibilityLabel={t("Supports images")}
+                      value={supportsImages}
+                      onValueChange={setSupportsImages}
+                      disabled={busy}
+                    />
+                  </View>
+                ) : null}
+                {showAdvanced && supportsImages ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Maximum images per request")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("Maximum images per request")}
+                      editable={!busy}
+                      keyboardType="number-pad"
+                      maxLength={4}
+                      onChangeText={setMaxImagesPerPrompt}
+                      style={[styles.keyInput, styles.maxImagesInput]}
+                      value={maxImagesPerPrompt}
+                    />
+                  </View>
+                ) : null}
               </>
             ) : (
               <View style={styles.card}>
@@ -546,20 +777,47 @@ export default function Models() {
                 ))}
               </View>
             )}
+            {!isOpenAiCompatible ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showAdvanced }}
+                  onPress={() => setShowAdvanced((visible) => !visible)}
+                >
+                  <Text style={styles.helpLabel}>{t("Advanced")}</Text>
+                </Pressable>
+                {showAdvanced ? (
+                  <View style={styles.modelRow}>
+                    <Text style={styles.modelLabel}>{t("Maximum output tokens")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("Maximum output tokens")}
+                      editable={!busy}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      onChangeText={setMaxTokens}
+                      style={[styles.keyInput, styles.maxImagesInput]}
+                      value={maxTokens}
+                    />
+                  </View>
+                ) : null}
+              </>
+            ) : null}
             {!isOpenAiCompatible && selected.billing ? (
               <Text style={styles.billing}>{selected.billing}</Text>
             ) : null}
 
             {!isOpenAiCompatible ? (
               <View style={styles.credentialCard}>
-                <Text style={styles.eyebrow}>Personal credential</Text>
+                <Text style={styles.eyebrow}>{t("Personal credential")}</Text>
                 <Text style={styles.credentialTitle}>
-                  {credential ? `Connected · ${credential.label}` : "Not connected"}
+                  {credential
+                    ? t("Connected · {label}", { label: credential.label })
+                    : t("Not connected")}
                 </Text>
                 <Text style={styles.secondary}>
                   {credential
-                    ? "Your key or subscription token is stored securely and is never shown here."
-                    : "Connect this provider to use it as your personal model."}
+                    ? t("Stored securely. Never shown here.")
+                    : t("Connect this provider to use it as your personal model.")}
                 </Text>
               </View>
             ) : null}
@@ -569,20 +827,22 @@ export default function Models() {
                 <View style={styles.oauthCard}>
                   {oauth.mode === "auth-url" ? (
                     <>
-                      <Text style={styles.secondary}>Finish signing in in your browser:</Text>
+                      <Text style={styles.secondary}>
+                        {t("Finish signing in in your browser:")}
+                      </Text>
                       <Pressable onPress={() => void Linking.openURL(oauth.verificationUri)}>
                         <Text style={styles.link}>{oauth.verificationUri}</Text>
                       </Pressable>
                       <Text style={styles.secondary}>
-                        The final page may not load. Paste its URL or code here.
+                        {t("The final page may not load. Paste its URL or code here.")}
                       </Text>
                       <TextInput
-                        accessibilityLabel="Authorization code"
+                        accessibilityLabel={t("Authorization code")}
                         value={pasteCode}
                         onChangeText={setPasteCode}
                         autoCapitalize="none"
                         autoCorrect={false}
-                        placeholder="http://localhost:53692/callback?code=…"
+                        placeholder={t("http://localhost:53692/callback?code=…")}
                         placeholderTextColor={native.secondaryLabel}
                         style={styles.keyInput}
                       />
@@ -596,18 +856,18 @@ export default function Models() {
                           !pasteCode.trim() && styles.disabled,
                         ]}
                       >
-                        <Text style={styles.outlineLabel}>Submit</Text>
+                        <Text style={styles.outlineLabel}>{t("Submit")}</Text>
                       </Pressable>
-                      <Text style={styles.secondary}>Waiting for sign-in…</Text>
+                      <Text style={styles.secondary}>{t("Waiting for sign-in…")}</Text>
                     </>
                   ) : (
                     <>
-                      <Text style={styles.secondary}>Enter this code in your browser:</Text>
+                      <Text style={styles.secondary}>{t("Enter this code in your browser:")}</Text>
                       <Pressable onPress={() => void Linking.openURL(oauth.verificationUri)}>
                         <Text style={styles.link}>{oauth.verificationUri}</Text>
                       </Pressable>
                       <Text style={styles.code}>{oauth.userCode}</Text>
-                      <Text style={styles.secondary}>Waiting for sign-in…</Text>
+                      <Text style={styles.secondary}>{t("Waiting for sign-in…")}</Text>
                     </>
                   )}
                 </View>
@@ -623,13 +883,13 @@ export default function Models() {
                   ]}
                 >
                   <Text style={styles.outlineLabel}>
-                    {oauthPending ? "Starting…" : (selected.oauthLabel ?? "Sign in")}
+                    {oauthPending ? t("Starting…") : (selected.oauthLabel ?? t("Sign in"))}
                   </Text>
                 </Pressable>
               )
             ) : null}
 
-            {acceptsKey ? (
+            {acceptsKey || builtinLimitSave ? (
               <View style={styles.keySection}>
                 {isOpenAiCompatible ? (
                   <>
@@ -638,18 +898,18 @@ export default function Models() {
                       accessibilityState={{ expanded: showApiKey }}
                       onPress={() => setShowApiKey((visible) => !visible)}
                     >
-                      <Text style={styles.helpLabel}>API key</Text>
+                      <Text style={styles.helpLabel}>{t("API key")}</Text>
                     </Pressable>
                     {showApiKey ? (
                       <TextInput
-                        accessibilityLabel="API key"
+                        accessibilityLabel={t("API key")}
                         autoCapitalize="none"
                         autoCorrect={false}
                         autoComplete="off"
                         editable={!busy}
                         importantForAutofill="no"
                         onChangeText={updateApiKey}
-                        placeholder="Optional"
+                        placeholder={t("Optional")}
                         placeholderTextColor={native.tertiaryLabel}
                         secureTextEntry
                         style={styles.keyInput}
@@ -658,24 +918,24 @@ export default function Models() {
                       />
                     ) : null}
                   </>
-                ) : (
+                ) : acceptsKey ? (
                   <>
                     <Text style={styles.sectionTitle}>
                       {credential
-                        ? "Replace API key"
+                        ? t("Replace API key")
                         : subscriptionSignIn
-                          ? "Or connect an API key"
-                          : "API key"}
+                          ? t("Or connect an API key")
+                          : t("API key")}
                     </Text>
                     <TextInput
-                      accessibilityLabel="API key"
+                      accessibilityLabel={t("API key")}
                       autoCapitalize="none"
                       autoCorrect={false}
                       autoComplete="off"
                       editable={!busy}
                       importantForAutofill="no"
                       onChangeText={updateApiKey}
-                      placeholder="sk-…"
+                      placeholder={t("sk-…")}
                       placeholderTextColor={native.tertiaryLabel}
                       secureTextEntry
                       style={styles.keyInput}
@@ -683,29 +943,34 @@ export default function Models() {
                       value={apiKey}
                     />
                   </>
-                )}
+                ) : null}
                 <Pressable
                   accessibilityRole="button"
                   disabled={
-                    busy || (isOpenAiCompatible ? !openAiCompatibleReady : apiKey.trim().length < 8)
+                    busy ||
+                    (isOpenAiCompatible
+                      ? !openAiCompatibleReady
+                      : !builtinLimitSave && apiKey.trim().length < 8)
                   }
                   onPress={() => void connectKey()}
                   style={({ pressed }) => [
                     styles.primaryButton,
                     (busy ||
-                      (isOpenAiCompatible ? !openAiCompatibleReady : apiKey.trim().length < 8)) &&
+                      (isOpenAiCompatible
+                        ? !openAiCompatibleReady
+                        : !builtinLimitSave && apiKey.trim().length < 8)) &&
                       styles.disabled,
                     pressed && styles.pressed,
                   ]}
                 >
                   <Text style={styles.primaryLabel}>
                     {pending === "connect"
-                      ? "Saving…"
-                      : isOpenAiCompatible
-                        ? "Save"
+                      ? t("Saving…")
+                      : isOpenAiCompatible || builtinLimitSave
+                        ? t("Save")
                         : credential
-                          ? "Replace API key"
-                          : "Connect API key"}
+                          ? t("Replace API key")
+                          : t("Connect API key")}
                   </Text>
                 </Pressable>
               </View>
@@ -713,8 +978,9 @@ export default function Models() {
 
             {selected.auth === "oauth" && !subscriptionSignIn ? (
               <Text style={styles.secondary}>
-                This subscription sign-in is not available in Negroni yet. Use a deployment
-                credential or choose another provider.
+                {t(
+                  "This subscription sign-in is not available in Negroni yet. Use a deployment credential or choose another provider.",
+                )}
               </Text>
             ) : null}
 
@@ -730,7 +996,7 @@ export default function Models() {
                 ]}
               >
                 <Text style={styles.primaryLabel}>
-                  {pending === "default" ? "Switching…" : "Use this model"}
+                  {pending === "default" ? t("Switching…") : t("Use this model")}
                 </Text>
               </Pressable>
             ) : null}
@@ -742,6 +1008,7 @@ export default function Models() {
 }
 
 function createModelsStyles() {
+  const tokens = mobileTokens();
   return StyleSheet.create({
     screen: {
       flex: 1,
@@ -810,7 +1077,7 @@ function createModelsStyles() {
       fontWeight: "600",
     },
     connected: {
-      color: "#4ECB71",
+      color: tokens.success,
       fontSize: 13,
     },
     modelRow: {
@@ -844,7 +1111,7 @@ function createModelsStyles() {
       fontSize: 15,
     },
     selectedRow: {
-      backgroundColor: "#222225",
+      backgroundColor: tokens.accent,
     },
     billing: {
       color: native.secondaryLabel,
@@ -909,6 +1176,12 @@ function createModelsStyles() {
       marginTop: 4,
       fontSize: 16,
     },
+    maxImagesInput: {
+      width: 72,
+      height: 40,
+      marginTop: 0,
+      textAlign: "center",
+    },
     primaryButton: {
       minHeight: 48,
       borderRadius: 12,
@@ -939,12 +1212,12 @@ function createModelsStyles() {
       fontWeight: "600",
     },
     error: {
-      color: "#FF6961",
+      color: tokens.destructive,
       fontSize: 14,
       marginTop: 4,
     },
     notice: {
-      color: "#4ECB71",
+      color: tokens.success,
       fontSize: 14,
       marginTop: 4,
     },

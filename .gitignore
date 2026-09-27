@@ -7,6 +7,7 @@ dist
 build
 coverage
 .playwright-report
+.playwright-cli
 test-results
 playwright-report
 *.tsbuildinfo
@@ -24,6 +25,7 @@ apps/desktop/out
 apps/desktop/e2e/screenshots
 apps/mobile/.expo
 apps/mobile/dist
+apps/mobile/android
 packages/db/src/generated
 infra/sandboxes/supervisor/dist
 *.log

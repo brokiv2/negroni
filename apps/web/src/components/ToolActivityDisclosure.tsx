@@ -1,43 +1,11 @@
-import type { ThreadMessage } from "@rakazo/contracts";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 
-export function ToolSteps({
-  steps,
-  currentIndex,
-}: {
-  steps: Extract<ThreadMessage["blocks"][number], { kind: "steps" }>["steps"];
-  currentIndex?: number;
-}) {
-  return (
-    <div className="space-y-1.5" data-testid="tool-rows">
-      {steps.map((step, index) => {
-        const isCurrent = index === currentIndex;
-        return (
-          <div key={index} className="flex min-w-0 items-center gap-2">
-            <span
-              className="text-[13px]"
-              style={{
-                color: isCurrent ? "#F5A03C" : "#4ECB71",
-                animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined,
-              }}
-            >
-              {isCurrent ? "◷" : "✓"}
-            </span>
-            <span
-              className="min-w-0 flex-1 truncate text-[14px]"
-              style={{ color: isCurrent ? "#DFDFE2" : "#85858A" }}
-            >
-              {step.label}
-              {step.count > 1 ? ` ×${step.count}` : ""}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
+/**
+ * Collapsed "Worked with <bot>" chip used by the personal view. Upstream folds
+ * tool chatter into its own narration bubble; the personal transcript still
+ * needs one expandable line per delegation.
+ */
 export function ToolActivityDisclosure({
   live,
   label,
@@ -55,8 +23,8 @@ export function ToolActivityDisclosure({
       className="group"
     >
       <summary
-        className={`flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 rounded-md py-0.5 pe-1.5 text-[13px] font-medium outline-none hover:text-[var(--rk-soft)] focus-visible:ring-2 focus-visible:ring-[var(--rk-muted)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rk-surface-2)] ${
-          live ? "text-[var(--rk-soft)]" : "text-[var(--rk-muted)]"
+        className={`flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 rounded-md py-0.5 pe-1.5 text-[13px] font-medium outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-muted ${
+          live ? "text-foreground/75" : "text-muted-foreground"
         }`}
       >
         <ChevronRight

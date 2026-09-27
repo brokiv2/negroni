@@ -2,7 +2,9 @@ import type { ConnectionCatalogItem } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   buildFeaturedConnectorTiles,
+  FEATURED_CONNECTOR_IDS,
   featuredConnectorProvidersMatch,
+  filterConnectionCatalogItems,
   matchFeaturedConnectorId,
   resolveFeaturedCatalogItem,
 } from "./featured-connectors.js";
@@ -60,7 +62,7 @@ describe("featured connectors", () => {
 
   it("marks all featured tiles missing when the catalog is empty", () => {
     const tiles = buildFeaturedConnectorTiles([]);
-    expect(tiles).toHaveLength(5);
+    expect(tiles).toHaveLength(FEATURED_CONNECTOR_IDS.length);
     expect(tiles.every((tile) => !tile.item && !tile.missing)).toBe(true);
   });
 
@@ -72,5 +74,21 @@ describe("featured connectors", () => {
     expect(gmail?.missing).toBe(false);
     expect(drive?.missing).toBe(true);
     expect(drive?.item).toBeUndefined();
+  });
+
+  it("keeps featured apps in search while removing their duplicate browse rows", () => {
+    const catalog = [
+      item("gmail", "Gmail"),
+      item("linear", "Linear"),
+      { ...item("notion", "Notion"), connectorId: "pipedream" },
+    ];
+
+    expect(filterConnectionCatalogItems(catalog, "").map(({ name }) => name)).toEqual(["Linear"]);
+    expect(filterConnectionCatalogItems(catalog, "mail").map(({ name }) => name)).toEqual([
+      "Gmail",
+    ]);
+    expect(filterConnectionCatalogItems(catalog, "pipedream").map(({ name }) => name)).toEqual([
+      "Notion",
+    ]);
   });
 });

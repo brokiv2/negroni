@@ -39,25 +39,52 @@ const peerExchange = [
 ];
 
 describe("user-visible messages", () => {
-  it("keeps bot-to-bot exchanges out of the user transcript", () => {
-    expect(userVisibleMessages(peerExchange).map((item) => item.id)).toEqual(["user", "answer"]);
+  it("hides peer activity but keeps the bot's text reply to the user", () => {
+    expect(userVisibleMessages(peerExchange).map((item) => item.id)).toEqual([
+      "user",
+      "reply",
+      "answer",
+    ]);
   });
 
   it("keeps compact peer receipts when includePeerReceipts is set", () => {
     expect(
       userVisibleMessages(peerExchange, { includePeerReceipts: true }).map((item) => item.id),
-    ).toEqual(["user", "sent", "received", "answer"]);
+    ).toEqual(["user", "sent", "received", "reply", "answer"]);
   });
 
   it("uses authoritative peer run ids when the receipt is outside the loaded page", () => {
     const messages = [
+      message("activity", "run-peer", [
+        { kind: "steps", steps: [{ label: "Echoed peer reply", count: 1 }] },
+      ]),
       message("reply", "run-peer", [{ kind: "text", text: "Echoed peer reply" }]),
       message("answer", "run-user", [{ kind: "text", text: "Visible answer" }]),
     ];
 
     expect(
       userVisibleMessages(messages, { knownPeerRunIds: ["run-peer"] }).map((item) => item.id),
-    ).toEqual(["answer"]);
+    ).toEqual(["reply", "answer"]);
+  });
+
+  it("keeps a peer-run ask card and text reply while hiding other peer activity", () => {
+    const messages = [
+      message("ask", "run-peer", [
+        {
+          kind: "ask",
+          text: "Pick one",
+          status: "pending",
+          actions: [{ id: "a", label: "A" }],
+        },
+      ]),
+      message("activity", "run-peer", [{ kind: "steps", steps: [{ label: "Work", count: 1 }] }]),
+      message("reply", "run-peer", [{ kind: "text", text: "Peer body" }]),
+      message("answer", "run-user", [{ kind: "text", text: "Visible answer" }]),
+    ];
+
+    expect(
+      userVisibleMessages(messages, { knownPeerRunIds: ["run-peer"] }).map((item) => item.id),
+    ).toEqual(["ask", "reply", "answer"]);
   });
 });
 
@@ -113,7 +140,7 @@ describe("transcript activity removal", () => {
   it("keeps coordination visible in team chats and hides it in the assistant view", () => {
     const blocks: ThreadMessage["blocks"] = [
       { kind: "handoff", fromBotId: "chief", toBotId: "coder", text: "Check this" },
-      { kind: "subagent", status: "running", subagentId: "helper", label: "Research" },
+      { kind: "subagent", status: "running", agentId: "helper", name: "Research", task: "Look" },
       { kind: "text", text: "Here is the answer." },
     ];
     expect(transcriptContentBlocks(blocks)).toEqual(blocks);

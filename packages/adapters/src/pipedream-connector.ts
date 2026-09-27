@@ -7,6 +7,8 @@ import type {
   ConnectorTool,
   ManagedConnectorProvider,
 } from "@rakazo/adapter-kit";
+import { getLogger } from "@rakazo/logging";
+import { catalogToolPrefix } from "./approval-effect.js";
 import { collectPages, filterCatalog } from "./composio-connector.js";
 import {
   combineSignals,
@@ -14,15 +16,27 @@ import {
   sanitizeConnectorError,
 } from "./connector-safety.js";
 import {
+  CATALOG_EXECUTE,
+  catalogEntries,
+  DIRECT_TOOL_LIMIT,
+  executeLazyCatalogControl,
+  isLazyCatalogControlRoute,
+  lazyCatalogTools,
+  resolveCatalogCall,
+} from "./lazy-tool-catalog.js";
+import {
   callRemoteMcpTool,
   listRemoteMcpTools,
   type RemoteTransportDependencies,
 } from "./remote-mcp.js";
+import { isVitestRuntime } from "./test-runtime.js";
+import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
 const API_BASE = "https://api.pipedream.com";
 const MCP_ENDPOINT = "https://remote.mcp.pipedream.net/v3";
 const DIRECTORY_TTL_MS = 10 * 60_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+export const MAX_PIPEDREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export interface PipedreamConnectorConfig {
   clientId: string;
@@ -75,8 +89,21 @@ export function isPipedreamEnabled(config: Partial<PipedreamConnectorConfig>): b
       config.projectId &&
       config.environment &&
       config.identitySecret &&
-      !process.env.VITEST,
+      !isVitestRuntime(),
   );
+}
+
+function securePipedreamConnectUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Pipedream did not return a secure HTTPS connect URL");
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("Pipedream did not return a secure HTTPS connect URL");
+  }
+  return url;
 }
 
 export class PipedreamConnector implements ManagedConnectorProvider {
@@ -134,7 +161,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     ];
   }
 
-  async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {
+  private async allTools(context: AdapterContext): Promise<ConnectorTool[]> {
     const apps =
       context.connectedConnections
         ?.filter((connection) => connection.connectorId === "pipedream")
@@ -142,24 +169,70 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     if (apps.length === 0) return [];
     const token = await this.token();
     const groups = await Promise.all(
-      [...new Set(apps)].slice(0, 20).map(async (app) => {
-        const tools = await listRemoteMcpTools({
-          endpoint: MCP_ENDPOINT,
-          headers: this.mcpHeaders(context, app, token),
-          signal: context.signal,
-          fetch: this.dependencies.fetch,
-          resolveHostname: this.dependencies.resolveHostname,
-        });
-        return tools.map((tool) => ({
-          ...tool,
-          route: { connectorId: "pipedream", resourceId: app, toolName: tool.name },
-        }));
+      [...new Set(apps)].map(async (app) => {
+        try {
+          const tools = await listRemoteMcpTools({
+            endpoint: MCP_ENDPOINT,
+            headers: this.mcpHeaders(context, app, token),
+            signal: context.signal,
+            fetch: this.dependencies.fetch,
+            resolveHostname: this.dependencies.resolveHostname,
+          });
+          return tools.map((tool) => ({
+            ...tool,
+            route: {
+              connectorId: "pipedream",
+              resourceId: app,
+              toolName: tool.name,
+              catalogGroup: app,
+            },
+          }));
+        } catch (error) {
+          // A single unavailable app must not hide tools from other connections.
+          getLogger().error(
+            `pipedream discovery failed for app ${app}:`,
+            sanitizeConnectorError(error),
+          );
+          return [];
+        }
       }),
     );
     return groups.flat();
   }
 
+  async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {
+    const tools = await this.allTools(context);
+    if (tools.length <= DIRECT_TOOL_LIMIT) return tools;
+    return lazyCatalogTools(
+      catalogToolPrefix("pipedream"),
+      "pipedream",
+      "app",
+      catalogEntries(tools),
+    );
+  }
+
+  async resolveCall(
+    call: ConnectorCall,
+    context: AdapterContext,
+  ): Promise<{ call: ConnectorCall; tool: ConnectorTool } | undefined> {
+    // Wrappers have no resourceId; real tools always do.
+    if (call.route?.resourceId || call.route?.toolName !== CATALOG_EXECUTE) return undefined;
+    return resolveCatalogCall(call, catalogEntries(await this.allTools(context)));
+  }
+
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
+    if (isLazyCatalogControlRoute(call.route)) {
+      try {
+        yield* executeLazyCatalogControl(
+          call,
+          catalogEntries(await this.allTools(context)),
+          (resolved) => this.execute(resolved, context),
+        );
+      } catch (error) {
+        yield { type: "error", message: sanitizeConnectorError(error) };
+      }
+      return;
+    }
     const app = call.route?.resourceId;
     if (!app) {
       yield { type: "error", message: "Pipedream app route is missing" };
@@ -179,11 +252,17 @@ export class PipedreamConnector implements ManagedConnectorProvider {
         call.route?.toolName ?? call.tool,
         call.args,
       );
-      yield { type: "result", data: redactConnectorPayload(result, [token]) };
+      yield {
+        type: "result",
+        data: redactConnectorPayload(result, [token, this.config.clientSecret]),
+      };
     } catch (error) {
       yield {
         type: "error",
-        message: sanitizeConnectorError(error, token ? [token] : []),
+        message: sanitizeConnectorError(
+          error,
+          [token, this.config.clientSecret].filter((value): value is string => Boolean(value)),
+        ),
       };
     }
   }
@@ -205,13 +284,47 @@ export class PipedreamConnector implements ManagedConnectorProvider {
       },
       context.signal,
     );
-    const url = new URL(response.connect_link_url);
+    const url = securePipedreamConnectUrl(response.connect_link_url);
     url.searchParams.set("app", request.provider);
     return { authorizationUrl: url.toString(), state: request.provider };
   }
 
   async complete(request: { state: string }): Promise<{ connectionRef: string }> {
     return { connectionRef: request.state };
+  }
+
+  /**
+   * Prefer a concrete Pipedream account id over the app slug so multi-account
+   * revoke can target one authorization. spaceId is required for the hashed
+   * external user id Pipedream uses to scope accounts.
+   */
+  async resolveConnectedAccountId(
+    userId: string,
+    slug: string,
+    currentRef: string | null | undefined,
+    excludeIds: string[] = [],
+    spaceId?: string,
+  ): Promise<string | undefined> {
+    const excluded = new Set(excludeIds.filter(Boolean));
+    const current = currentRef?.trim() || undefined;
+    if (!spaceId) {
+      return current && current !== slug && !excluded.has(current) ? current : undefined;
+    }
+    // Concrete account ids are already authoritative; do not reassign them.
+    if (current && current !== slug) {
+      return excluded.has(current) ? undefined : current;
+    }
+    const context = {
+      userId,
+      spaceId,
+      signal: AbortSignal.timeout(30_000),
+    } as AdapterContext;
+    const accounts = await this.accounts(context, slug);
+    const ids = accounts
+      .filter((account) => account.healthy !== false && account.dead !== true)
+      .map((account) => account.id)
+      .filter(Boolean);
+    return ids.find((id) => !excluded.has(id));
   }
 
   async connectionReady(context: AdapterContext, externalId: string): Promise<boolean> {
@@ -223,17 +336,57 @@ export class PipedreamConnector implements ManagedConnectorProvider {
   }
 
   async revoke(externalId: string, context: AdapterContext): Promise<void> {
-    const accounts = await this.accounts(context, externalId);
+    let accounts: PipedreamAccount[];
+    try {
+      accounts = await this.accounts(context);
+    } catch (error) {
+      // Listing failed before any DELETE — mark so callers can restore local retry state.
+      if (error && typeof error === "object") {
+        (error as { remoteRevokePreDelete?: boolean }).remoteRevokePreDelete = true;
+      }
+      throw error;
+    }
+    const targets = accounts.filter(
+      (account) => account.id === externalId || account.app?.name_slug === externalId,
+    );
     await Promise.all(
-      accounts
-        .filter((account) => account.app?.name_slug === externalId)
-        .map((account) =>
-          this.request(
-            `/v1/connect/${encodeURIComponent(this.config.projectId)}/accounts/${encodeURIComponent(account.id)}`,
-            { method: "DELETE" },
-            context.signal,
-          ),
+      targets.map((account) =>
+        this.request(
+          `/v1/connect/${encodeURIComponent(this.config.projectId)}/accounts/${encodeURIComponent(account.id)}`,
+          { method: "DELETE" },
+          context.signal,
         ),
+      ),
+    );
+  }
+
+  /**
+   * Delete remote accounts for `slug` that no local row still references. Used when a
+   * begin loses a race to revoke and only the app slug is available — never revoke by
+   * slug alone, or every sibling authorization would be deleted.
+   */
+  async revokeUnreferencedAccounts(
+    slug: string,
+    keepAccountIds: string[],
+    context: AdapterContext,
+  ): Promise<void> {
+    const keep = new Set(keepAccountIds.filter(Boolean));
+    const accounts = await this.accounts(context, slug);
+    const orphans = accounts.filter(
+      (account) =>
+        account.app?.name_slug === slug &&
+        account.healthy !== false &&
+        account.dead !== true &&
+        !keep.has(account.id),
+    );
+    await Promise.all(
+      orphans.map((account) =>
+        this.request(
+          `/v1/connect/${encodeURIComponent(this.config.projectId)}/accounts/${encodeURIComponent(account.id)}`,
+          { method: "DELETE" },
+          context.signal,
+        ),
+      ),
     );
   }
 
@@ -312,6 +465,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     signal?: AbortSignal,
   ): Promise<T> {
     const token = await this.token();
+    const requestAbort = combineSignals(signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
     const response = await (this.dependencies.fetch ?? globalThis.fetch)(`${API_BASE}${path}`, {
       ...init,
       headers: {
@@ -320,11 +474,11 @@ export class PipedreamConnector implements ManagedConnectorProvider {
         "x-pd-environment": this.config.environment,
         ...init.headers,
       },
-      signal: combineSignals(signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)),
+      signal: requestAbort,
     });
-    const body = await response.text();
+    if (response.status === 401) this.accessToken = undefined;
+    const body = await readPipedreamBody(response, requestAbort);
     if (!response.ok) {
-      if (response.status === 401) this.accessToken = undefined;
       throw new Error(
         sanitizeConnectorError(`Pipedream returned HTTP ${response.status}: ${body}`, [token]),
       );
@@ -346,6 +500,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
   }
 
   private async fetchToken(): Promise<string> {
+    const requestAbort = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const response = await (this.dependencies.fetch ?? globalThis.fetch)(
       `${API_BASE}/v1/oauth/token`,
       {
@@ -357,10 +512,11 @@ export class PipedreamConnector implements ManagedConnectorProvider {
           client_secret: this.config.clientSecret,
           scope: "connect:*",
         }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: requestAbort,
       },
     );
-    const body = (await response.json()) as {
+    const text = await readPipedreamBody(response, requestAbort);
+    const body = (response.ok && text ? JSON.parse(text) : {}) as {
       access_token?: string;
       expires_in?: number;
       error?: string;
@@ -373,5 +529,27 @@ export class PipedreamConnector implements ManagedConnectorProvider {
       expiresAt: Date.now() + (body.expires_in ?? 3_600) * 1_000,
     };
     return body.access_token;
+  }
+}
+
+async function readPipedreamBody(response: Response, signal: AbortSignal): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_PIPEDREAM_RESPONSE_BYTES) {
+    const cancel = response.body?.cancel() ?? Promise.resolve();
+    // A hanging cancel must not outlive the shared deadline.
+    await withAbort(
+      cancel.catch(() => undefined),
+      signal,
+    ).catch(() => undefined);
+    throw new Error("Pipedream response is too large.");
+  }
+  try {
+    const bytes = await readBodyCapped(response, MAX_PIPEDREAM_RESPONSE_BYTES, signal);
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Response is too large") {
+      throw new Error("Pipedream response is too large.");
+    }
+    throw error;
   }
 }

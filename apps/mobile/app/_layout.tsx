@@ -1,64 +1,65 @@
-import { DarkTheme, Stack, ThemeProvider, type ErrorBoundaryProps } from "expo-router";
+import { DarkTheme, type ErrorBoundaryProps, Stack, ThemeProvider } from "expo-router";
+import * as ScreenOrientation from "expo-screen-orientation";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
-import { TabletShell } from "../components/tablet-shell";
 import { AvatarStyleProvider } from "../components/avatar-style";
+import { ComputerUpdateProgress } from "../components/computer-update-progress";
+import { TabletShell } from "../components/tablet-shell";
 import { currentApiBase, loadApiBase, loadSessionToken, selectedSpaceId } from "../lib/api";
 import { loadAppearancePreference, mobileTokens } from "../lib/appearance";
+import { bootstrapI18n, useI18n } from "../lib/i18n";
 import {
   configureForegroundNotifications,
   resumeLiveNotifications,
 } from "../lib/live-notifications";
 import { native, useResolvedAppearance } from "../lib/native";
-import { applyMobileUiDirection } from "../lib/ui-direction";
+import { loadResponseStreamingPreference } from "../lib/response-streaming";
 
-applyMobileUiDirection();
 configureForegroundNotifications();
 
-const lightTheme = {
-  ...DarkTheme,
-  dark: false,
-  colors: {
-    ...DarkTheme.colors,
-    primary: "#1A1A1A",
-    background: "#F4F4F2",
-    card: "#F4F4F2",
-    text: "#1A1A1A",
-    border: "#D0D0CC",
-    notification: "#2A9E86",
-  },
-};
-
 export default function Layout() {
+  useEffect(() => {
+    // The app is portrait-only; the computer screen unlocks rotation while it is open.
+    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(
+      () => undefined,
+    );
+  }, []);
+  const { t } = useI18n();
   const [ready, setReady] = useState(false);
   const resolved = useResolvedAppearance();
   const navigationTheme = useMemo(() => {
-    const base = resolved === "light" ? lightTheme : DarkTheme;
+    const tokens = mobileTokens();
     return {
-      ...base,
+      ...DarkTheme,
+      dark: resolved === "dark",
       colors: {
-        ...base.colors,
-        background: String(native.page),
-        card: String(native.page),
-        text: mobileTokens().ink,
-        border: "transparent",
-        primary: mobileTokens().ink,
+        ...DarkTheme.colors,
+        background: tokens.background,
+        card: tokens.background,
+        text: tokens.foreground,
+        border: tokens.border,
+        primary: tokens.primary,
+        notification: tokens.foreground,
       },
     };
   }, [resolved]);
 
   useEffect(() => {
-    void Promise.all([loadApiBase(), loadAppearancePreference()])
-      .catch(() => undefined)
-      .finally(() => {
-        setReady(true);
-        void loadSessionToken()
-          .then((token) => resumeLiveNotifications(currentApiBase(), token, selectedSpaceId() ?? ""))
-          .catch(() => undefined);
-      });
+    void Promise.all([
+      Promise.all([loadApiBase(), loadAppearancePreference(), loadResponseStreamingPreference()])
+        .then(async () =>
+          resumeLiveNotifications(
+            currentApiBase(),
+            await loadSessionToken(),
+            selectedSpaceId() ?? "",
+          ),
+        )
+        .catch(() => undefined),
+      bootstrapI18n(),
+    ]).finally(() => setReady(true));
   }, []);
 
   return (
@@ -71,8 +72,8 @@ export default function Layout() {
               <TabletShell>
                 <Stack
                   screenOptions={{
-                    headerStyle: { backgroundColor: String(native.page) },
-                    headerTintColor: mobileTokens().ink,
+                    headerStyle: { backgroundColor: navigationTheme.colors.background },
+                    headerTintColor: navigationTheme.colors.text,
                     headerShadowVisible: false,
                     headerBackButtonDisplayMode: "minimal",
                     contentStyle: { backgroundColor: String(native.page) },
@@ -80,18 +81,33 @@ export default function Layout() {
                 >
                   <Stack.Screen name="index" options={{ headerShown: false, title: "Negroni" }} />
                   <Stack.Screen name="sign-in" options={{ headerShown: false }} />
-                  <Stack.Screen name="account" options={{ title: "Account" }} />
-                  <Stack.Screen name="models" options={{ title: "Models" }} />
-                  <Stack.Screen name="voice" options={{ title: "Voice" }} />
+                  <Stack.Screen
+                    name="integration-setup"
+                    options={{ title: t("Server integrations") }}
+                  />
+                  <Stack.Screen name="ai-data-sharing" options={{ title: "AI data sharing" }} />
+                  <Stack.Screen name="account" options={{ title: t("Account") }} />
+                  <Stack.Screen
+                    name="change-password"
+                    options={{
+                      title: t("Change password"),
+                      presentation: "formSheet",
+                      sheetAllowedDetents: [0.6, 1],
+                      sheetGrabberVisible: true,
+                    }}
+                  />
+                  <Stack.Screen name="models" options={{ title: t("Models") }} />
+                  <Stack.Screen name="voice" options={{ title: t("Voice") }} />
                   <Stack.Screen
                     name="call"
-                    options={{ title: "Voice call", presentation: "fullScreenModal" }}
+                    options={{ title: t("Voice call"), presentation: "fullScreenModal" }}
                   />
-                  <Stack.Screen name="integrations" options={{ title: "Integrations" }} />
+                  <Stack.Screen name="assistant-hub" options={{ headerShown: false }} />
+                  <Stack.Screen name="integrations" options={{ title: t("Integrations") }} />
                   <Stack.Screen
                     name="new"
                     options={{
-                      title: "New bot",
+                      title: t("New bot"),
                       presentation: "modal",
                       gestureEnabled: true,
                       headerBackVisible: false,
@@ -100,7 +116,7 @@ export default function Layout() {
                   <Stack.Screen
                     name="new-group"
                     options={{
-                      title: "New group",
+                      title: t("New group"),
                       presentation: "modal",
                       gestureEnabled: true,
                     }}
@@ -108,29 +124,25 @@ export default function Layout() {
                   <Stack.Screen
                     name="new-space"
                     options={{
-                      title: "New space",
+                      title: t("New space"),
                       presentation: "modal",
                       gestureEnabled: true,
                       headerBackVisible: false,
                     }}
                   />
-                  <Stack.Screen name="group-thread" options={{ title: "Group" }} />
-                  <Stack.Screen name="group-settings" options={{ title: "Group settings" }} />
-                  <Stack.Screen name="bot-settings" options={{ title: "Chat settings" }} />
-                  <Stack.Screen name="thread" options={{ title: "Thread" }} />
-                  <Stack.Screen name="assistant-hub" options={{ headerShown: false }} />
-                  <Stack.Screen name="routine" options={{ title: "Routine" }} />
-                  <Stack.Screen name="computer" options={{ title: "Computer" }} />
+                  <Stack.Screen name="group-thread" options={{ title: t("Group") }} />
+                  <Stack.Screen name="group-settings" options={{ title: t("Group settings") }} />
+                  <Stack.Screen name="bot-settings" options={{ title: t("Chat settings") }} />
+                  <Stack.Screen name="thread" options={{ title: t("Thread") }} />
+                  <Stack.Screen name="routine" options={{ title: t("Routine") }} />
+                  <Stack.Screen name="computer" options={{ title: t("Computer") }} />
                 </Stack>
               </TabletShell>
+              <ComputerUpdateProgress />
             </ThemeProvider>
           </AvatarStyleProvider>
         ) : (
-          <View style={{ flex: 1, backgroundColor: String(native.page), paddingTop: 90, paddingHorizontal: 22, gap: 18 }}>
-            <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: String(native.fill) }} />
-            <View style={{ width: "60%", height: 28, borderRadius: 14, backgroundColor: String(native.fill) }} />
-            <View style={{ height: 48, borderRadius: 24, backgroundColor: String(native.fill) }} />
-          </View>
+          <View style={{ flex: 1, backgroundColor: String(native.page) }} />
         )}
       </KeyboardProvider>
     </GestureHandlerRootView>
@@ -139,7 +151,7 @@ export default function Layout() {
 
 export function ErrorBoundary({ retry }: ErrorBoundaryProps) {
   const appearance = useResolvedAppearance();
-  const isLight = appearance === "light";
+  const tokens = mobileTokens();
   return (
     <View
       style={{
@@ -147,12 +159,21 @@ export function ErrorBoundary({ retry }: ErrorBoundaryProps) {
         padding: 32,
         gap: 20,
         justifyContent: "center",
-        backgroundColor: isLight ? "#F4F4F2" : "#141416",
+        backgroundColor: appearance === "light" ? tokens.background : tokens.card,
       }}
     >
-      <Text style={{ color: isLight ? "#1A1A1A" : "#ECECEE", fontSize: 22 }}>This screen could not open</Text>
-      <Pressable accessibilityRole="button" onPress={retry} style={{ padding: 16, alignSelf: "flex-start", borderRadius: 22, backgroundColor: isLight ? "#FFFFFF" : "#29292B" }}>
-        <Text style={{ color: isLight ? "#1A1A1A" : "#ECECEE", fontSize: 17 }}>Try again</Text>
+      <Text style={{ color: tokens.foreground, fontSize: 22 }}>This screen could not open</Text>
+      <Pressable
+        accessibilityRole="button"
+        onPress={retry}
+        style={{
+          padding: 16,
+          alignSelf: "flex-start",
+          borderRadius: 22,
+          backgroundColor: tokens.accent,
+        }}
+      >
+        <Text style={{ color: tokens.foreground, fontSize: 17 }}>Try again</Text>
       </Pressable>
     </View>
   );

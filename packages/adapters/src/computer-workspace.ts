@@ -9,12 +9,11 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import type { ComputerMode } from "@rakazo/contracts";
+import { parseScreenLeaseId } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { normalizeWorkspacePath, teamBotWorkspaceDirectory } from "./computer-support.js";
 import { LocalAgentHomeStore } from "./home.js";
 
-export const PORTABLE_BROWSER_STOP_COMMAND =
-  "pkill -f '[g]oogle-chrome|[c]hromium|[f]irefox' || true";
 export const PORTABLE_TRANSFER_BATCH_BYTES = 8 * 1024 * 1024;
 
 const skippedBrowserProfileDirectories = new Set([
@@ -100,6 +99,51 @@ export async function checkpointComputerWorkspace(
     return await home.commit(homeKey, staging, context);
   } finally {
     await rm(staging, { recursive: true, force: true });
+  }
+}
+
+/** Remote exports quiesce browsers, so a run must not checkpoint while peers are driving them. */
+export async function checkpointRunComputerWorkspace(
+  deps: { home: AgentHomeStore; sandbox: SandboxProvider; prisma: PrismaClient },
+  computerRecord: { id: string; homeKey: string; scope: string },
+  computer: ComputerRef,
+  context: AdapterContext,
+): Promise<string | undefined> {
+  if (computerRecord.scope !== "team" || computer.kind === "docker") {
+    return checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
+  }
+  const now = new Date();
+  const ownLease = context.screenLeaseId ? parseScreenLeaseId(context.screenLeaseId) : undefined;
+  const claimed = await deps.prisma.computer.updateMany({
+    where: {
+      id: computerRecord.id,
+      state: "running",
+      providerRef: computer.providerRef,
+      executionLeases: {
+        none: {
+          expiresAt: { gt: now },
+          ...(ownLease ? { NOT: { runId: ownLease.ownerId, fence: ownLease.fence } } : {}),
+        },
+      },
+      OR: [
+        { controlHolder: { not: "user" } },
+        { controlLeaseId: null },
+        { controlLeaseExpiresAt: null },
+        { controlLeaseExpiresAt: { lte: now } },
+        ...(context.botId ? [{ controlBotId: context.botId }] : []),
+      ],
+    },
+    data: { state: "suspending", updatedAt: now },
+  });
+  // The last finishing run or the already scheduled idle job will checkpoint the shared home.
+  if (claimed.count !== 1) return undefined;
+  try {
+    return await checkpointAndRecordComputerWorkspace(deps, computerRecord, computer, context);
+  } finally {
+    await deps.prisma.computer.updateMany({
+      where: { id: computerRecord.id, state: "suspending", providerRef: computer.providerRef },
+      data: { state: "running" },
+    });
   }
 }
 

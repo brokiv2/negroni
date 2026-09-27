@@ -1,10 +1,10 @@
-import type { TransactionalEmail, TransactionalEmailProvider } from "@rakazo/adapter-kit";
 import { createHash } from "node:crypto";
-import { emailAllowed, parseAllowlist, signupPolicyFromEnv } from "@rakazo/core";
+import type { TransactionalEmail, TransactionalEmailProvider } from "@rakazo/adapter-kit";
+import { emailAllowed, isMessagingEmail, parseAllowlist, signupPolicyFromEnv } from "@rakazo/core";
 import { bootstrapUserSpace, type PrismaClient } from "@rakazo/db";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { bearer, organization } from "better-auth/plugins";
 
 export interface AuthEnv {
@@ -42,7 +42,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
     appName: "Rakazo",
     secret: env.secret,
     baseURL: env.baseURL,
-    trustedOrigins: [env.webOrigin, env.baseURL, ...(env.extraOrigins ?? [])],
+    trustedOrigins: buildTrustedOrigins(env),
     database: prismaAdapter(prisma, { provider: "postgresql" }),
     socialProviders: env.appleBundleIdentifier
       ? {
@@ -54,7 +54,9 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
             appBundleIdentifier: env.appleBundleIdentifier,
             disableSignUp: true,
             mapProfileToUser: (profile) => ({
-              email: profile.email ?? `apple-${createHash("sha256").update(profile.sub).digest("hex")}@users.negroni.invalid`,
+              email:
+                profile.email ??
+                `apple-${createHash("sha256").update(profile.sub).digest("hex")}@users.negroni.invalid`,
             }),
           },
         }
@@ -83,6 +85,20 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
             void env.email
               ?.send(passwordResetEmail(user, url))
               .catch((error) => env.onEmailError?.(error));
+          }
+        : undefined,
+    },
+    emailVerification: {
+      sendOnSignIn: true,
+      autoSignInAfterVerification: false,
+      sendVerificationEmail: env.email
+        ? async ({ user, url }) => {
+            const verificationUrl = new URL(url);
+            verificationUrl.searchParams.set(
+              "callbackURL",
+              new URL("/sign-in", env.webOrigin).href,
+            );
+            await env.email!.send(verificationEmail(user.email, verificationUrl.href));
           }
         : undefined,
     },
@@ -129,38 +145,121 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
       }),
     ],
     hooks: {
-      before: async (ctx) => {
-        const path = String((ctx as { path?: string }).path ?? "");
-        const socialBody = ctx.body as { provider?: string; idToken?: { token?: string; nonce?: string } } | undefined;
-        if ((path === "/sign-in/social" || path === "/link-social") &&
+      before: createAuthMiddleware(async (ctx) => {
+        // Apple sign-in only works from the native app, which supplies a signed
+        // id token and nonce; a bare web POST would create an unverifiable link.
+        const socialBody = ctx.body as
+          | { provider?: string; idToken?: { token?: string; nonce?: string } }
+          | undefined;
+        if (
+          (ctx.path === "/sign-in/social" || ctx.path === "/link-social") &&
           socialBody?.provider === "apple" &&
-          (!socialBody.idToken?.token || !socialBody.idToken.nonce)) {
+          (!socialBody.idToken?.token || !socialBody.idToken.nonce)
+        ) {
           throw new APIError("BAD_REQUEST", { message: "Use the iPhone app to connect Apple ID" });
         }
-        if (!path.includes("sign-up")) return;
-        const policy = await resolveSignupPolicy(prisma, env);
-        if (!policy.enabled) {
-          throw new APIError("BAD_REQUEST", { message: "Registration is closed" });
+        for (const value of [ctx.body?.email, ctx.body?.newEmail]) {
+          if (typeof value === "string" && isMessagingEmail(value)) {
+            throw new APIError("BAD_REQUEST", { message: "Email is not available" });
+          }
         }
-        const email =
-          typeof ctx.body === "object" && ctx.body && "email" in ctx.body
-            ? String((ctx.body as { email?: string }).email ?? "")
-            : "";
-        if (email && !emailAllowed(email, policy.allowlist)) {
-          throw new APIError("BAD_REQUEST", { message: "Email is not allowed to register" });
+        let policy =
+          ctx.path === "/sign-up/email" || ctx.path === "/sign-in/email"
+            ? await resolveSignupPolicy(prisma, env)
+            : undefined;
+        if (ctx.path === "/sign-up/email") {
+          if (!policy?.enabled) {
+            throw new APIError("BAD_REQUEST", { message: "Registration is closed" });
+          }
+          if (!emailAllowed(String(ctx.body?.email ?? ""), policy.allowlist)) {
+            throw new APIError("BAD_REQUEST", { message: "Email is not allowed to register" });
+          }
+          if (policy.allowlist.length > 0 && !env.email) {
+            throw new APIError("BAD_REQUEST", { message: "Registration requires email delivery" });
+          }
         }
-      },
+        // Return a request-local override; mutating the shared auth options
+        // would leak a concurrent request's policy into another signup.
+        return {
+          context: {
+            context: {
+              ...(policy
+                ? {
+                    options: {
+                      emailAndPassword: { requireEmailVerification: policy.allowlist.length > 0 },
+                    },
+                  }
+                : {}),
+              internalAdapter: {
+                ...ctx.context.internalAdapter,
+                // Authorize at lookup: bearer conversion happens after before
+                // hooks, and auth mutations also read sessions through here.
+                findSession: async (token: string) => {
+                  const session = await ctx.context.internalAdapter.findSession(token);
+                  if (!session || isMessagingEmail(session.user.email)) return null;
+                  if (session.user.emailVerified) return session;
+                  policy ??= await resolveSignupPolicy(prisma, env);
+                  return policy.allowlist.length === 0 ? session : null;
+                },
+              },
+            },
+          },
+        };
+      }),
     },
     databaseHooks: {
+      session: {
+        create: {
+          before: async (session, ctx) => {
+            // The auth adapter can still be inside the signup transaction.
+            const user = await ctx?.context.internalAdapter.findUserById(session.userId);
+            const policy = await resolveSignupPolicy(prisma, env);
+            if (
+              !user ||
+              isMessagingEmail(user.email) ||
+              (!user.emailVerified && policy.allowlist.length > 0)
+            ) {
+              throw new APIError("FORBIDDEN", { message: "Email verification required" });
+            }
+            // Unverified signup must not provision resources or claim the
+            // deployment owner. Bootstrap only at the first admitted session.
+            const membership = await prisma.spaceMember.findFirst({ where: { userId: user.id } });
+            if (!membership) {
+              if (!policy.enabled || !emailAllowed(user.email, policy.allowlist)) {
+                throw new APIError("FORBIDDEN", { message: "Registration is closed" });
+              }
+              await bootstrapUserSpace(prisma, user, env);
+            }
+          },
+        },
+      },
       user: {
         create: {
-          after: async (user) => {
-            await bootstrapUserSpace(prisma, user, env);
+          before: async (user) => {
+            if (isMessagingEmail(user.email)) {
+              throw new APIError("BAD_REQUEST", { message: "Email is not available" });
+            }
+          },
+        },
+        update: {
+          before: async (user) => {
+            if (user.email && isMessagingEmail(user.email)) {
+              throw new APIError("BAD_REQUEST", { message: "Email is not available" });
+            }
           },
         },
       },
     },
   });
+}
+
+export function verificationEmail(email: string, url: string): TransactionalEmail {
+  return {
+    to: email,
+    subject: "Verify your Rakazo email",
+    text: `Verify your email, then return to Rakazo to sign in:\n\n${url}\n\nThis link expires in one hour. If you did not register, ignore this email.`,
+    html: `<p><a href="${escapeHtml(url)}">Verify email</a>, then return to Rakazo to sign in.</p><p>This link expires in one hour. If you did not register, ignore this email.</p>`,
+  };
 }
 
 export function passwordResetEmail(
@@ -194,6 +293,35 @@ function escapeHtml(value: string): string {
 }
 
 export type Auth = ReturnType<typeof createAuth>;
+
+/** Assemble Better Auth trustedOrigins, adding localhost↔127.0.0.1 twins for loopback. */
+export function buildTrustedOrigins(env: Pick<AuthEnv, "webOrigin" | "baseURL" | "extraOrigins">) {
+  const configured = [env.webOrigin, env.baseURL, ...(env.extraOrigins ?? [])];
+  const twins = [env.webOrigin, env.baseURL].flatMap(loopbackTwinOrigins);
+  return [...new Set([...configured, ...twins])];
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+/** Same-scheme/port localhost and 127.0.0.1 variants when `origin` is loopback. */
+function loopbackTwinOrigins(origin: string): string[] {
+  try {
+    const url = new URL(origin);
+    if (!isLoopbackHost(url.hostname)) return [];
+    const twins: string[] = [];
+    for (const host of ["localhost", "127.0.0.1"] as const) {
+      if (host === url.hostname) continue;
+      const twin = new URL(origin);
+      twin.hostname = host;
+      twins.push(twin.origin);
+    }
+    return twins;
+  } catch {
+    return [];
+  }
+}
 
 export const blockedAuthPaths = [
   "/organization/create",

@@ -1,4 +1,5 @@
 import type { MessageBlock, ThreadMessage } from "@rakazo/contracts";
+import { cloudAgentBlockFromPayload } from "./cloud-agent.js";
 
 export function projectMessages(
   events: Array<{
@@ -73,6 +74,16 @@ export function projectMessages(
         runId: event.runId ?? undefined,
         createdAt,
       });
+      continue;
+    }
+    if (event.type === "thread.cloud_agent") {
+      const block = cloudAgentBlockFromPayload(payload);
+      for (const message of messages) {
+        if (message.id === payload.messageId)
+          message.blocks = message.blocks.map((old) =>
+            old.kind === "cloud_agent" && old.agentId === block.agentId ? block : old,
+          );
+      }
       continue;
     }
     if (event.type === "thread.progress") {
@@ -158,6 +169,55 @@ export function isRunTerminalEvent(event: { type: string }): boolean {
   );
 }
 
+export const RESPONSE_STREAMING_STORAGE_KEY = "rakazo.responseStreaming";
+export type ResponseStreamingPreference = "on" | "off";
+
+/** Missing and unknown values stay off; only an explicit "on" enables streaming. */
+export function normalizeResponseStreamingPreference(
+  raw: string | null | undefined,
+): ResponseStreamingPreference {
+  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+}
+
+export function responseStreamingEnabled(preference: ResponseStreamingPreference = "off"): boolean {
+  return preference === "on";
+}
+
+/** Hide assistant token text on synthetic progress rows. Tool activity stays. */
+export function stripLiveStreamingProgress<
+  T extends { id: string; blocks: readonly MessageBlock[] },
+>(messages: readonly T[]): T[] {
+  let changed = false;
+  const next: T[] = [];
+  for (const message of messages) {
+    if (!message.id.startsWith("progress:")) {
+      next.push(message);
+      continue;
+    }
+    const blocks = message.blocks.filter(
+      (block) => block.kind !== "text" && (block.kind !== "progress" || block.activity === true),
+    );
+    if (blocks.length === message.blocks.length) {
+      next.push(message);
+      continue;
+    }
+    changed = true;
+    if (blocks.length === 0) continue;
+    next.push({ ...message, blocks });
+  }
+  return changed ? next : (messages as T[]);
+}
+
+export function withLiveStreamingProgress<
+  T extends { messages: readonly U[] },
+  U extends { id: string; blocks: readonly MessageBlock[] },
+>(snapshot: T | null, streamResponses: boolean): T | null {
+  if (!snapshot || streamResponses) return snapshot;
+  const messages = stripLiveStreamingProgress(snapshot.messages);
+  if (messages === snapshot.messages) return snapshot;
+  return { ...snapshot, messages };
+}
+
 const RUN_FAILURE_ERROR_MAX = 300;
 
 /** Reason a run failed, clamped for display, or null when there is no usable error to show. */
@@ -199,9 +259,13 @@ export function reduceLiveMessageBlocks(
     ...(tail?.kind === "progress" ? (tail.pendingToolNames ?? []) : []),
     ...(update.type === "tool" ? [update.name] : []),
   ];
+  const activity =
+    update.type === "progress"
+      ? update.payload?.activity === true
+      : tail?.kind === "progress" && tail.activity === true;
 
   if (pendingToolNames.length > 0 && endsSentence(tailText)) {
-    let next = appendTextSegment(segments, tailText);
+    let next = activity ? [...segments] : appendTextSegment(segments, tailText);
     for (const name of pendingToolNames) next = appendToolCallSegment(next, name);
     return next;
   }
@@ -211,6 +275,7 @@ export function reduceLiveMessageBlocks(
     {
       kind: "progress",
       text: tailText,
+      ...(activity ? { activity: true as const } : {}),
       ...(pendingToolNames.length > 0 ? { pendingToolNames } : {}),
     },
   ];
@@ -319,8 +384,34 @@ export function redactSecrets(value: string, secrets: string[]): string {
 }
 
 export function containsSecret(value: unknown, secrets: string[]): boolean {
-  const text = JSON.stringify(value);
-  return secrets.some((secret) => secret.length > 0 && text.includes(secret));
+  const active = secrets.filter((secret) => secret.length > 0);
+  if (active.length === 0) return false;
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) return false;
+  const pending: unknown[] = [JSON.parse(serialized)];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      if (active.some((secret) => current.includes(secret))) return true;
+      continue;
+    }
+    if (current === null || typeof current === "number" || typeof current === "boolean") {
+      const primitive = String(current);
+      if (active.some((secret) => primitive.includes(secret))) return true;
+      continue;
+    }
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    if (current && typeof current === "object") {
+      for (const [key, nested] of Object.entries(current)) {
+        if (active.some((secret) => key.includes(secret))) return true;
+        pending.push(nested);
+      }
+    }
+  }
+  return false;
 }
 
 /** UTF-16 high surrogates (0xD800–0xDBFF) must be paired with a low surrogate for valid JSON. */

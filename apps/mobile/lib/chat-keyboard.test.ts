@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  invertedChatDistanceFromLatest,
-  invertedChatLatestOffset,
-} from "./chat-keyboard";
+import { invertedChatDistanceFromLatest, invertedChatLatestOffset } from "./chat-keyboard";
 
 describe("inverted chat keyboard offsets", () => {
   it("uses the negative effective top inset as the iOS latest offset", () => {

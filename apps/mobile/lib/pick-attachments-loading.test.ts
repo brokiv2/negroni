@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 const mock = vi.hoisted(() => ({ read: vi.fn(async () => "eA=="), pick: vi.fn() }));
 vi.mock("expo-image-picker", () => ({ launchImageLibraryAsync: mock.pick }));
 vi.mock("expo-document-picker", () => ({ getDocumentAsync: mock.pick }));
@@ -10,7 +11,9 @@ vi.mock("expo-file-system", () => ({
     base64 = mock.read;
   },
 }));
+
 import { pickDocuments, pickFromLibrary } from "./pick-attachments";
+
 beforeEach(() => {
   vi.clearAllMocks();
 });

@@ -1,4 +1,63 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
+import {
+  BotSecretName,
+  botSecretDestinationSchema,
+  SecretAskPurpose,
+  SecretHttpRequest,
+} from "@rakazo/contracts";
+import { z } from "zod";
+import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
+
+// The owner flag can land in process.env after static imports run (loadRootEnv
+// parses .env once the entry module is already executing), so the model-facing
+// surface is built lazily on first tool access instead of at module scope.
+let secretAskSurface:
+  | {
+      description: string;
+      inputSchema: ConnectorTool["inputSchema"];
+    }
+  | undefined;
+function secretAskToolSurface() {
+  const allowPrivateHttpOrigins = allowPrivateHttpSecretOrigins();
+  secretAskSurface ??= {
+    description: `Collect a credential in a masked field. Supply credential to save a named API credential for this bot and user at one ${
+      allowPrivateHttpOrigins
+        ? "HTTPS origin, or an HTTP origin on a private LAN host"
+        : "HTTPS origin"
+    }, or connectionId for a one-use connector code. For a website login the user wants saved, use auth {type:"login"} with the sign-in page's HTTPS origin; the card asks for a username and password, and browser_act fill_secret types them. Existing named credentials are reused unless replace is true. For 2FA, CAPTCHA, passkeys, or anything else that needs the live desktop, call request_takeover instead.`,
+    inputSchema: {
+      oneOf: [
+        {
+          type: "object",
+          properties: {
+            label: { type: "string" },
+            purpose: { type: "string", enum: SecretAskPurpose.options },
+            credential: z.toJSONSchema(
+              botSecretDestinationSchema({ allowPrivateHttpOrigin: allowPrivateHttpOrigins }),
+            ),
+            replace: {
+              type: "boolean",
+              description: "Ask the user to replace an existing credential value.",
+            },
+          },
+          required: ["label", "purpose", "credential"],
+          additionalProperties: false,
+        },
+        {
+          type: "object",
+          properties: {
+            label: { type: "string" },
+            purpose: { type: "string", enum: SecretAskPurpose.options },
+            connectionId: { type: "string" },
+          },
+          required: ["label", "purpose", "connectionId"],
+          additionalProperties: false,
+        },
+      ],
+    },
+  };
+  return secretAskSurface;
+}
 
 export const DELEGATION_TOOL_NAMES = new Set([
   "run_subagent",
@@ -8,6 +67,77 @@ export const DELEGATION_TOOL_NAMES = new Set([
   "handoff_to_bot",
   "message_bot",
 ]);
+
+const scheduleCreateProperties = {
+  name: { type: "string", description: "Short label shown in Routines." },
+  prompt: {
+    type: "string",
+    description:
+      "Concrete steps for when the schedule fires: name the connected plugin tools to call (e.g. GITHUB_LIST_RELEASES for owner/repo), what to extract, and how to report. Prefer plugin tools over computer browser or web search for app data.",
+  },
+  timezone: { type: "string", description: "IANA timezone (default UTC)." },
+};
+
+const scheduleTimingNames = [
+  "cron",
+  "every",
+  "unit",
+  "runAt",
+  "delayMinutes",
+  "delaySeconds",
+] as const;
+
+/**
+ * Model serializers often emit unused optional fields as null or "". Those are
+ * not a second timing method; a real value in another method still fails the branch.
+ */
+const blankScheduleTiming = {
+  anyOf: [{ type: "null" }, { type: "string", pattern: "^\\s*$" }],
+};
+
+const scheduleTimingSpecs = {
+  cron: { type: "string", description: "5-field cron for repeating schedules." },
+  every: { type: "number", description: "Repeat interval amount for repeating schedules." },
+  unit: {
+    type: "string",
+    enum: ["minutes", "hours", "days"],
+    description: "Unit for every (minimum 1 minute).",
+  },
+  runAt: { type: "string", description: "ISO datetime for a one-shot schedule." },
+  delayMinutes: {
+    type: "number",
+    description: "Minutes from now for a one-shot schedule.",
+  },
+  delaySeconds: {
+    type: "number",
+    description: "Seconds from now for a one-shot schedule (may be under one minute).",
+  },
+};
+
+function scheduleCreateBranch(active: readonly (keyof typeof scheduleTimingSpecs)[]) {
+  const activeNames = new Set<string>(active);
+  const properties: Record<string, unknown> = { ...scheduleCreateProperties };
+  for (const name of scheduleTimingNames) {
+    properties[name] = activeNames.has(name) ? scheduleTimingSpecs[name] : blankScheduleTiming;
+  }
+  return {
+    type: "object",
+    properties,
+    required: ["name", "prompt", ...active],
+    additionalProperties: false,
+  };
+}
+
+/** Exactly one timing method. Null or blank leftovers stay valid so callers can ignore them. */
+const scheduleCreateInputSchema = {
+  oneOf: [
+    scheduleCreateBranch(["cron"]),
+    scheduleCreateBranch(["every", "unit"]),
+    scheduleCreateBranch(["runAt"]),
+    scheduleCreateBranch(["delayMinutes"]),
+    scheduleCreateBranch(["delaySeconds"]),
+  ],
+};
 
 export const builtinAgentTools: ConnectorTool[] = [
   {
@@ -52,6 +182,55 @@ export const builtinAgentTools: ConnectorTool[] = [
       required: ["actions"],
     },
   },
+
+  {
+    name: "browser_navigate",
+    description:
+      'Open a URL in the page browser on this bot\'s computer and return the document title. Prefer this over pixel clicks for web pages. If the result includes fallback:"computer_act", use computer_act on the desktop browser instead.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "http(s) URL to open." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "browser_snapshot",
+    description:
+      "Capture an accessibility-style snapshot of the current page with element refs (e1, e2, …). Use refs with browser_act. Prefer this over computer_observe for web pages. If fallback is computer_act, use the desktop tools instead.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
+  },
+  {
+    name: "browser_act",
+    description:
+      'Click or fill page elements by ref from browser_snapshot (kinds: click, fill, type, fill_secret). fill_secret types the username or password of a login saved with request_secret, only on the site it was saved for; you never see the value. Prefer this over computer_act for web pages. If the result includes fallback:"computer_act", use computer_act instead.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["click", "fill", "type", "fill_secret"] },
+              ref: { type: "string", description: "Element ref from browser_snapshot." },
+              text: { type: "string", description: "Text for fill or type." },
+              secret: { type: "string", description: "Saved login name for fill_secret." },
+              field: {
+                type: "string",
+                enum: ["username", "password"],
+                description: "Login field for fill_secret.",
+              },
+            },
+            required: ["kind", "ref"],
+          },
+        },
+      },
+      required: ["actions"],
+    },
+  },
   {
     name: "list_files",
     description:
@@ -87,10 +266,14 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "attach_file",
     description:
-      "Attach a workspace file from this bot's home to the chat thread as an image or common file. The file stays in place; users can open it from the message.",
+      "Attach a workspace file from this bot's home to the chat thread as an image or common file. The file stays in place; users can open it from the message and from the Artifacts tab. For a self-contained HTML page, document, or anything else meant to be opened and viewed on its own (not just downloaded) — give it name and description: a short human-readable title and a one-line summary of what it is. Skip them for an ordinary attachment like a log file or export. To UPDATE something you already made, call this again with the exact same name — it becomes a new version of that same artifact (visible in a version switcher) instead of a separate one; a different name always starts a new artifact.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" } },
+      properties: {
+        path: { type: "string" },
+        name: { type: "string" },
+        description: { type: "string" },
+      },
       required: ["path"],
     },
   },
@@ -160,18 +343,50 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
-    name: "request_secret",
+    name: "message_user",
     description:
-      "Collect a one-shot OTP, password, or API key in a masked field that never reaches the chat transcript or model. For website logins, CAPTCHA, passkeys, or anything that needs the live desktop, call request_takeover instead.",
+      "Post a short progress update to the user in this chat immediately. Does not end your turn. Use sparingly during long work for high-signal beats (what you are checking, then a result). Do not dump tool logs, thinking, or a play-by-play of every call. HARD LIMIT: cut off silently at 500 characters, so never put your final answer, a report, or any long-form content here \u2014 it will arrive mangled and the user will never see the rest. Always write your complete final answer in your normal reply, not here.",
     inputSchema: {
       type: "object",
       properties: {
-        label: { type: "string" },
-        purpose: { type: "string", enum: ["otp", "password", "api_key"] },
-        connectionId: { type: "string" },
+        message: {
+          type: "string",
+          maxLength: 500,
+          description:
+            "Short user-visible update, not the final answer \u2014 longer text is silently truncated.",
+        },
       },
-      required: ["label", "purpose"],
+      required: ["message"],
     },
+  },
+  {
+    name: "request_secret",
+    get description() {
+      return secretAskToolSurface().description;
+    },
+    // Exactly one destination: credential XOR connectionId. Sibling optionals
+    // looked schema-valid to models but the executor rejects both and neither.
+    get inputSchema() {
+      return secretAskToolSurface().inputSchema;
+    },
+  },
+  {
+    name: "list_secrets",
+    description:
+      "List saved credential names and destinations available to this bot and user. Values are never returned.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "secret_request",
+    description:
+      "Make an authenticated HTTPS request using a saved credential name. The backend injects authentication only at its saved origin. Redirects are rejected; response echoes of the credential are redacted. Use normal request URLs and bodies without secret placeholders.",
+    inputSchema: z.toJSONSchema(SecretHttpRequest, { io: "input" }),
+  },
+  {
+    name: "forget_secret",
+    description:
+      "Remove a saved credential for this bot and user, preventing future requests from using it.",
+    inputSchema: z.toJSONSchema(z.object({ name: BotSecretName })),
   },
   {
     name: "render_plot",
@@ -309,6 +524,71 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
     readOnly: true,
   },
+  {
+    name: "cloud_agent_launch",
+    description:
+      "Launch a remote cloud coding agent on a connected repository. Returns immediately with a tracking id and status; the agent link appears when launched. Opens a PR when openPr is true. Not the bot computer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "Task for the remote agent." },
+        repository: {
+          type: "string",
+          description: "Git repository URL (optional for no-repo agents).",
+        },
+        openPr: {
+          type: "boolean",
+          description: "Open a pull request when the run finishes.",
+        },
+        images: {
+          type: "array",
+          description: "Optional images (data+mimeType or url).",
+          items: { type: "object" },
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "cloud_agent_status",
+    description: "Get status, branch, and PR url for a cloud coding agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Cloud agent id from launch." },
+      },
+      required: ["id"],
+    },
+    readOnly: true,
+  },
+  {
+    name: "cloud_agent_reply",
+    description: "Send a follow-up prompt to an existing cloud coding agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Cloud agent id." },
+        prompt: { type: "string", description: "Follow-up instruction." },
+        images: {
+          type: "array",
+          description: "Optional images (data+mimeType or url).",
+          items: { type: "object" },
+        },
+      },
+      required: ["id", "prompt"],
+    },
+  },
+  {
+    name: "cloud_agent_cancel",
+    description: "Cancel the active run on a cloud coding agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Cloud agent id." },
+      },
+      required: ["id"],
+    },
+  },
   // Semantic-memory tools: exposed by selectMemoryTools() only when a
   // A Space memory provider is configured (which hides `remember`).
   {
@@ -333,6 +613,31 @@ export const builtinAgentTools: ConnectorTool[] = [
       },
       required: ["query"],
     },
+  },
+  {
+    name: "forget_memory",
+    description:
+      "Forget a durable semantic memory by id (from recall citations). Providers without forget support return an error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Memory id from a prior recall citation." },
+        entity: {
+          type: "string",
+          description:
+            "Optional entity/namespace from the recall citation when the provider scopes deletes.",
+        },
+        reason: { type: "string", description: "Optional reason recorded with the forget." },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "task_catalog",
+    description:
+      "Read-only inventory and source of truth for this bot's real open tasks, saved routines, taught skills, reusable skills, and currently exposed tools. Call it before claiming a task or skill exists. Use the returned ids and exact names; do not infer capabilities from memory or conversation text.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
   },
   {
     name: "scratchpad_list",
@@ -406,37 +711,7 @@ export const builtinAgentTools: ConnectorTool[] = [
     name: "schedule_create",
     description:
       'Create a reminder or recurring job for this bot. Use for "remind me in 10 minutes" or "every morning send a joke". Repeats: cron or every/unit (min 1 minute). One-shot: runAt, delayMinutes, or delaySeconds.',
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Short label shown in Routines." },
-        prompt: {
-          type: "string",
-          description: "What the bot should do when the schedule fires.",
-        },
-        cron: { type: "string", description: "5-field cron for repeating schedules." },
-        every: { type: "number", description: "Repeat interval amount for repeating schedules." },
-        unit: {
-          type: "string",
-          enum: ["minutes", "hours", "days"],
-          description: "Unit for every (minimum 1 minute).",
-        },
-        runAt: {
-          type: "string",
-          description: "ISO datetime for a one-shot schedule.",
-        },
-        delayMinutes: {
-          type: "number",
-          description: "Minutes from now for a one-shot schedule.",
-        },
-        delaySeconds: {
-          type: "number",
-          description: "Seconds from now for a one-shot schedule (may be under one minute).",
-        },
-        timezone: { type: "string", description: "IANA timezone (default UTC)." },
-      },
-      required: ["name", "prompt"],
-    },
+    inputSchema: scheduleCreateInputSchema,
   },
   {
     name: "schedule_list",
@@ -534,6 +809,14 @@ export const builtinAgentTools: ConnectorTool[] = [
           type: "string",
           description: "Optional extra system instructions for the helper.",
         },
+        model_provider: {
+          type: "string",
+          description: "Optional connected model provider. Set together with model_id.",
+        },
+        model_id: {
+          type: "string",
+          description: "Optional connected model ID. Set together with model_provider.",
+        },
       },
       required: ["name", "task"],
     },
@@ -569,8 +852,55 @@ export const builtinAgentTools: ConnectorTool[] = [
           type: "string",
           description: "Optional first task to run in the new bot's thread.",
         },
+        computer_mode: {
+          type: "string",
+          enum: ["team", "dedicated"],
+          description:
+            "Optional. team shares one screen with other Team bots; dedicated (Private) gets its own. Defaults to team.",
+        },
       },
       required: ["name"],
+    },
+  },
+  {
+    name: "update_bot",
+    description:
+      "Update this bot's own name (header and list label), title, description, avatar (profile picture or color/shape), or notifyOnFinish. Call this when the user asks you to rename yourself, change your title/description, change your profile picture, or turn finish notifications on or off. Do not claim you updated the profile without calling this tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Display name shown in the chat header and bot list.",
+        },
+        title: {
+          type: "string",
+          description: "Short role or headline shown in bot settings.",
+        },
+        description: {
+          type: "string",
+          description: "Longer blurb describing what this bot does.",
+        },
+        color: {
+          type: "string",
+          description:
+            "Avatar color or encoded shape, e.g. #8B5CF6 or #8B5CF6::shape_3. Do not pass http URLs.",
+        },
+        artifact_id: {
+          type: "string",
+          description:
+            "Image artifact in this space to use as the profile picture. Prefer an image the user attached in this chat.",
+        },
+        use_attached_image: {
+          type: "boolean",
+          description:
+            "If true, use the latest image attached on this user message as the profile picture.",
+        },
+        notifyOnFinish: {
+          type: "boolean",
+          description: "true notifies the user when this bot finishes a run; false silences that.",
+        },
+      },
     },
   },
   {
@@ -593,7 +923,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "message_bot",
     description:
-      "Send a useful update, question, or result to another of the user's bots. Delivery is async and does not end your turn. Continue independent work; do not poll or send ack-only messages. Later updates only if they add something new.",
+      'Send a useful update, question, or result to another of the user\'s bots. You must call this tool to actually deliver it — writing the message in your own reply text (e.g. "[to Comms] ...") does not send anything and the recipient never sees it. Delivery is async and does not end your turn. Continue independent work; do not poll or send ack-only messages. Later updates only if they add something new.',
     inputSchema: {
       type: "object",
       properties: {

@@ -1,7 +1,7 @@
-import type { ChatView } from "../lib/chat-view";
 import { Pressable, Text, View } from "react-native";
-import { GlassSurface } from "./glass-surface";
+import type { ChatView } from "../lib/chat-view";
 import { useResolvedAppearance } from "../lib/native";
+import { GlassSurface } from "./glass-surface";
 
 export function ChatViewSwitch({
   value,
@@ -42,18 +42,23 @@ export function ChatViewSwitch({
             justifyContent: "center",
             borderRadius: 21,
             backgroundColor:
-              value === view
-                ? appearance === "light" ? "#181818" : "#F4F4F2"
-                : "transparent",
+              value === view ? (appearance === "light" ? "#181818" : "#F4F4F2") : "transparent",
           }}
         >
-          <Text style={{
-            fontSize: 14,
-            fontWeight: value === view ? "600" : "500",
-            color: value === view
-              ? appearance === "light" ? "#FFFFFF" : "#181818"
-              : appearance === "light" ? "#555555" : "#C8C8CC",
-          }}>
+          <Text
+            style={{
+              fontSize: 14,
+              fontWeight: value === view ? "600" : "500",
+              color:
+                value === view
+                  ? appearance === "light"
+                    ? "#FFFFFF"
+                    : "#181818"
+                  : appearance === "light"
+                    ? "#555555"
+                    : "#C8C8CC",
+            }}
+          >
             {view === "assistant" ? "Assistant" : "Team"}
           </Text>
         </Pressable>

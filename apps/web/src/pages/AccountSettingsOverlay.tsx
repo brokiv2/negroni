@@ -1,23 +1,27 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { AvatarStyle } from "@rakazo/contracts";
-import { BotAvatar } from "@rakazo/ui-web";
+import { BotAvatar, Button, Field, FieldLabel, Input, Label, Switch, Toggle } from "@rakazo/ui-web";
 import { ChevronDown } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
   useEffect,
   useId,
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router-dom";
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
-import { BuiButton } from "../components/beautiful-ui/primitives";
-import {
-  ComputersUnavailableHint,
-  computersAreUnavailable,
-} from "../components/ComputersUnavailableHint";
+import { SuccessPop } from "../components/ai/primitives";
+import { ComputersUnavailableHint } from "../components/ComputersUnavailableHint";
+import { DesktopUpdateSection } from "../components/DesktopUpdates";
 import { SoftwareUpdateSection } from "../components/SoftwareUpdateSection";
 import { authClient } from "../lib/auth";
 import { getActiveUiLocale, setUiLocale } from "../lib/i18n";
+import {
+  getResponseStreamingPreference,
+  setResponseStreamingPreference,
+} from "../lib/response-streaming";
 import {
   type AppearancePreference,
   getUiAppearancePreference,
@@ -25,63 +29,37 @@ import {
 } from "../lib/ui-appearance";
 import { UI_LOCALE_LABELS, UI_LOCALES, type UiLocale } from "../lib/ui-locale";
 
-export function AccountSettingsOverlay({
-  email,
-  name,
-  usage,
-  focusUsage,
-  avatarStyle,
-  onAvatarStyleChange,
-  isDeploymentOwner = false,
-  sandboxProvider,
-  messagingEnabled = false,
-  onOpenMessaging,
-  onClose,
-}: {
+export type SettingsGeneralProps = {
   email?: string | null;
   name: string;
-  usage?: { runs: number; inputTokens: number; outputTokens: number } | null;
-  focusUsage?: boolean;
   avatarStyle: AvatarStyle;
   onAvatarStyleChange: (style: AvatarStyle) => Promise<void>;
-  isDeploymentOwner?: boolean;
-  sandboxProvider?: string | null;
   messagingEnabled?: boolean;
   onOpenMessaging?: () => void;
-  onClose: () => void;
-}) {
+  isDeploymentOwner?: boolean;
+};
+
+export function GeneralSettingsPanels({
+  email,
+  name,
+  avatarStyle,
+  onAvatarStyleChange,
+  messagingEnabled = false,
+  onOpenMessaging,
+  isDeploymentOwner = false,
+}: SettingsGeneralProps) {
   const { t } = useLingui();
-  const panelRef = useRef<HTMLDivElement>(null);
-  const usageRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const [locale, setLocale] = useState<UiLocale>(() => getActiveUiLocale());
   const localeRequestRef = useRef(0);
   const [appearance, setAppearance] = useState<AppearancePreference>(() =>
     getUiAppearancePreference(),
   );
+  const [streamReplies, setStreamReplies] = useState(
+    () => getResponseStreamingPreference() === "on",
+  );
+  const streamRepliesId = useId();
   const [avatarPending, setAvatarPending] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const previousFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      const localeOpen = panelRef.current?.querySelector(
-        '[data-testid="ui-locale-select"][aria-expanded="true"]',
-      );
-      if (localeOpen) return;
-      onCloseRef.current();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    if (focusUsage) usageRef.current?.focus();
-    else panelRef.current?.focus();
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      previousFocus?.focus();
-    };
-  }, [focusUsage]);
 
   function chooseLocale(next: UiLocale) {
     if (next === locale) return;
@@ -107,187 +85,189 @@ export function AccountSettingsOverlay({
   }
 
   return (
-    <div className="absolute inset-0 z-30 overflow-hidden bg-[var(--rk-overlay)] p-4 sm:p-10">
-      <div className="flex h-full min-h-0 items-center justify-center">
-        <div
-          ref={panelRef}
-          data-testid="user-settings"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="account-settings-title"
-          tabIndex={-1}
-          className="rk-scroll max-h-full min-h-0 w-[640px] max-w-full overflow-y-auto overscroll-contain rounded-[26px] border border-[var(--rk-hairline-strong)] bg-[var(--rk-surface)] p-6 shadow-[0_40px_90px_rgba(0,0,0,.55)] sm:p-8"
-        >
-          <div className="flex items-start justify-between gap-6">
-            <div>
-              <h2
-                id="account-settings-title"
-                className="text-2xl font-medium text-[var(--rk-ink-strong)]"
-              >
-                <Trans>Settings</Trans>
-              </h2>
-            </div>
-            <button
-              type="button"
-              aria-label={t`Close user settings`}
-              onClick={onClose}
-              className="text-[var(--rk-muted)]"
+    <div className="space-y-5">
+      <section className="rounded-xl border border-border px-4 py-4">
+        <h3 className="text-[15px] font-medium text-foreground">
+          <Trans>Account</Trans>
+        </h3>
+        <p className="mt-3 text-[14px] text-foreground/75">{name}</p>
+        {email ? <p className="mt-1 text-[13px] text-muted-foreground/70">{email}</p> : null}
+      </section>
+
+      <ChangePasswordSection email={email} />
+
+      {messagingEnabled && onOpenMessaging ? (
+        <section className="rounded-xl border border-border px-4 py-4">
+          <h3 className="text-[15px] font-medium text-foreground">
+            <Trans>Messaging</Trans>
+          </h3>
+          <p className="mt-3 text-[13px] text-muted-foreground/70">
+            <Trans>Chat apps, group channels, and agent connections.</Trans>
+          </p>
+          <Button variant="secondary" className="mt-3 rounded-full" onClick={onOpenMessaging}>
+            <Trans>Manage messaging settings</Trans>
+          </Button>
+        </section>
+      ) : null}
+
+      <section className="rounded-xl border border-border px-4 py-4">
+        <h3 className="text-[15px] font-medium text-foreground">
+          <Trans>Appearance</Trans>
+        </h3>
+        <AppearancePicker
+          value={appearance}
+          onChange={(next) => {
+            setAppearance(next);
+            setUiAppearance(next);
+          }}
+        />
+      </section>
+
+      <section className="rounded-xl border border-border px-4 py-4">
+        <h3 className="text-[15px] font-medium text-foreground">
+          <Trans>Language</Trans>
+        </h3>
+        <UiLocalePicker value={locale} onChange={chooseLocale} />
+      </section>
+
+      <section
+        className="rounded-xl border border-border px-4 py-4"
+        data-testid="avatar-style-select"
+      >
+        <h3 className="text-[15px] font-medium text-foreground">
+          <Trans>Avatars</Trans>
+        </h3>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          {(["robot", "organic"] as const).map((style) => (
+            <Toggle
+              key={style}
+              variant="outline"
+              pressed={style === avatarStyle}
+              disabled={avatarPending}
+              onPressedChange={() => void chooseAvatarStyle(style)}
+              data-testid={`avatar-style-${style}`}
+              className="h-auto justify-start gap-3 px-3.5 py-3 text-[14px] font-normal"
             >
-              ✕
-            </button>
-          </div>
+              <BotAvatar
+                color="#D9508A"
+                identity="avatar-style-preview"
+                size={32}
+                variant={style}
+              />
+              <span>{style === "robot" ? <Trans>Robot</Trans> : <Trans>Organic</Trans>}</span>
+            </Toggle>
+          ))}
+        </div>
+        {avatarError ? (
+          <p role="alert" className="mt-3 text-[12.5px] text-destructive">
+            {avatarError}
+          </p>
+        ) : null}
+      </section>
 
-          <section className="mt-8 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Account</Trans>
-            </h3>
-            <p className="mt-3 text-[14px] text-[var(--rk-soft)]">{name}</p>
-            {email ? <p className="mt-1 text-[13px] text-[var(--rk-faint)]">{email}</p> : null}
-          </section>
+      {isDeploymentOwner ? (
+        <Button variant="outline" render={<Link to="/integrations/setup" />}>
+          <Trans>Server integrations</Trans>
+        </Button>
+      ) : null}
 
-          <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Appearance</Trans>
-            </h3>
-            <AppearancePicker
-              value={appearance}
-              onChange={(next) => {
-                setAppearance(next);
-                setUiAppearance(next);
+      <details data-testid="advanced-settings" className="group rounded-xl border border-border">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 text-[14px] text-foreground/75">
+          <span>
+            <span className="block text-[15px] text-foreground">
+              <Trans>Advanced</Trans>
+            </span>
+            <span className="mt-1 block text-[12.5px] text-muted-foreground/80">
+              <Trans>Optional controls most people never need</Trans>
+            </span>
+          </span>
+          <span aria-hidden="true" className="transition-transform group-open:rotate-90">
+            ›
+          </span>
+        </summary>
+        <div className="border-t border-border px-4 pb-5">
+          <div className="flex items-start gap-3 pt-5">
+            <Switch
+              id={streamRepliesId}
+              data-testid="response-streaming-toggle"
+              className="mt-0.5"
+              checked={streamReplies}
+              onCheckedChange={(checked) => {
+                setStreamReplies(checked);
+                setResponseStreamingPreference(checked ? "on" : "off");
               }}
             />
-          </section>
-
-          <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Language</Trans>
-            </h3>
-            <UiLocalePicker value={locale} onChange={chooseLocale} />
-          </section>
-
-          <div
-            ref={usageRef}
-            tabIndex={-1}
-            data-testid="usage-settings"
-            className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4 outline-none"
-          >
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Usage</Trans>
-            </h3>
-            {usage ? (
-              <p className="mt-3 text-[14px] text-[var(--rk-soft)]">
-                <Trans>
-                  {usage.runs} runs · {usage.inputTokens + usage.outputTokens} tokens
-                </Trans>
-              </p>
-            ) : null}
-            <p className={`text-[12.5px] text-[var(--rk-muted-2)] ${usage ? "mt-2" : "mt-3"}`}>
-              <Trans>Model spend uses your provider keys.</Trans>
-            </p>
+            <Label htmlFor={streamRepliesId} className="text-[14px] font-normal text-foreground/75">
+              <Trans>Stream replies</Trans>
+            </Label>
           </div>
-
-          {messagingEnabled && onOpenMessaging ? (
-            <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-              <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-                <Trans>Messaging</Trans>
-              </h3>
-              <p className="mt-3 text-[13px] text-[var(--rk-faint)]">
-                <Trans>Chat apps, group channels, and agent connections.</Trans>
-              </p>
-              <button
-                type="button"
-                onClick={onOpenMessaging}
-                className="mt-3 rounded-full bg-[var(--rk-border)] px-4 py-2 text-[13.5px] font-medium text-[var(--rk-ink)]"
-              >
-                <Trans>Manage messaging settings</Trans>
-              </button>
-            </section>
-          ) : null}
-
-          <section className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4">
-            <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-              <Trans>Avatars</Trans>
-            </h3>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              {(["robot", "organic"] as const).map((style) => {
-                const selected = style === avatarStyle;
-                return (
-                  <button
-                    key={style}
-                    type="button"
-                    aria-pressed={selected}
-                    disabled={avatarPending}
-                    onClick={() => void chooseAvatarStyle(style)}
-                    className={`flex items-center gap-3 rounded-[12px] border px-3.5 py-3 text-start text-[14px] text-[var(--rk-ink)] transition-colors disabled:opacity-50 ${
-                      selected
-                        ? "border-[var(--rk-border)] bg-[var(--rk-surface-2)]"
-                        : "border-[var(--rk-border)] hover:border-[var(--rk-border)]"
-                    }`}
-                  >
-                    <BotAvatar
-                      color="#D9508A"
-                      identity="avatar-style-preview"
-                      size={32}
-                      variant={style}
-                    />
-                    <span>{style === "robot" ? <Trans>Robot</Trans> : <Trans>Organic</Trans>}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {avatarError ? (
-              <p role="alert" className="mt-3 text-[12.5px] text-[var(--rk-danger)]">
-                {avatarError}
-              </p>
-            ) : null}
-          </section>
-
-          <SoftwareUpdateSection isDeploymentOwner={isDeploymentOwner} />
-
-          {isDeploymentOwner && computersAreUnavailable(sandboxProvider) ? (
-            <div
-              data-testid="computers-setup-settings"
-              className="mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-4"
-            >
-              <h3 className="text-[15px] font-medium text-[var(--rk-ink)]">
-                <Trans>Computers</Trans>
-              </h3>
-              <ComputersUnavailableHint className="mt-3 text-[13px] leading-relaxed text-[var(--rk-muted)]" />
-            </div>
-          ) : null}
-
-          <details
-            data-testid="advanced-settings"
-            className="group mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)]"
-          >
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4 text-[14px] text-[var(--rk-soft)]">
-              <span>
-                <span className="block text-[15px] text-[var(--rk-ink)]">
-                  <Trans>Advanced</Trans>
-                </span>
-                <span className="mt-1 block text-[12.5px] text-[var(--rk-muted-2)]">
-                  <Trans>Optional controls most people never need</Trans>
-                </span>
-              </span>
-              <span aria-hidden="true" className="transition-transform group-open:rotate-90">
-                ›
-              </span>
-            </summary>
-            <div className="border-t border-[var(--rk-hairline-strong)] px-4 pb-5">
-              <ApprovalRulesSettings />
-            </div>
-          </details>
-
-          <ChangePasswordSection />
+          <ApprovalRulesSettings />
         </div>
-      </div>
+      </details>
     </div>
   );
 }
 
-function ChangePasswordSection() {
+export function UsageSettingsPanel({
+  usage,
+  panelRef,
+}: {
+  usage?: { runs: number; inputTokens: number; outputTokens: number } | null;
+  panelRef?: RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div
+      ref={panelRef}
+      tabIndex={-1}
+      data-testid="usage-settings"
+      className="rounded-xl border border-border px-4 py-4 outline-none"
+    >
+      <h3 className="text-[15px] font-medium text-foreground">
+        <Trans>Usage</Trans>
+      </h3>
+      {usage ? (
+        <p className="mt-3 text-[14px] text-foreground/75">
+          <Trans>
+            {usage.runs} runs · {usage.inputTokens + usage.outputTokens} tokens
+          </Trans>
+        </p>
+      ) : null}
+      <p className={`text-[12.5px] text-muted-foreground/80 ${usage ? "mt-2" : "mt-3"}`}>
+        <Trans>Model spend uses your provider keys.</Trans>
+      </p>
+    </div>
+  );
+}
+
+export function ComputerSettingsPanel() {
+  return (
+    <div
+      data-testid="computers-setup-settings"
+      className="rounded-xl border border-border px-4 py-4"
+    >
+      <h3 className="text-[15px] font-medium text-foreground">
+        <Trans>Computers</Trans>
+      </h3>
+      <ComputersUnavailableHint className="mt-3 text-[13px] leading-relaxed text-muted-foreground" />
+    </div>
+  );
+}
+
+export function UpdatesSettingsPanel({
+  isDeploymentOwner = false,
+}: {
+  isDeploymentOwner?: boolean;
+}) {
+  return (
+    <div className="space-y-5">
+      <DesktopUpdateSection />
+      <SoftwareUpdateSection isDeploymentOwner={isDeploymentOwner} />
+    </div>
+  );
+}
+
+function ChangePasswordSection({ email }: { email?: string | null }) {
   const { t } = useLingui();
-  const detailsRef = useRef<HTMLDetailsElement>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -318,7 +298,6 @@ function ChangePasswordSection() {
       setNewPassword("");
       setConfirmation("");
       setSaved(true);
-      if (detailsRef.current) detailsRef.current.open = false;
     } catch {
       setError(t`Could not reach the server`);
     } finally {
@@ -327,12 +306,21 @@ function ChangePasswordSection() {
   }
 
   return (
-    <details ref={detailsRef} className="group mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)]">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-4">
-        <span><span className="block text-[15px] font-medium text-[var(--rk-ink)]"><Trans>Change password</Trans></span><span className="mt-1 block text-[12.5px] text-[var(--rk-muted-2)]"><Trans>Update your sign-in password</Trans></span></span>
-        <span className="flex items-center gap-2">{saved ? <span className="text-[12px] text-[var(--rk-success-soft)]"><Trans>Updated</Trans></span> : null}<ChevronDown size={16} className="text-[var(--rk-muted)] transition-transform group-open:rotate-180" /></span>
-      </summary>
-      <div className="grid gap-3 border-t border-[var(--rk-border)] px-4 pb-4 pt-4">
+    <section className="rounded-xl border border-border px-4 py-4">
+      <h3 className="text-[15px] font-medium text-foreground">
+        <Trans>Password</Trans>
+      </h3>
+      <div className="mt-3 grid gap-3">
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value={email ?? ""}
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+          className="sr-only"
+        />
         <SettingsPasswordInput
           label={t`Current password`}
           autoComplete="current-password"
@@ -351,14 +339,23 @@ function ChangePasswordSection() {
           value={confirmation}
           onChange={setConfirmation}
         />
-        {error ? <p role="alert" className="text-[12.5px] text-[var(--rk-danger)]">{error}</p> : null}
-        <div className="flex items-center gap-3">
-          <BuiButton tone="accent" disabled={pending || currentPassword.length < 8 || newPassword.length < 8} onClick={() => void changePassword()}>
-            {pending ? <Trans>Changing…</Trans> : <Trans>Update password</Trans>}
-          </BuiButton>
-        </div>
       </div>
-    </details>
+      {error ? (
+        <p role="alert" className="mt-3 text-[12.5px] text-destructive">
+          {error}
+        </p>
+      ) : null}
+      <div className="mt-4 flex items-center gap-3">
+        <Button
+          className="rounded-full"
+          disabled={pending || currentPassword.length < 8 || newPassword.length < 8}
+          onClick={() => void changePassword()}
+        >
+          {pending ? <Trans>Changing…</Trans> : <Trans>Change password</Trans>}
+        </Button>
+        {saved ? <SuccessPop label={t`Password updated`} /> : null}
+      </div>
+    </section>
   );
 }
 
@@ -373,19 +370,19 @@ function SettingsPasswordInput({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const id = useId();
   return (
-    <label className="text-[12.5px] text-[var(--rk-muted)]">
-      {label}
-      <input
-        aria-label={label}
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
         type="password"
         autoComplete={autoComplete}
         minLength={8}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-1.5 w-full rounded-[11px] border border-[var(--rk-scroll)] bg-[var(--rk-hairline)] px-3.5 py-2.5 text-[14px] text-[var(--rk-ink)] outline-none focus:border-[var(--rk-muted-2)]"
       />
-    </label>
+    </Field>
   );
 }
 
@@ -407,27 +404,19 @@ function AppearancePicker({
     <fieldset
       aria-label={t`Appearance`}
       data-testid="ui-appearance-select"
-      className="mt-3 grid min-w-0 grid-cols-3 gap-1 rounded-[12px] border border-[var(--rk-border)] bg-[var(--rk-surface-2)] p-1"
+      className="mt-3 grid min-w-0 grid-cols-3 gap-1 rounded-lg bg-muted p-1"
     >
-      {options.map((option) => {
-        const selected = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={selected}
-            data-testid={`ui-appearance-${option.value}`}
-            onClick={() => onChange(option.value)}
-            className={`rounded-[9px] px-2 py-2 text-[13px] font-medium transition-colors ${
-              selected
-                ? "bg-[var(--rk-surface)] text-[var(--rk-ink-strong)] shadow-sm"
-                : "text-[var(--rk-body)] hover:text-[var(--rk-ink-strong)]"
-            }`}
-          >
-            {option.label}
-          </button>
-        );
-      })}
+      {options.map((option) => (
+        <Toggle
+          key={option.value}
+          data-testid={`ui-appearance-${option.value}`}
+          pressed={option.value === value}
+          onPressedChange={() => onChange(option.value)}
+          className="text-[13px] aria-pressed:bg-background aria-pressed:shadow-sm"
+        >
+          {option.label}
+        </Toggle>
+      ))}
     </fieldset>
   );
 }
@@ -533,12 +522,12 @@ function UiLocalePicker({
         aria-controls={listboxId}
         aria-expanded={open}
         aria-haspopup="listbox"
-        className="flex w-full items-center justify-between rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-start text-[var(--rk-ink)] outline-none focus-visible:border-[var(--rk-muted-2)]"
+        className="flex h-9 w-full items-center justify-between rounded-lg border border-input bg-transparent px-3 text-start text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50"
         onClick={() => setOpen((current) => !current)}
         onKeyDown={onTriggerKeyDown}
       >
         <span className="min-w-0 truncate">{UI_LOCALE_LABELS[value]}</span>
-        <span className="ml-3 shrink-0 text-[var(--rk-muted)]" aria-hidden="true">
+        <span className="ml-3 shrink-0 text-muted-foreground" aria-hidden="true">
           <ChevronDown size={16} strokeWidth={1.8} />
         </span>
       </button>
@@ -547,7 +536,7 @@ function UiLocalePicker({
           id={listboxId}
           role="listbox"
           aria-label={t`Language`}
-          className="rk-scroll absolute left-0 right-0 top-full z-20 mt-2 overflow-y-auto rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] p-1 shadow-[0_20px_45px_rgba(0,0,0,.55)]"
+          className="rk-scroll absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
         >
           {UI_LOCALES.map((code, index) => (
             <button
@@ -559,8 +548,8 @@ function UiLocalePicker({
               role="option"
               aria-selected={code === value}
               tabIndex={index === highlightedIndex ? 0 : -1}
-              className={`w-full rounded-[8px] px-3 py-2 text-start text-[13.5px] text-[var(--rk-ink)] outline-none hover:bg-[var(--rk-surface-2)] focus-visible:bg-[var(--rk-surface-2)] ${
-                code === value ? "bg-[var(--rk-surface-2)]" : ""
+              className={`w-full rounded-md px-2 py-1.5 text-start text-sm outline-none hover:bg-accent focus-visible:bg-accent ${
+                code === value ? "bg-accent" : ""
               }`}
               onClick={() => choose(index)}
               onKeyDown={(event) => onOptionKeyDown(event, index)}

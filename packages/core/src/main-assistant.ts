@@ -1,11 +1,13 @@
 /** The pinned root bot is the durable personal conversation for a space. */
-export function mainAssistantBot<T extends {
-  id: string;
-  pinned: boolean;
-  parentBotId?: string | null;
-  archivedAt?: string | null;
-  createdAt?: string;
-}>(bots: readonly T[]): T | undefined {
+export function mainAssistantBot<
+  T extends {
+    id: string;
+    pinned: boolean;
+    parentBotId?: string | null;
+    archivedAt?: string | null;
+    createdAt?: string;
+  },
+>(bots: readonly T[]): T | undefined {
   const roots = bots.filter((bot) => !bot.parentBotId && !bot.archivedAt);
   const candidates = roots.length ? roots : bots.filter((bot) => !bot.archivedAt);
   return [...candidates].sort((a, b) => {

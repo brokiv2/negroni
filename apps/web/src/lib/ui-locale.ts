@@ -1,4 +1,15 @@
-export const UI_LOCALES = ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN"] as const;
+export const UI_LOCALES = [
+  "en",
+  "de",
+  "ko",
+  "tr",
+  "hi",
+  "pt-BR",
+  "zh-CN",
+  "es",
+  "ru",
+  "fr",
+] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
@@ -12,8 +23,12 @@ export const UI_LOCALE_LABELS: Record<UiLocale, string> = {
   hi: "हिन्दी",
   "pt-BR": "Português (Brasil)",
   "zh-CN": "简体中文",
+  es: "Español",
+  ru: "Русский",
+  fr: "Français",
 };
 
+/** Return whether a value is one of the supported web UI locales. */
 export function isUiLocale(value: string | null | undefined): value is UiLocale {
   return (
     value === "en" ||
@@ -22,15 +37,19 @@ export function isUiLocale(value: string | null | undefined): value is UiLocale 
     value === "tr" ||
     value === "hi" ||
     value === "pt-BR" ||
-    value === "zh-CN"
+    value === "zh-CN" ||
+    value === "es" ||
+    value === "ru" ||
+    value === "fr"
   );
 }
 
-/** Normalize BCP-47 tags (`de-DE`, `ko-KR`, `pt-BR`, `zh-CN`) to a supported UI locale, else `en`. */
+/** Normalize BCP-47 tags (`de-DE`, `ko-KR`, `pt-BR`, `zh-CN`, `es-ES`) to a supported UI locale, else `en`. */
 export function normalizeUiLocale(raw: string | null | undefined): UiLocale {
   if (!raw) return "en";
   const normalized = raw.trim().toLowerCase().replace(/_/g, "-");
   if (normalized === "pt" || normalized.startsWith("pt-")) return "pt-BR";
+  if (normalized === "es" || normalized.startsWith("es-")) return "es";
   // Simplified Chinese only. Do not fold zh-TW / zh-HK / zh-Hant into zh-CN.
   if (
     normalized === "zh" ||

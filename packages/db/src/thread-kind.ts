@@ -11,7 +11,7 @@ export function withTeamThread<T extends { threads: readonly unknown[] }>(
   bot: T,
 ): Omit<T, "threads"> & { thread: T["threads"][number] | null } {
   const { threads, ...rest } = bot;
-  return { ...rest, thread: threads[0] ?? null };
+  return { ...rest, thread: threads?.[0] ?? null };
 }
 
 /** The bot's Personal thread, created on first use. Safe under concurrent first calls. */

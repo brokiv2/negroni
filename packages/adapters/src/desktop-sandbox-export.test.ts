@@ -51,7 +51,10 @@ async function fixture() {
   return { desktop, computer };
 }
 
-async function exportedPaths(desktop: DesktopSandboxProvider, computer: Awaited<ReturnType<DesktopSandboxProvider["provision"]>>) {
+async function exportedPaths(
+  desktop: InstanceType<typeof DesktopSandboxProvider>,
+  computer: Awaited<ReturnType<InstanceType<typeof DesktopSandboxProvider>["provision"]>>,
+) {
   const files = [];
   for await (const file of desktop.exportWorkspace(computer)) files.push(file.path);
   return files;

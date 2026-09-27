@@ -1,5 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { transcriptContentBlocks } from "@rakazo/core";
+import { isToolActivityBlock } from "@rakazo/core";
 
 export function isCenteredAgentEvent(blocks: readonly MessageBlock[]): boolean {
   return blocks.some(
@@ -11,13 +11,20 @@ export function isCenteredAgentEvent(blocks: readonly MessageBlock[]): boolean {
   );
 }
 
+export type MessagePresentationSegment = {
+  kind: "content";
+  blocks: MessageBlock[];
+};
+
 export function messagePresentationSegments(
   blocks: readonly MessageBlock[],
-): Array<{ kind: "content"; blocks: MessageBlock[] }> {
-  const content = transcriptContentBlocks(blocks).filter((block) => block.kind !== "app_connect");
+): MessagePresentationSegment[] {
+  const content = blocks.filter(
+    (block) => block.kind !== "app_connect" && !isToolActivityBlock(block),
+  );
   return content.length > 0 ? [{ kind: "content", blocks: content }] : [];
 }
 
 export function hasVisibleMessagePresentation(blocks: readonly MessageBlock[]): boolean {
-  return transcriptContentBlocks(blocks).length > 0;
+  return blocks.some((block) => !isToolActivityBlock(block));
 }

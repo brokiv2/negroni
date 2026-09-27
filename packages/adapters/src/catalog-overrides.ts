@@ -2,14 +2,15 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  createProvider,
   type Api,
+  createProvider,
   type Model,
   type Models,
   type MutableModels,
 } from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { getLogger } from "@rakazo/logging";
 import { LOCAL_PROVIDER_ID, registerLocalProvider } from "./pi-local-provider.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -125,7 +126,7 @@ function applyOverrides(models: MutableModels): MutableModels {
       api: openAICompletionsApi(),
     });
     models.setProvider(extended);
-    console.log(
+    getLogger().info(
       `[catalog-overrides] extended ${providerId} with: ${extras.map((model) => model.id).join(", ")}`,
     );
   }
@@ -153,7 +154,9 @@ export function registerCatalogOverrides(models: MutableModels): MutableModels {
 
 /** Base URL of a catalog provider, for live /models probes. */
 export function providerBaseUrl(providerId: string): string | undefined {
-  const model = composedCatalog().getModels(providerId).find((entry) => Boolean(entry.baseUrl));
+  const model = composedCatalog()
+    .getModels(providerId)
+    .find((entry) => Boolean(entry.baseUrl));
   return model?.baseUrl;
 }
 

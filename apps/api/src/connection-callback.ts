@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { ConnectorRegistry } from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 
 /** Public landing page Composio redirects to after OAuth consent. */
@@ -206,7 +207,7 @@ export function mountConnectionCallbackRoute(app: Hono, deps: CallbackDeps) {
   app.get(CONNECTION_CALLBACK_PATH, async (c) => {
     const connectionId = c.req.query("connection") ?? "";
     const status = await settleConnectionFromCallback(deps, connectionId).catch((error) => {
-      console.error("connection callback reconciliation failed", error);
+      getLogger().error("connection callback reconciliation failed", error);
       return "pending" as const;
     });
     const nonce = randomBytes(16).toString("base64");

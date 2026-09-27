@@ -6,28 +6,35 @@ import type {
   MessageBlock,
   Routine,
 } from "@rakazo/contracts";
-import { canReactToThreadMessage } from "@rakazo/contracts";
+import {
+  canReactToThreadMessage,
+  MESSAGE_REACTIONS,
+  type MessageReaction,
+} from "@rakazo/contracts";
 import {
   abortableDelay,
   attachmentsForThread,
   buildComposerMentionOptions,
+  type ComposerMention,
+  cloudAgentHttpsUrl,
   delegationChip,
   friendlyChatError,
-  type ComposerMention,
   isApprovalAskBlock,
   isRunTerminalEvent,
   isSecretAskBlock,
   latestAnswerableAskMessageId,
   mentionChipKey,
   personalTranscriptBlocks,
+  plainTextFromMarkdown,
+  projectMessageReactions,
   resolveComposerSendPlan,
   SLASH_ACTIONS,
   type SlashActionId,
   selectedAskActionLabel,
   serializeComposerPrompt,
-  transcriptContentBlocks,
   truncateSlashDescription,
   userVisibleMessages,
+  withLiveStreamingProgress,
   workedWithLabel,
 } from "@rakazo/core";
 import {
@@ -37,30 +44,49 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
+import * as Clipboard from "expo-clipboard";
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  type ComponentRef,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   AppState,
   FlatList,
   Image,
-  Platform,
+  Linking,
+  Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  Platform,
   Pressable,
-  ScrollView,
   type ScrollViewProps,
+  StyleSheet,
   Text,
   TextInput,
+  type TextProps,
   View,
 } from "react-native";
-import { KeyboardChatScrollView, KeyboardGestureArea, KeyboardStickyView } from "react-native-keyboard-controller";
+import {
+  KeyboardChatScrollView,
+  KeyboardGestureArea,
+  KeyboardStickyView,
+  useKeyboardState,
+} from "react-native-keyboard-controller";
 import { useReducedMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppConnectCard } from "../components/AppConnectCard";
 import { AskActions } from "../components/AskActions";
-import { ActionSheet } from "../components/action-sheet";
 import { BotAvatar } from "../components/bot-avatar";
 import { GlassSurface } from "../components/glass-surface";
 import {
@@ -69,12 +95,12 @@ import {
 } from "../components/markdown-artifact-preview";
 import { NativeSymbol } from "../components/native-symbol";
 import { WorkspacePicker } from "../components/workspace-picker";
-import { invertedChatDistanceFromLatest, invertedChatLatestOffset } from "../lib/chat-keyboard";
 import {
+  type ApiRequestContext,
   applyMobileThreadEvent,
   blockText,
   captureApiRequestContext,
-  type ApiRequestContext,
+  copyableMobileMessageText,
   currentApiBase,
   loadSessionToken,
   type MobileBot,
@@ -92,21 +118,26 @@ import {
   subscribeThread,
 } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
-import { saveChatView } from "../lib/chat-view";
 import { type MobileArtifactTarget, openMobileArtifact } from "../lib/artifact-open";
+import { nextAutoSpeakAction } from "../lib/auto-speak";
 import { confirmDeleteBot } from "../lib/bot-lifecycle";
+import { invertedChatDistanceFromLatest, invertedChatLatestOffset } from "../lib/chat-keyboard";
+import { saveChatView } from "../lib/chat-view";
+import { cancelFocusPrompt, focusPromptThreadActive } from "../lib/focus-prompt";
+import { dateLocaleForUi, t, useI18n } from "../lib/i18n";
 import { saveLastBotId } from "../lib/last-bot";
 import {
   dismissThreadNotifications,
   resumeLiveNotifications,
   setOpenNotificationThread,
 } from "../lib/live-notifications";
+import { presentMessageActionSheet } from "../lib/message-action-sheet";
 import {
   hasVisibleMessagePresentation,
   isCenteredAgentEvent,
   messagePresentationSegments,
 } from "../lib/message-presentation";
-import { useResolvedAppearance } from "../lib/native";
+import { native, useMobileTokens, useResolvedAppearance } from "../lib/native";
 import {
   type PickedAttachment,
   pickDocuments,
@@ -115,11 +146,15 @@ import {
 } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
 import {
+  getCachedResponseStreamingEnabled,
+  subscribeResponseStreaming,
+} from "../lib/response-streaming";
+import {
   type ThreadScrollAction,
   ThreadScrollBehavior,
   type ThreadScrollState,
 } from "../lib/thread-scroll";
-import { appendDictationTranscript, transcribeRecording } from "../lib/voice";
+import { appendDictationTranscript, speakText, transcribeRecording } from "../lib/voice";
 
 type PendingAttachment = PickedAttachment & { threadKey: string };
 type AskAction = NonNullable<Extract<MessageBlock, { kind: "ask" }>["actions"]>[number];
@@ -137,15 +172,27 @@ function formatApprovalAnswer(
   actions: AskAction[] | undefined,
   approval: boolean,
 ): string {
-  if (!answer) return "Answered";
+  if (!answer) return t("Answered");
   const selectedAction = actions?.find((action) => action.id === answer);
   const outcome = selectedAction?.outcome;
-  if (approval && outcome === "created") return "Created";
-  if (approval && outcome === "cancelled") return "Cancelled";
-  if (approval && answer === "allow") return "Allowed once";
-  if (approval && answer === "always") return "Always allowed";
-  if (approval && answer === "deny") return "Denied";
-  return `Answered: ${selectedAskActionLabel(answer, actions)}`;
+  if (approval && outcome === "created") return t("Created");
+  if (approval && outcome === "cancelled") return t("Cancelled");
+  if (approval && answer === "allow") return t("Allowed once");
+  if (approval && answer === "always") return t("Always allowed");
+  if (approval && answer === "deny") return t("Denied");
+  return t("Answered: {answer}", { answer: selectedAskActionLabel(answer, actions) });
+}
+
+function formatAttachmentSkip(item: { name: string; reason: string }): string {
+  const name = item.name === "camera" ? t("Camera") : item.name;
+  if (item.reason === "permission denied") return t("{name} (permission denied)", { name });
+  if (item.reason === "over 10 MiB") return t("{name} (over 10 MiB)", { name });
+  if (item.reason === "unsupported type") return t("{name} (unsupported type)", { name });
+  const maxMatch = /^max (\d+) attachments$/.exec(item.reason);
+  if (maxMatch) {
+    return t("{name} (max {count} attachments)", { name, count: maxMatch[1] ?? "" });
+  }
+  return `${name} (${item.reason})`;
 }
 
 function isWorkingStatus(status: string | undefined): boolean {
@@ -161,7 +208,8 @@ function isWorkingStatus(status: string | undefined): boolean {
 type NotificationRouteState = "loading" | "ready" | "failed";
 
 export default function ThreadRoute() {
-  useResolvedAppearance();
+  const tokens = useMobileTokens();
+  const { t } = useI18n();
   const router = useRouter();
   const {
     spaceId,
@@ -214,14 +262,14 @@ export default function ThreadRoute() {
         flex: 1,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "#000",
+        backgroundColor: tokens.background,
       }}
     >
       {routeState === "loading" ? (
-        <ActivityIndicator color="#ECECEE" />
+        <ActivityIndicator color={tokens.foreground} />
       ) : (
         <Pressable accessibilityRole="button" onPress={() => router.replace("/")}>
-          <Text style={{ color: "#ECECEE", fontSize: 16 }}>Return to inbox</Text>
+          <Text style={{ color: tokens.foreground, fontSize: 16 }}>{t("Return to inbox")}</Text>
         </Pressable>
       )}
     </View>
@@ -229,42 +277,33 @@ export default function ThreadRoute() {
 }
 
 function Thread() {
+  const colorScheme = useResolvedAppearance();
+  const tokens = mobileTokens();
+  const [botActionsOpen, setBotActionsOpen] = useState(false);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const { t } = useI18n();
   const navigation = useNavigation();
   const router = useRouter();
-  const appearance = useResolvedAppearance();
-  const theme = mobileTokens();
   const insets = useSafeAreaInsets();
-  const { botId, groupId, name, messageId, view, draft: routeDraft, focus } = useLocalSearchParams<{
+  const keyboardVisible = useKeyboardState((state) => state.isVisible);
+  const { botId, groupId, name, messageId, view } = useLocalSearchParams<{
     botId?: string;
     groupId?: string;
     name?: string;
     messageId?: string;
     view?: string;
-    draft?: string;
-    focus?: string;
   }>();
   const inGroup = Boolean(groupId);
   const assistantView = view === "assistant" && !inGroup;
   // Personal view talks to the main assistant in its own thread; Team keeps the bot's chat.
   const threadBot = (id: string) =>
     assistantView && id === botId ? { botId: id, threadKind: "personal" as const } : { botId: id };
-  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
-  const [attachOpen, setAttachOpen] = useState(false);
-  const afterAttachmentMenu = useRef<(() => void) | null>(null);
-  const dismissAttachmentMenuThen = (action: () => void) => {
-    // iOS cannot present a native picker while its menu is still dismissing.
-    if (Platform.OS === "ios") afterAttachmentMenu.current = action;
-    setAttachOpen(false);
-    if (Platform.OS !== "ios") action();
-  };
-  const [actionsOpen, setActionsOpen] = useState(false);
-  const [clearConfirm, setClearConfirm] = useState(false);
   const scroll = useRef<FlatList<MobileMessage>>(null);
   const keyboardInsets = useRef({ top: 0 });
-  const onChatInsetsChange = useCallback((insets: { top: number }) => {
-    keyboardInsets.current = { top: insets.top };
+  const onChatInsetsChange = useCallback((next: { top: number }) => {
+    keyboardInsets.current = { top: next.top };
   }, []);
-  const pinnedScroll = useRef<import("react").ComponentRef<typeof KeyboardChatScrollView>>(null);
+  const pinnedScroll = useRef<ComponentRef<typeof KeyboardChatScrollView>>(null);
   const scrollBehavior = useRef(new ThreadScrollBehavior());
   const userDragging = useRef(false);
   const loadingOlderContent = useRef(false);
@@ -284,7 +323,13 @@ function Thread() {
   activeBotId.current = botId;
   const activeGroupId = useRef(groupId);
   activeGroupId.current = groupId;
+  const routeName = useRef(name);
+  routeName.current = name;
+  const mentionBotsRefreshGeneration = useRef(0);
+  const mentionBotsAppliedGeneration = useRef(0);
   const readVisibleTarget = useRef<string | null>(null);
+  const autoSpoken = useRef<string | null>(null);
+  const autoSpokenBotId = useRef<string | null>(null);
   const threadKey = groupId ?? botId;
   const [threadScrollState, setThreadScrollState] = useState<ThreadScrollState>(() =>
     scrollBehavior.current.state(),
@@ -304,13 +349,28 @@ function Thread() {
       ? { botId }
       : undefined;
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
+  const snapRef = useRef<MobileSnapshot | null>(null);
+  const streamResponses = useSyncExternalStore(
+    subscribeResponseStreaming,
+    getCachedResponseStreamingEnabled,
+    () => false,
+  );
+  const streamResponsesRef = useRef(streamResponses);
+  streamResponsesRef.current = streamResponses;
+
+  function commitSnap(next: MobileSnapshot | null) {
+    snapRef.current = next;
+    setSnap(withLiveStreamingProgress(next, streamResponsesRef.current));
+  }
+
+  useEffect(() => {
+    setSnap(withLiveStreamingProgress(snapRef.current, streamResponses));
+  }, [streamResponses]);
   const activeThreadId = useRef<string | undefined>(undefined);
   const [draft, setDraft] = useState("");
-  const [draftPreview, setDraftPreview] = useState(false);
-  const appliedRouteDraft = useRef<string | undefined>(undefined);
   const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true });
   const recorderState = useAudioRecorderState(recorder, 120);
-  const [recordingLevels, setRecordingLevels] = useState<number[]>(Array(13).fill(0));
+  const [recordingLevels, setRecordingLevels] = useState<number[]>(() => Array(13).fill(0));
   const dictationBusy = useRef(false);
   const dictationEpoch = useRef(0);
   const dictationRequest = useRef<AbortController | null>(null);
@@ -318,6 +378,7 @@ function Thread() {
   const [dictationStatus, setDictationStatus] = useState<
     "idle" | "starting" | "recording" | "transcribing"
   >("idle");
+  const [canTranscribe, setCanTranscribe] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingStartedAt = useRef(0);
   useEffect(() => {
@@ -332,7 +393,6 @@ function Thread() {
     const level = Math.max(0, Math.min(1, ((recorderState.metering ?? -60) + 60) / 60));
     setRecordingLevels((current) => [...current.slice(1), level]);
   }, [dictationStatus, recorderState.metering]);
-  const [canTranscribe, setCanTranscribe] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [agentSkills, setAgentSkills] = useState<AgentSkillCatalogEntry[]>([]);
@@ -351,7 +411,6 @@ function Thread() {
   const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
-  const [activeMessageActionsId, setActiveMessageActionsId] = useState<string | null>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -359,16 +418,20 @@ function Thread() {
   const [markdownPreview, setMarkdownPreview] = useState<MarkdownArtifactPreviewTarget | null>(
     null,
   );
-  const visibleMessages = useMemo(
+  const reactionView = useMemo(
     () =>
-      userVisibleMessages(snap?.messages ?? [], { includePeerReceipts: true })
-        .map((message) => ({
-          ...message,
-          blocks: assistantView ? personalTranscriptBlocks(message.blocks) : transcriptContentBlocks(message.blocks),
-        }))
-        .filter((message) => hasVisibleMessagePresentation(message.blocks)),
+      projectMessageReactions(
+        userVisibleMessages(snap?.messages ?? [], { includePeerReceipts: true })
+          .map((message) =>
+            assistantView
+              ? { ...message, blocks: personalTranscriptBlocks(message.blocks) }
+              : message,
+          )
+          .filter((message) => hasVisibleMessagePresentation(message.blocks)),
+      ),
     [assistantView, snap?.messages],
   );
+  const visibleMessages = reactionView.visibleMessages;
   const latestMessageId = visibleMessages.at(-1)?.id ?? null;
   const activePendingAttachments = attachmentsForThread(pendingAttachments, threadKey);
   const composerMentionTargets = useMemo(
@@ -419,12 +482,17 @@ function Thread() {
       : [];
   const slashActionOptions =
     slashQuery !== null && mentionQuery === null
-      ? SLASH_ACTIONS.filter(
-          (action) =>
-            !slashQueryNormalized || action.label.toLowerCase().includes(slashQueryNormalized),
-        )
+      ? SLASH_ACTIONS.filter((action) => {
+          if (!slashQueryNormalized) return true;
+          const label = t(action.label);
+          return (
+            action.label.toLowerCase().includes(slashQueryNormalized) ||
+            label.toLowerCase().includes(slashQueryNormalized)
+          );
+        })
       : [];
   const currentBot = botId ? mentionBots.find((bot) => bot.id === botId) : undefined;
+  const displayName = currentBot?.name ?? name;
   const notificationThreadId = snap?.threadId ?? currentBot?.threadId;
   activeThreadId.current = notificationThreadId;
   const currentBotStatus = snap ? snap.run?.status : currentBot?.status;
@@ -442,6 +510,35 @@ function Thread() {
     });
   }, [inGroup, snap?.activeRuns, snap?.members, snap?.run]);
   const working = inGroup ? workingGroupBots.length > 0 : isWorkingStatus(currentBotStatus);
+
+  const speakFinishedReply = useCallback(() => {
+    if (!botId || inGroup || !currentBot) return;
+    const decision = nextAutoSpeakAction({
+      botId: currentBot.id,
+      autoSpeak: currentBot.autoSpeak,
+      focused: AppState.currentState === "active" && navigation.isFocused(),
+      snapshotReady: snap?.botId === currentBot.id,
+      lastSpokenBotId: autoSpokenBotId.current,
+      lastSpokenMessageId: autoSpoken.current,
+      runStatus: snap?.run?.status,
+      messages: snap?.messages ?? [],
+    });
+    if (decision.action === "seed") {
+      autoSpokenBotId.current = currentBot.id;
+      autoSpoken.current = decision.messageId;
+      return;
+    }
+    if (decision.action !== "speak") return;
+    autoSpokenBotId.current = currentBot.id;
+    autoSpoken.current = decision.messageId;
+    void speakText(decision.text, { botId: currentBot.id }).catch(() => undefined);
+  }, [botId, inGroup, currentBot, navigation, snap?.botId, snap?.messages, snap?.run?.status]);
+
+  useEffect(() => {
+    speakFinishedReply();
+    const appState = AppState.addEventListener("change", speakFinishedReply);
+    return () => appState.remove();
+  }, [speakFinishedReply]);
 
   useEffect(() => {
     void rpc<AgentSkillCatalogEntry[]>("agentSkills/list")
@@ -489,6 +586,7 @@ function Thread() {
   }, [recorder]);
 
   useFocusEffect(useCallback(() => stopDictation, [stopDictation]));
+
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "background") stopDictation();
@@ -500,14 +598,37 @@ function Thread() {
     setThreadScrollState(scrollBehavior.current.state());
   }, [threadKey]);
 
+  const refreshMentionBots = useCallback(async () => {
+    if (!botId && !groupId) return;
+    const generation = ++mentionBotsRefreshGeneration.current;
+    const targetBotId = botId;
+    try {
+      const bots = await rpc<MobileBot[]>("bots/list");
+      // Apply any successful response that is still the newest applied so far.
+      // A later failed refresh must not discard an earlier success.
+      if (generation < mentionBotsAppliedGeneration.current) return;
+      if (targetBotId !== activeBotId.current) return;
+      mentionBotsAppliedGeneration.current = generation;
+      setMentionBots(bots);
+      if (targetBotId) {
+        const next = bots.find((bot) => bot.id === targetBotId);
+        // Read the route name from a ref so renaming does not recreate this
+        // callback (and restart the SSE subscription that depends on it).
+        if (next?.name && next.name !== routeName.current) {
+          router.setParams({ name: next.name });
+        }
+      }
+    } catch {
+      // Keep the last known roster if refresh fails.
+    }
+  }, [botId, groupId, router]);
+
   useEffect(() => {
-    void rpc<MobileBot[]>("bots/list")
-      .then(setMentionBots)
-      .catch(() => setMentionBots([]));
+    void refreshMentionBots();
     void rpc<MobileGroup[]>("groups/list")
       .then(setMentionGroups)
       .catch(() => setMentionGroups([]));
-  }, []);
+  }, [refreshMentionBots]);
 
   useEffect(() => {
     if (mentionBots.length === 0) {
@@ -580,29 +701,31 @@ function Thread() {
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: name || "Thread",
+      title: displayName || t("Thread"),
       headerTitle: () => (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={assistantView ? "Open For you" : "Chat settings"}
-          onPress={() => assistantView ? router.push({ pathname: "/assistant-hub", params: { botId, name } }) : router.push({ pathname: inGroup ? "/group-settings" : "/bot-settings", params: inGroup ? { groupId } : { botId } })}
-        >
-        <GlassSurface
-          appearance={appearance}
+          accessibilityLabel={
+            assistantView
+              ? t("Open For you")
+              : !inGroup && botId
+                ? t("Chat settings")
+                : displayName || t("Thread")
+          }
+          disabled={inGroup || !botId}
+          onPress={() => {
+            if (!botId || inGroup) return;
+            if (assistantView) {
+              router.push({ pathname: "/assistant-hub", params: { botId, name: displayName } });
+              return;
+            }
+            router.push({ pathname: "/bot-settings", params: { botId } });
+          }}
           style={{
             flexDirection: "row",
             alignItems: "center",
-            gap: 7,
+            gap: 10,
             maxWidth: 220,
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 999,
-          }}
-          fallbackStyle={{
-            backgroundColor:
-              appearance === "light" ? "rgba(255,255,255,0.72)" : "rgba(28,28,30,0.72)",
-            borderWidth: 1,
-            borderColor: appearance === "light" ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.1)",
           }}
         >
           {!inGroup && currentBot ? (
@@ -614,42 +737,35 @@ function Thread() {
               muted={!currentBot.notifyOnFinish}
             />
           ) : null}
-          <Text numberOfLines={1} style={{ color: theme.ink, fontSize: 16, fontWeight: "600" }}>
-            {name || "Thread"}
+          <Text
+            numberOfLines={1}
+            style={{ color: tokens.foreground, fontSize: 18, fontWeight: "600" }}
+          >
+            {displayName || t("Thread")}
           </Text>
-          <NativeSymbol ios="chevron.down" android="chevron-down" size={11} color={theme.muted} />
-        </GlassSurface>
         </Pressable>
       ),
-      headerLeft: () => (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={assistantView ? "Choose workspace" : "Back"}
-          hitSlop={8}
-          onPress={() => {
-            if (assistantView) {
-              setWorkspacePickerOpen(true);
-            } else {
-              router.back();
-            }
-          }}
-          style={{
-            width: 36,
-            height: 36,
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 18,
-            backgroundColor:
-              appearance === "light" ? "rgba(255,255,255,0.72)" : "rgba(28,28,30,0.72)",
-          }}
-        >
-          <NativeSymbol ios={assistantView ? "line.3.horizontal" : "chevron.left"} android={assistantView ? "menu" : "arrow-back"} size={19} color={theme.ink} />
-        </Pressable>
-      ),
+      headerLeft: assistantView
+        ? () => (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("Choose workspace")}
+              hitSlop={8}
+              onPress={() => setWorkspacePickerOpen(true)}
+            >
+              <NativeSymbol
+                ios="line.3.horizontal"
+                android="menu"
+                size={21}
+                color={tokens.foreground}
+              />
+            </Pressable>
+          )
+        : undefined,
       headerRight: () =>
         inGroup ? (
           <Pressable
-            accessibilityLabel="Group settings"
+            accessibilityLabel={t("Group settings")}
             hitSlop={8}
             onPress={() =>
               router.push({
@@ -657,53 +773,38 @@ function Thread() {
                 params: { groupId: groupId ?? "" },
               })
             }
-            style={{
-              width: 36,
-              height: 36,
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: 18,
-              backgroundColor:
-                appearance === "light" ? "rgba(255,255,255,0.72)" : "rgba(28,28,30,0.72)",
-            }}
           >
-            <NativeSymbol ios="gearshape" android="settings-outline" size={19} color={theme.ink} />
+            <NativeSymbol
+              ios="gearshape"
+              android="settings-outline"
+              size={21}
+              color={tokens.foreground}
+            />
           </Pressable>
         ) : (
-          <Pressable
-            accessibilityLabel="Bot actions"
-            hitSlop={8}
-            onPress={showBotActions}
-            style={{
-              width: 36,
-              height: 36,
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: 18,
-              backgroundColor:
-                appearance === "light" ? "rgba(255,255,255,0.72)" : "rgba(28,28,30,0.72)",
-            }}
-          >
+          <Pressable accessibilityLabel={t("Bot actions")} hitSlop={8} onPress={showBotActions}>
             <NativeSymbol
               ios="ellipsis"
               android="ellipsis-horizontal"
-              size={19}
-              color={theme.ink}
+              size={21}
+              color={tokens.foreground}
             />
           </Pressable>
         ),
     });
   }, [
-    appearance,
     assistantView,
+    botId,
     currentBot,
     currentBotStatus,
+    displayName,
     groupId,
     inGroup,
-    name,
     navigation,
     router,
-    theme.ink,
+    t,
+    tokens,
+    colorScheme,
   ]);
 
   function leaveBot() {
@@ -719,17 +820,94 @@ function Thread() {
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
         historyEpoch.current += 1;
-        setSnap((current) =>
-          current ? { ...current, messages: [], olderCursor: null, run: null } : current,
+        commitSnap(
+          snapRef.current
+            ? { ...snapRef.current, messages: [], olderCursor: null, run: null }
+            : snapRef.current,
         );
       })
       .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "Could not clear conversation"),
+        setError(err instanceof Error ? err.message : t("Could not clear conversation")),
       );
   }
 
+  const botActions = [
+    {
+      text: t("Chat settings"),
+      onPress: () =>
+        router.push({
+          pathname: "/bot-settings",
+          params: { botId: botId ?? "" },
+        }),
+    },
+    {
+      text: t("Voice call"),
+      onPress: () =>
+        router.push({
+          pathname: "/call",
+          params: { botId: botId ?? "", name: displayName ?? t("Bot") },
+        }),
+    },
+    {
+      text: t("Open computer"),
+      onPress: () =>
+        router.push({
+          pathname: "/computer",
+          params: { botId: botId ?? "", name: displayName ?? t("Bot") },
+        }),
+    },
+    {
+      text: t("Clear conversation"),
+      destructive: true,
+      onPress: () =>
+        Alert.alert(
+          t("Clear conversation?"),
+          t(
+            "This removes every message and stops current work. The bot, computer, memory, and routines are kept.",
+          ),
+          [
+            { text: t("Cancel"), style: "cancel" },
+            { text: t("Clear"), style: "destructive", onPress: clearConversation },
+          ],
+        ),
+    },
+    {
+      text: t("Archive"),
+      onPress: () =>
+        void rpc("bots/archive", { botId })
+          .then(leaveBot)
+          .catch((error) =>
+            Alert.alert(
+              t("Could not archive bot"),
+              error instanceof Error ? error.message : t("Try again."),
+            ),
+          ),
+    },
+    {
+      text: t("Delete…"),
+      destructive: true,
+      onPress: () => confirmDeleteBot({ id: botId ?? "", name: displayName || t("Bot") }, leaveBot),
+    },
+  ];
+
   function showBotActions() {
-    if (botId) setActionsOpen(true);
+    if (!botId) return;
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: name || t("Bot"),
+          userInterfaceStyle: colorScheme,
+          options: [...botActions.map((action) => action.text), t("Cancel")],
+          cancelButtonIndex: botActions.length,
+          destructiveButtonIndex: botActions.flatMap((action, index) =>
+            action.destructive ? [index] : [],
+          ),
+        },
+        (index) => botActions[index]?.onPress(),
+      );
+      return;
+    }
+    setBotActionsOpen(true);
   }
 
   async function refresh() {
@@ -752,8 +930,8 @@ function Thread() {
       })
     )
       return next;
-    setSnap((prev) =>
-      mergeMobileSnapshot(prev, next, expandedHistoryThread.current === next.threadId),
+    commitSnap(
+      mergeMobileSnapshot(snapRef.current, next, expandedHistoryThread.current === next.threadId),
     );
     return next;
   }
@@ -779,7 +957,8 @@ function Thread() {
     expandedHistoryThread.current = targetInPage ? page.threadId : null;
     pinnedAroundRef.current = targetInPage
       ? {
-          ...threadTarget,
+          botId: target.botId,
+          groupId: target.groupId,
           messageId: target.messageId,
           threadId: page.threadId,
           messages: [...page.messages],
@@ -787,7 +966,7 @@ function Thread() {
         }
       : null;
     jumpScrollTarget.current = targetInPage ? target.messageId : null;
-    setSnap({
+    commitSnap({
       ...snap,
       messages: targetInPage ? [...page.messages] : snap.messages,
       olderCursor: targetInPage ? page.olderCursor : snap.olderCursor,
@@ -810,10 +989,10 @@ function Thread() {
         return;
       }
       expandedHistoryThread.current = page.threadId;
-      setSnap((prev) => prependMobileMessagePage(prev, page));
+      commitSnap(prependMobileMessagePage(snapRef.current, page));
     } catch (err) {
       loadingOlderContent.current = false;
-      setError(err instanceof Error ? err.message : "Could not load earlier messages");
+      setError(err instanceof Error ? err.message : t("Could not load earlier messages"));
     } finally {
       setLoadingOlder(false);
     }
@@ -825,9 +1004,7 @@ function Thread() {
     if (!target || readVisibleTarget.current === target) return;
     readVisibleTarget.current = target;
     if (activeThreadId.current) {
-      void dismissThreadNotifications({
-        threadId: activeThreadId.current,
-      }).catch(() => undefined);
+      void dismissThreadNotifications({ threadId: activeThreadId.current }).catch(() => undefined);
     }
     if (groupId) {
       void rpc("threads/markRead", { groupId }).catch(() => {
@@ -843,28 +1020,44 @@ function Thread() {
   useEffect(() => {
     if (!notificationThreadId || AppState.currentState !== "active" || !navigation.isFocused())
       return;
-    void setOpenNotificationThread({
-      botId,
-      threadId: notificationThreadId,
-    }).catch(() => undefined);
+    void setOpenNotificationThread({ botId, threadId: notificationThreadId }).catch(
+      () => undefined,
+    );
     void dismissThreadNotifications({ threadId: notificationThreadId }).catch(() => undefined);
   }, [botId, navigation, notificationThreadId]);
+
+  // Cancel delayed setup only when leaving this bot's thread (unmount or botId
+  // change). Blur alone is not leave — settings/computer push must keep the timer.
+  useEffect(() => {
+    if (!botId) return;
+    return () => {
+      cancelFocusPrompt(botId);
+    };
+  }, [botId]);
 
   // Covers returning from a pushed screen; the AppState listener covers returning from background.
   useFocusEffect(
     useCallback(() => {
-      if (botId) void saveLastBotId(botId).catch(() => undefined);
+      if (botId) {
+        focusPromptThreadActive(botId);
+        void saveLastBotId(botId).catch(() => undefined);
+      } else {
+        // Group thread focus: prior bot screen may stay mounted, so clear any delayed setup.
+        cancelFocusPrompt();
+      }
       if (AppState.currentState === "active" && notificationThreadId) {
         void setOpenNotificationThread({
           botId,
           threadId: notificationThreadId,
         }).catch(() => undefined);
       }
+      void refreshMentionBots();
       markReadIfVisible();
+      speakFinishedReply();
       return () => {
         void setOpenNotificationThread(null).catch(() => undefined);
       };
-    }, [botId, markReadIfVisible, notificationThreadId]),
+    }, [botId, markReadIfVisible, notificationThreadId, refreshMentionBots, speakFinishedReply]),
   );
 
   useEffect(() => {
@@ -919,12 +1112,15 @@ function Thread() {
               if (
                 event.type === "thread.progress" ||
                 event.type === "agent.tool.called" ||
+                event.type === "agent.tool.completed" ||
                 event.type === "thread.message.created" ||
                 event.type === "thread.message.updated" ||
                 event.type === "thread.message.reaction" ||
                 event.type === "thread.subagent" ||
+                event.type === "thread.cloud_agent" ||
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
+                event.type === "computer.takeover.requested" ||
                 isRunTerminalEvent(event)
               ) {
                 if (event.type === "thread.cleared") {
@@ -932,13 +1128,17 @@ function Thread() {
                   pinnedAroundRef.current = null;
                   historyEpoch.current += 1;
                 }
-                setSnap((prev) => applyMobileThreadEvent(prev, event));
+                commitSnap(applyMobileThreadEvent(snapRef.current, event));
+              }
+              if (event.type === "bot.updated") {
+                void refreshMentionBots();
               }
               if (event.type === "thread.message.created" && event.payload?.role === "bot") {
                 readVisibleTarget.current = null;
                 markReadIfVisible();
               }
               if (isRunTerminalEvent(event)) {
+                void refreshMentionBots();
                 if (!jumpScrollTarget.current && !expandedHistoryThread.current) {
                   void refresh().catch(() => undefined);
                 }
@@ -960,7 +1160,7 @@ function Thread() {
     return () => {
       abort.abort();
     };
-  }, [botId, groupId, markReadIfVisible]);
+  }, [botId, groupId, markReadIfVisible, refreshMentionBots]);
 
   useEffect(() => {
     if (!botId && !groupId) return;
@@ -990,7 +1190,7 @@ function Thread() {
     if ((!botId && !groupId) || !messageId) return;
     void applyMessageJump(groupId ? { groupId, messageId } : { botId: botId!, messageId }).catch(
       (err) => {
-        setError(err instanceof Error ? err.message : "Could not open message");
+        setError(err instanceof Error ? err.message : t("Could not open message"));
       },
     );
   }, [botId, groupId, messageId]);
@@ -1006,13 +1206,6 @@ function Thread() {
     setAttachmentNotice(null);
     setError(null);
   }, [threadKey]);
-
-  useEffect(() => {
-    if (routeDraft && appliedRouteDraft.current !== routeDraft) {
-      appliedRouteDraft.current = routeDraft;
-      setDraft(routeDraft);
-    }
-  }, [routeDraft, threadKey]);
 
   function updateDraft(value: string) {
     setDraft(value);
@@ -1036,7 +1229,7 @@ function Thread() {
           await setAudioModeAsync({ allowsRecording: false });
           if (!isCurrent()) return;
           const uri = recorder.uri;
-          if (!uri) throw new Error("The recording could not be saved.");
+          if (!uri) throw new Error(t("The recording could not be saved."));
           const request = new AbortController();
           dictationRequest.current = request;
           const transcript = await transcribeRecording(uri, {
@@ -1051,8 +1244,9 @@ function Thread() {
             if (sendAfter) await send(composed);
           }
         } catch (err) {
-          if (isCurrent())
-            setError(err instanceof Error ? err.message : "Could not transcribe that recording");
+          if (isCurrent()) {
+            setError(err instanceof Error ? err.message : t("Could not transcribe that recording"));
+          }
         } finally {
           await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
           setDictationStatus("idle");
@@ -1066,25 +1260,24 @@ function Thread() {
         if (!isCurrent()) return;
         const permission = await requestRecordingPermissionsAsync();
         if (!permission.granted) {
-          throw new Error("Microphone access is disabled. Enable it in iOS Settings.");
+          throw new Error(t("Microphone access is disabled. Enable it in Settings."));
         }
         if (!isCurrent()) return;
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-        });
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
         if (!isCurrent()) return;
         await recorder.prepareToRecordAsync();
         if (!isCurrent()) return;
         recorder.record();
         recordingStartedAt.current = Date.now();
         setRecordingSeconds(0);
+        setRecordingLevels(Array(13).fill(0));
         setDictationStatus("recording");
       } catch (err) {
         await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
         setDictationStatus("idle");
-        if (isCurrent())
-          setError(err instanceof Error ? err.message : "Could not start the microphone");
+        if (isCurrent()) {
+          setError(err instanceof Error ? err.message : t("Could not start the microphone"));
+        }
       }
     } finally {
       if (!isCurrent()) {
@@ -1182,6 +1375,11 @@ function Thread() {
     const groupTarget = plan.rerouteGroupId ?? initialGroupTarget;
     const botTarget = reroutedToGroup ? undefined : initialBotTarget;
     const trimmed = plan.trimmed;
+    const dropDelayedSetup = () => {
+      // Only after successful engagement so a failed upload/send keeps the setup card.
+      // Covers group-mention reroute while the bot thread stays mounted underneath.
+      if (initialBotTarget) cancelFocusPrompt(initialBotTarget);
+    };
     setSending(true);
     setError(null);
     try {
@@ -1201,7 +1399,6 @@ function Thread() {
           current.filter((attachment) => attachment.threadKey !== originThreadKey),
         );
         setDraft("");
-        setDraftPreview(false);
         setMentionQuery(null);
         setSlashQuery(null);
         setSelectedSkill(null);
@@ -1210,13 +1407,14 @@ function Thread() {
         setAttachmentNotice(null);
       };
       if (!plan.shouldSend) {
+        dropDelayedSetup();
         clearOriginComposer();
         if (reroutedToGroup && groupTarget) {
           router.push({
             pathname: "/group-thread",
             params: {
               groupId: groupTarget,
-              name: plan.rerouteGroupName ?? "Group",
+              name: plan.rerouteGroupName ?? t("Group"),
             },
           });
           return;
@@ -1257,6 +1455,7 @@ function Thread() {
               replyToMessageId: replyTarget?.id,
             },
       );
+      dropDelayedSetup();
       void loadSessionToken()
         .then((token) => resumeLiveNotifications(currentApiBase(), token, selectedSpaceId() ?? ""))
         .catch(() => undefined);
@@ -1266,7 +1465,7 @@ function Thread() {
           pathname: "/group-thread",
           params: {
             groupId: groupTarget,
-            name: plan.rerouteGroupName ?? "Group",
+            name: plan.rerouteGroupName ?? t("Group"),
           },
         });
         return;
@@ -1276,9 +1475,9 @@ function Thread() {
       }
     } catch (err) {
       if (reroutedToGroup && groupTarget) {
-        setError(err instanceof Error ? err.message : "Failed to send message");
+        setError(err instanceof Error ? err.message : t("Failed to send message"));
       } else if (isCurrentTarget(botTarget, groupTarget)) {
-        setError(err instanceof Error ? err.message : "Failed to send message");
+        setError(err instanceof Error ? err.message : t("Failed to send message"));
       }
     } finally {
       setSending(false);
@@ -1298,7 +1497,7 @@ function Thread() {
       );
     } catch (err) {
       if (isCurrentTarget(targetBotId, targetGroupId)) {
-        setError(err instanceof Error ? err.message : "Failed to stop work");
+        setError(err instanceof Error ? err.message : t("Failed to stop work"));
       }
       setSending(false);
       return;
@@ -1307,8 +1506,8 @@ function Thread() {
       await refresh();
     } catch (err) {
       if (isCurrentTarget(targetBotId, targetGroupId)) {
-        const detail = err instanceof Error ? err.message : "Failed to refresh";
-        setError(`Work stopped, but the thread could not refresh: ${detail}`);
+        const detail = err instanceof Error ? err.message : t("Failed to refresh");
+        setError(t("Work stopped, but the thread could not refresh: {detail}", { detail }));
       }
     } finally {
       setSending(false);
@@ -1316,7 +1515,7 @@ function Thread() {
   }
 
   const answerMessage = useCallback(
-    async (message: MobileMessage, answer: string) => {
+    async (message: MobileMessage, answer: string, username?: string) => {
       const targetBotId = botId;
       const targetGroupId = groupId;
       if ((!targetBotId && !targetGroupId) || !message.runId) return;
@@ -1325,6 +1524,7 @@ function Thread() {
         runId: message.runId,
         messageId: message.id,
         answer,
+        ...(username ? { username } : {}),
       });
       if (isCurrentTarget(targetBotId, targetGroupId)) await refresh();
     },
@@ -1333,15 +1533,29 @@ function Thread() {
 
   const openBot = useCallback(
     (id: string, botName: string) =>
-      router.push({
-        pathname: "/thread",
-        params: { botId: id, name: botName },
-      }),
+      router.push({ pathname: "/thread", params: { botId: id, name: botName } }),
     [router],
   );
 
+  const speak = useCallback(
+    (message: MobileMessage) =>
+      void speakMessage(message.botId ?? botId ?? snap?.members?.[0]?.botId ?? "", message).catch(
+        (err) =>
+          Alert.alert(t("Could not speak"), err instanceof Error ? err.message : t("Try again.")),
+      ),
+    [botId, snap?.members],
+  );
+
   function showAttachMenu() {
-    setAttachOpen(true);
+    Alert.alert(t("Attach"), undefined, [
+      {
+        text: t("Photo library"),
+        onPress: () => void addAttachments(pickFromLibrary),
+      },
+      { text: t("Camera"), onPress: () => void addAttachments(takePhoto) },
+      { text: t("File"), onPress: () => void addAttachments(pickDocuments) },
+      { text: t("Cancel"), style: "cancel" },
+    ]);
   }
 
   async function addAttachments(
@@ -1365,7 +1579,9 @@ function Thread() {
     }
     setAttachmentNotice(
       result.skipped.length
-        ? `Skipped ${result.skipped.map((item) => `${item.name} (${item.reason})`).join(", ")}`
+        ? t("Skipped {items}", {
+            items: result.skipped.map((item) => formatAttachmentSkip(item)).join(", "),
+          })
         : null,
     );
   }
@@ -1388,18 +1604,28 @@ function Thread() {
   function performScroll(action: ThreadScrollAction) {
     if (!action || showPinnedPage) return;
     scroll.current?.scrollToOffset({
-      offset: invertedChatLatestOffset(Platform.OS === "ios" ? "ios" : "android", keyboardInsets.current),
+      offset: invertedChatLatestOffset(
+        Platform.OS === "ios" ? "ios" : "android",
+        keyboardInsets.current,
+      ),
       animated: action === "smooth" && !reducedMotion,
     });
   }
 
   function updateUserScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
+    // Inverted chat: the raw offset is shifted by the keyboard's content inset.
     setThreadScrollState(
-      scrollBehavior.current.onUserScroll(invertedChatDistanceFromLatest(Platform.OS === "ios" ? "ios" : "android", event.nativeEvent.contentOffset.y, keyboardInsets.current)),
+      scrollBehavior.current.onUserScroll(
+        invertedChatDistanceFromLatest(
+          Platform.OS === "ios" ? "ios" : "android",
+          event.nativeEvent.contentOffset.y,
+          keyboardInsets.current,
+        ),
+      ),
     );
   }
 
-  async function reactToMessage(message: MobileMessage) {
+  async function reactToMessage(message: MobileMessage, reaction: MessageReaction) {
     const targetBotId = botId;
     const targetGroupId = groupId;
     if (!targetBotId && !targetGroupId) return;
@@ -1407,16 +1633,73 @@ function Thread() {
       await rpc("threads/react", {
         ...(targetGroupId ? { groupId: targetGroupId } : threadBot(targetBotId!)),
         messageId: message.id,
-        thumbsUp: !message.thumbsUp,
+        reaction,
+        clientNonce: newClientNonce(),
       });
     } catch (err) {
       if (!isCurrentTarget(targetBotId, targetGroupId)) return;
-      setError(err instanceof Error ? err.message : "Could not update reaction");
+      setError(err instanceof Error ? err.message : t("Could not update reaction"));
     }
   }
 
+  function messageActionProps(message: MobileMessage): MessageActionProps {
+    const actions = [
+      { name: "reply", text: t("Reply"), onPress: () => setReplyTarget(message) },
+      ...(canReactToThreadMessage(message)
+        ? [
+            {
+              name: "react",
+              text: t("React"),
+              onPress: () =>
+                presentMessageActionSheet({
+                  cancel: t("Cancel"),
+                  more: t("More"),
+                  colorScheme,
+                  actions: MESSAGE_REACTIONS.map((emoji) => ({
+                    name: emoji,
+                    text: emoji,
+                    onPress: () => void reactToMessage(message, emoji),
+                  })),
+                }),
+            },
+          ]
+        : []),
+      ...(message.role === "bot" && blockText(message)
+        ? [{ name: "speak", text: t("Speak message"), onPress: () => void speak(message) }]
+        : []),
+      {
+        name: "copy",
+        text: t("Copy"),
+        onPress: () => {
+          const text = copyableMobileMessageText(message);
+          if (text) void Clipboard.setStringAsync(text).catch(() => undefined);
+        },
+      },
+    ];
+    return {
+      onLongPress: () =>
+        presentMessageActionSheet({
+          actions,
+          title: message.createdAt
+            ? new Date(message.createdAt).toLocaleTimeString(dateLocaleForUi(), {
+                hour: "numeric",
+                minute: "2-digit",
+              })
+            : undefined,
+          cancel: t("Cancel"),
+          more: t("More"),
+          colorScheme,
+        }),
+      accessibilityActions: actions.map((action) => ({ name: action.name, label: action.text })),
+      onAccessibilityAction: (event) => {
+        actions.find((action) => action.name === event.nativeEvent.actionName)?.onPress();
+      },
+    };
+  }
+
   function renderMessageRow(message: MobileMessage, options?: { enableJump?: boolean }) {
-    if (!hasVisibleMessagePresentation(message.blocks)) return null;
+    const actionProps = messageActionProps(message);
+    const messageReactions = reactionView.reactions.get(message.id);
     const activityBotId =
       !inGroup && message.role === "bot" && message.id.startsWith("progress:")
         ? (message.botId ?? botId)
@@ -1457,16 +1740,14 @@ function Thread() {
         {activityBotId ? (
           <View style={{ paddingTop: 22 }}>
             <BotAvatar
-              color={activityBot?.color ?? "#85858A"}
+              color={activityBot?.color ?? tokens.mutedForeground}
               identity={activityBotId}
               size={inGroup ? 20 : 28}
               status={activityStatus}
             />
           </View>
         ) : null}
-        <Pressable
-          onLongPress={() => setActiveMessageActionsId((current) => current === message.id ? null : message.id)}
-          accessibilityHint="Long press for message actions"
+        <View
           style={{
             width: isCenteredAgentEvent(message.blocks) ? "100%" : undefined,
             maxWidth: isCenteredAgentEvent(message.blocks)
@@ -1478,52 +1759,56 @@ function Thread() {
             flexShrink: 1,
           }}
         >
-          {activeMessageActionsId === message.id ? <View
-            style={{
-              alignSelf: message.role === "user" ? "flex-end" : "flex-start",
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 12,
-              marginBottom: 4,
-            }}
-          >
-            <Pressable accessibilityLabel="Reply" onPress={() => setReplyTarget(message)}>
-              <Text style={{ color: "#6C6C70", fontSize: 12 }}>Reply</Text>
-            </Pressable>
-            {canReactToThreadMessage(message) ? (
-              <Pressable
-                accessibilityLabel={message.thumbsUp ? "Remove thumbs-up" : "Add thumbs-up"}
-                accessibilityState={{ selected: Boolean(message.thumbsUp) }}
-                onPress={() => void reactToMessage(message)}
-              >
+          <Pressable accessible={false} onLongPress={actionProps.onLongPress}>
+            <MessageBubble
+              botId={botId ?? snap?.members?.[0]?.botId ?? ""}
+              groupId={groupId}
+              message={message}
+              botName={displayName}
+              bots={mentionBots}
+              members={snap?.members}
+              replyPreview={
+                message.replyToMessageId ? messagesById.get(message.replyToMessageId) : undefined
+              }
+              canAnswer={message.id === answerableAskMessageId}
+              onAnswer={answerMessage}
+              onOpenBot={openBot}
+              onPreviewMarkdown={setMarkdownPreview}
+              actionProps={actionProps}
+              compactDelegation={assistantView}
+            />
+          </Pressable>
+          {messageReactions ? (
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 4,
+                marginTop: 4,
+                justifyContent: message.role === "user" ? "flex-end" : "flex-start",
+              }}
+            >
+              {[...messageReactions].map(([emoji, count]) => (
                 <Text
+                  key={emoji}
                   style={{
-                    color: message.thumbsUp ? "#E9C46A" : "#6C6C70",
+                    color: tokens.foreground,
+                    backgroundColor: tokens.muted,
+                    borderColor: tokens.border,
+                    borderWidth: 1,
+                    borderRadius: 16,
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
                     fontSize: 13,
                   }}
                 >
-                  👍
+                  {emoji}
+                  {count > 1 ? ` ${count}` : ""}
                 </Text>
-              </Pressable>
-            ) : null}
-          </View> : null}
-          <MessageBubble
-            botId={botId ?? snap?.members?.[0]?.botId ?? ""}
-            groupId={groupId}
-            message={message}
-            botName={name}
-            bots={mentionBots}
-            members={snap?.members}
-            replyPreview={
-              message.replyToMessageId ? messagesById.get(message.replyToMessageId) : undefined
-            }
-            canAnswer={message.id === answerableAskMessageId}
-            onAnswer={answerMessage}
-            onOpenBot={openBot}
-            onPreviewMarkdown={setMarkdownPreview}
-            compactDelegation={assistantView}
-          />
-        </Pressable>
+              ))}
+            </View>
+          ) : null}
+        </View>
       </View>
     );
   }
@@ -1531,10 +1816,11 @@ function Thread() {
   const workingFooter =
     !inGroup && currentBot && isWorkingStatus(currentBotStatus) && !hasLiveProgress ? (
       <View
+        accessibilityLabel={t("{name} is working", { name: currentBot.name })}
+        accessibilityRole="text"
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 10,
           minHeight: 40,
           marginTop: 12,
         }}
@@ -1545,14 +1831,18 @@ function Thread() {
           size={28}
           status={currentBotStatus}
         />
-        <Text style={{ color: "#85858A", fontSize: 13.5 }}>{currentBot.name} is working</Text>
       </View>
     ) : inGroup && workingGroupBots.length > 0 ? (
       <View
+        accessibilityLabel={
+          workingGroupBots.length === 1
+            ? t("{name} is working", { name: workingGroupBots[0]?.name ?? t("Agent") })
+            : t("{count} agents working", { count: workingGroupBots.length })
+        }
+        accessibilityRole="text"
         style={{
           flexDirection: "row",
           alignItems: "center",
-          gap: 10,
           minHeight: 40,
           marginTop: 12,
         }}
@@ -1570,11 +1860,6 @@ function Thread() {
             </View>
           ))}
         </View>
-        <Text style={{ color: "#85858A", fontSize: 13.5, flexShrink: 1 }}>
-          {workingGroupBots.length === 1
-            ? `${workingGroupBots[0]?.name ?? "Agent"} is working`
-            : `${workingGroupBots.length} agents working`}
-        </Text>
       </View>
     ) : null;
 
@@ -1589,8 +1874,8 @@ function Thread() {
           paddingVertical: 10,
         }}
       >
-        <Text style={{ color: "#85858A", fontSize: 13 }}>
-          {loadingOlder ? "Loading…" : "Load earlier messages"}
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+          {loadingOlder ? t("Loading…") : t("Load earlier messages")}
         </Text>
       </Pressable>
     ) : null;
@@ -1614,10 +1899,18 @@ function Thread() {
     <KeyboardGestureArea
       interpolator="ios"
       textInputNativeID="thread-composer"
-      style={{ flex: 1, backgroundColor: theme.page, paddingHorizontal: 16 }}
+      style={{ flex: 1, backgroundColor: tokens.background, paddingHorizontal: 20 }}
     >
-      {error ? <Text style={{ color: theme.danger, marginTop: 12 }}>{friendlyChatError(error)}</Text> : null}
-      {runError ? <Text style={{ color: theme.danger, marginTop: 12 }}>{friendlyChatError(runError)}</Text> : null}
+      {error ? (
+        <Text style={{ color: tokens.mutedForeground, marginTop: 12 }}>
+          {friendlyChatError(error)}
+        </Text>
+      ) : null}
+      {runError ? (
+        <Text style={{ color: tokens.destructive, marginTop: 12 }}>
+          {friendlyChatError(runError)}
+        </Text>
+      ) : null}
       <View style={{ flex: 1, position: "relative" }}>
         {showPinnedPage ? (
           <KeyboardChatScrollView
@@ -1685,7 +1978,7 @@ function Thread() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
-              threadScrollState.unread ? "Jump to latest, new messages" : "Jump to latest"
+              threadScrollState.unread ? t("Jump to latest, new messages") : t("Jump to latest")
             }
             onPress={() => {
               performScroll(scrollBehavior.current.jumpToLatest());
@@ -1700,14 +1993,18 @@ function Thread() {
               height: 42,
               borderRadius: 21,
               borderWidth: 1,
-              borderColor: theme.hairlineStrong,
-              backgroundColor:
-                appearance === "light" ? "rgba(255,255,255,0.82)" : "rgba(28,28,30,0.82)",
+              borderColor: native.fillPressed,
+              backgroundColor: native.fill,
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <NativeSymbol ios="arrow.down" android="arrow-down" size={18} color={theme.ink} />
+            <NativeSymbol
+              ios="arrow.down"
+              android="arrow-down"
+              size={18}
+              color={tokens.foreground}
+            />
             {threadScrollState.unread ? (
               <View
                 style={{
@@ -1717,7 +2014,7 @@ function Thread() {
                   width: 8,
                   height: 8,
                   borderRadius: 4,
-                  backgroundColor: "#4C8DFF",
+                  backgroundColor: tokens.primary,
                 }}
               />
             ) : null}
@@ -1725,449 +2022,579 @@ function Thread() {
         ) : null}
       </View>
       <KeyboardStickyView offset={{ opened: insets.bottom }}>
-      <View style={{ paddingBottom: Math.max(insets.bottom + 10, 20) }}>
-        {replyTarget ? (
-          <View
-            style={{
-              marginTop: 12,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: theme.hairline,
-              backgroundColor: theme.surface2,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: "#85858A", fontSize: 12 }}>Replying to</Text>
-              <Text style={{ color: theme.ink, fontSize: 13 }} numberOfLines={1}>
-                {previewMessageText(replyTarget)}
-              </Text>
-            </View>
-            <Pressable accessibilityLabel="Cancel reply" onPress={() => setReplyTarget(null)}>
-              <Text style={{ color: "#85858A" }}>✕</Text>
-            </Pressable>
-          </View>
-        ) : null}
-        {attachmentNotice ? (
-          <Text style={{ color: "#D6CFA0", marginTop: 12, fontSize: 13 }}>{attachmentNotice}</Text>
-        ) : null}
-        {activePendingAttachments.length ? (
-          <View
-            style={{
-              flexDirection: "row",
-              gap: 8,
-              marginTop: 12,
-            }}
-          >
-            {activePendingAttachments.map((attachment) => (
-              <View
-                key={attachment.id}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 8,
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: theme.border,
-                  backgroundColor: theme.surface,
-                  paddingHorizontal: 12,
-                  paddingVertical: 8,
-                }}
-              >
-                {attachment.previewUri ? (
-                  <Image
-                    source={{ uri: attachment.previewUri }}
-                    style={{ width: 28, height: 28, borderRadius: 6 }}
-                  />
-                ) : (
-                  <Text style={{ color: theme.soft }}>📎</Text>
-                )}
-                <Text style={{ color: theme.soft, maxWidth: 140 }} numberOfLines={1}>
-                  {attachment.name}
+        <View style={{ paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom + 12, 24) }}>
+          {replyTarget ? (
+            <View
+              style={{
+                marginTop: 12,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                backgroundColor: tokens.card,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: tokens.mutedForeground, fontSize: 12 }}>
+                  {t("Replying to")}
                 </Text>
-                <Pressable
-                  accessibilityLabel={`Remove ${attachment.name}`}
-                  onPress={() =>
-                    setPendingAttachments((current) =>
-                      current.filter((item) => item.id !== attachment.id),
-                    )
-                  }
-                >
-                  <NativeSymbol ios="xmark" android="close" size={14} color={theme.muted} />
-                </Pressable>
+                <Text style={{ color: tokens.foreground, fontSize: 13 }} numberOfLines={1}>
+                  {previewMessageText(replyTarget)}
+                </Text>
               </View>
-            ))}
-          </View>
-        ) : null}
-        {mentionOptions.length ? (
-          <View
-            testID="mention-picker"
-            style={{
-              marginTop: 12,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: theme.border,
-              backgroundColor: theme.surface,
-              overflow: "hidden",
-            }}
-          >
-            {mentionOptions.map((mention) => (
               <Pressable
-                key={mentionChipKey(mention)}
-                accessibilityLabel={`@${mention.name}`}
-                onPress={() => insertMention(mention)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "flex-start",
-                  gap: 10,
-                  paddingHorizontal: 14,
-                  paddingVertical: 10,
-                }}
+                accessibilityLabel={t("Cancel reply")}
+                onPress={() => setReplyTarget(null)}
               >
-                <MentionOptionIcon mention={mention} />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={{ color: theme.ink, fontSize: 14 }}>@{mention.name}</Text>
-                  {mention.subtitle ? (
+                <Text style={{ color: tokens.mutedForeground }}>✕</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {attachmentNotice ? (
+            <Text style={{ color: tokens.warning, marginTop: 12, fontSize: 13 }}>
+              {attachmentNotice}
+            </Text>
+          ) : null}
+          {activePendingAttachments.length ? (
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              {activePendingAttachments.map((attachment) => (
+                <View
+                  key={attachment.id}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: tokens.border,
+                    backgroundColor: tokens.card,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                  }}
+                >
+                  {attachment.previewUri ? (
+                    <Image
+                      source={{ uri: attachment.previewUri }}
+                      style={{ width: 28, height: 28, borderRadius: 6 }}
+                    />
+                  ) : (
+                    <Text style={{ color: tokens.foreground }}>📎</Text>
+                  )}
+                  <Text style={{ color: tokens.foreground, maxWidth: 140 }} numberOfLines={1}>
+                    {attachment.name}
+                  </Text>
+                  <Pressable
+                    accessibilityLabel={t("Remove {name}", { name: attachment.name })}
+                    onPress={() =>
+                      setPendingAttachments((current) =>
+                        current.filter((item) => item.id !== attachment.id),
+                      )
+                    }
+                  >
+                    <NativeSymbol
+                      ios="xmark"
+                      android="close"
+                      size={14}
+                      color={tokens.mutedForeground}
+                    />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {mentionOptions.length ? (
+            <View
+              testID="mention-picker"
+              style={{
+                marginTop: 12,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                backgroundColor: tokens.card,
+                overflow: "hidden",
+              }}
+            >
+              {mentionOptions.map((mention) => (
+                <Pressable
+                  key={mentionChipKey(mention)}
+                  accessibilityLabel={t("@{name}", { name: mention.name })}
+                  onPress={() => insertMention(mention)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                  }}
+                >
+                  <MentionOptionIcon mention={mention} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: tokens.foreground, fontSize: 14 }}>@{mention.name}</Text>
+                    {mention.subtitle ? (
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          color: tokens.mutedForeground,
+                          fontSize: 12.5,
+                          marginTop: 2,
+                        }}
+                      >
+                        {mention.subtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          {slashSkillOptions.length || slashActionOptions.length ? (
+            <View
+              testID="slash-picker"
+              style={{
+                marginTop: 12,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                backgroundColor: tokens.card,
+                overflow: "hidden",
+              }}
+            >
+              {slashSkillOptions.map((skill) => (
+                <Pressable
+                  key={skill.id}
+                  accessibilityLabel={t("Skill {name}", { name: skill.name })}
+                  onPress={() => insertSkill(skill)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                  }}
+                >
+                  <NativeSymbol
+                    ios="cube"
+                    android="cube-outline"
+                    size={16}
+                    color={tokens.mutedForeground}
+                  />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: tokens.foreground, fontSize: 14 }}>{skill.name}</Text>
                     <Text
                       numberOfLines={1}
-                      style={{
-                        color: theme.muted,
-                        fontSize: 12.5,
-                        marginTop: 2,
-                      }}
+                      style={{ color: tokens.mutedForeground, fontSize: 12.5, marginTop: 2 }}
                     >
-                      {mention.subtitle}
+                      {truncateSlashDescription(skill.description)}
                     </Text>
-                  ) : null}
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-        {slashSkillOptions.length || slashActionOptions.length ? (
-          <View
-            testID="slash-picker"
-            style={{
-              marginTop: 12,
-              borderRadius: 14,
-              borderWidth: 1,
-              borderColor: theme.border,
-              backgroundColor: theme.surface,
-              overflow: "hidden",
-            }}
-          >
-            {slashSkillOptions.map((skill) => (
-              <Pressable
-                key={skill.id}
-                accessibilityLabel={`Skill ${skill.name}`}
-                onPress={() => insertSkill(skill)}
+                  </View>
+                </Pressable>
+              ))}
+              {slashActionOptions.map((action) => (
+                <Pressable
+                  key={action.id}
+                  accessibilityLabel={t(action.label)}
+                  onPress={() => runSlashAction(action.id)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                  }}
+                >
+                  <NativeSymbol
+                    ios="gearshape"
+                    android="settings-outline"
+                    size={16}
+                    color={tokens.mutedForeground}
+                  />
+                  <Text style={{ color: tokens.foreground, fontSize: 14 }}>{t(action.label)}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          {dictationStatus === "recording" ? (
+            <View>
+              <View
                 style={{
                   flexDirection: "row",
-                  alignItems: "flex-start",
-                  gap: 10,
-                  paddingHorizontal: 14,
-                  paddingVertical: 10,
+                  justifyContent: "space-between",
+                  paddingTop: 10,
+                  paddingHorizontal: 6,
                 }}
               >
-                <NativeSymbol ios="cube" android="cube-outline" size={16} color={theme.muted} />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={{ color: theme.ink, fontSize: 14 }}>{skill.name}</Text>
-                  <Text
-                    numberOfLines={1}
-                    style={{ color: theme.muted, fontSize: 12.5, marginTop: 2 }}
+                <Text style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+                  {t("Dictating")}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={10}
+                  onPress={() => void cancelDictation()}
+                >
+                  <Text style={{ color: tokens.foreground, fontSize: 13 }}>{t("Cancel")}</Text>
+                </Pressable>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <GlassSurface
+                  appearance={colorScheme}
+                  style={{
+                    width: 72,
+                    minHeight: 56,
+                    borderRadius: 28,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  fallbackStyle={{
+                    backgroundColor: tokens.card,
+                    borderWidth: 1,
+                    borderColor: tokens.border,
+                  }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("Stop recording and edit")}
+                    onPress={() => void toggleDictation()}
+                    style={{
+                      height: 56,
+                      width: 72,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
                   >
-                    {truncateSlashDescription(skill.description)}
+                    <NativeSymbol
+                      ios="stop.fill"
+                      android="stop"
+                      size={18}
+                      color={tokens.foreground}
+                    />
+                  </Pressable>
+                </GlassSurface>
+                <GlassSurface
+                  appearance={colorScheme}
+                  style={{
+                    flex: 1,
+                    minHeight: 56,
+                    borderRadius: 28,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 12,
+                  }}
+                  fallbackStyle={{
+                    backgroundColor: tokens.card,
+                    borderWidth: 1,
+                    borderColor: tokens.border,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: tokens.foreground,
+                      fontSize: 20,
+                      fontVariant: ["tabular-nums"],
+                    }}
+                  >
+                    {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
                   </Text>
-                </View>
-              </Pressable>
-            ))}
-            {slashActionOptions.map((action) => (
-              <Pressable
-                key={action.id}
-                accessibilityLabel={action.label}
-                onPress={() => runSlashAction(action.id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 10,
-                  paddingHorizontal: 14,
-                  paddingVertical: 10,
-                }}
-              >
-                <NativeSymbol
-                  ios="gearshape"
-                  android="settings-outline"
-                  size={16}
-                  color={theme.muted}
-                />
-                <Text style={{ color: theme.ink, fontSize: 14 }}>{action.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-        {draftPreview && draft.trim() ? (
-          <View style={{ marginTop: 12, borderRadius: 18, padding: 14, backgroundColor: theme.surface2 }}>
-            <Text style={{ color: theme.muted, fontSize: 12, marginBottom: 8 }}>Preview</Text>
-            <ScrollView style={{ maxHeight: 140 }} nestedScrollEnabled><ChatMarkdown appearance={appearance}>{draft}</ChatMarkdown></ScrollView>
-          </View>
-        ) : null}
-        {dictationStatus === "recording" ? (
-          <View>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", paddingTop: 10, paddingHorizontal: 6 }}>
-            <Text style={{ color: theme.muted, fontSize: 13 }}>Dictating</Text>
-            <Pressable accessibilityRole="button" onPress={() => void cancelDictation()} hitSlop={10}><Text style={{ color: theme.ink, fontSize: 13 }}>Cancel</Text></Pressable>
-          </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 }}>
-            <GlassSurface
-              appearance={appearance}
-              style={{ width: 72, minHeight: 56, borderRadius: 28, alignItems: "center", justifyContent: "center" }}
-              fallbackStyle={{ backgroundColor: appearance === "light" ? "#FFFFFF" : "#29292B", borderWidth: 1, borderColor: theme.hairlineStrong }}
-            >
-              <Pressable accessibilityLabel="Stop recording and edit" onPress={() => void toggleDictation()} style={{ height: 56, width: 72, alignItems: "center", justifyContent: "center" }}>
-                <NativeSymbol ios="stop.fill" android="stop" size={18} color={theme.ink} />
-              </Pressable>
-            </GlassSurface>
-            <GlassSurface
-              appearance={appearance}
-              style={{ flex: 1, minHeight: 56, borderRadius: 28, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12 }}
-              fallbackStyle={{ backgroundColor: appearance === "light" ? "#FFFFFF" : "#29292B", borderWidth: 1, borderColor: theme.hairlineStrong }}
-            >
-              <Text style={{ color: theme.ink, fontSize: 20, fontVariant: ["tabular-nums"] }}>
-                {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
-              </Text>
-              <View accessibilityLabel="Recording" style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
-                {recordingLevels.map((level, index) => (
-                  <View key={index} style={{ width: 3, height: 5 + level * 19, borderRadius: 2, backgroundColor: theme.muted }} />
-                ))}
-              </View>
-
-            </GlassSurface>
-            <Pressable
-              accessibilityLabel="Send recording"
-              onPress={() => void toggleDictation(true)}
-              style={{ width: 72, minHeight: 56, borderRadius: 28, backgroundColor: "#111111", alignItems: "center", justifyContent: "center" }}
-            >
-              <NativeSymbol ios="arrow.up" android="arrow-up" size={22} color="#FFFFFF" />
-            </Pressable>
-          </View>
-          </View>
-        ) : null}
-        {selectedSkill || selectedMentions.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 44 }} contentContainerStyle={{ gap: 6, paddingTop: 8 }}>
-            {selectedSkill ? (
-              <View
-                testID="skill-chip"
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  backgroundColor: theme.elevated,
-                  borderRadius: 999,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  maxWidth: "100%",
-                }}
-              >
-                <NativeSymbol ios="cube" android="cube-outline" size={13} color={theme.muted} />
-                <Text numberOfLines={1} style={{ color: theme.ink, fontSize: 13, flexShrink: 1 }}>
-                  {selectedSkill.name}
-                </Text>
+                  <View
+                    accessibilityLabel={t("Recording")}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 2 }}
+                  >
+                    {recordingLevels.map((level, index) => (
+                      <View
+                        key={index}
+                        style={{
+                          width: 3,
+                          height: 5 + level * 19,
+                          borderRadius: 2,
+                          backgroundColor: tokens.mutedForeground,
+                        }}
+                      />
+                    ))}
+                  </View>
+                </GlassSurface>
                 <Pressable
-                  accessibilityLabel={`Remove skill ${selectedSkill.name}`}
-                  hitSlop={8}
-                  onPress={() => setSelectedSkill(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("Send recording")}
+                  onPress={() => void toggleDictation(true)}
+                  style={{
+                    width: 72,
+                    minHeight: 56,
+                    borderRadius: 28,
+                    backgroundColor: tokens.primary,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
                 >
-                  <NativeSymbol ios="xmark" android="close" size={12} color={theme.muted} />
+                  <NativeSymbol
+                    ios="arrow.up"
+                    android="arrow-up"
+                    size={22}
+                    color={tokens.primaryForeground}
+                  />
                 </Pressable>
               </View>
-            ) : null}
-            {selectedMentions.map((mention) => (
-              <View
-                key={mentionChipKey(mention)}
-                testID="mention-chip"
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 6,
-                  backgroundColor: theme.elevated,
-                  borderRadius: 999,
-                  paddingHorizontal: 10,
-                  paddingVertical: 5,
-                  maxWidth: "100%",
-                }}
-              >
-                <MentionChipIcon mention={mention} />
-                <Text numberOfLines={1} style={{ color: theme.ink, fontSize: 13, flexShrink: 1 }}>
-                  {mention.name}
-                </Text>
-                <Pressable
-                  accessibilityLabel={`Remove mention ${mention.name}`}
-                  hitSlop={8}
-                  onPress={() =>
-                    setSelectedMentions((current) =>
-                      current.filter(
-                        (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
-                      ),
-                    )
-                  }
-                >
-                  <NativeSymbol ios="xmark" android="close" size={12} color={theme.muted} />
-                </Pressable>
-              </View>
-            ))}
-        </ScrollView> : null}
-        <View
-          style={{
-            flexDirection: "row",
-            gap: 8,
-            marginTop: 12,
-            alignItems: "flex-end",
-            display: dictationStatus === "recording" ? "none" : "flex",
-          }}
-        >
-          <Pressable
-            accessibilityLabel="Attach file"
-            onPress={showAttachMenu}
+            </View>
+          ) : null}
+          <View
             style={{
-              width: 50,
-              height: 50,
-              borderRadius: 25,
-              borderWidth: 1,
-              borderColor: theme.hairlineStrong,
-              backgroundColor:
-                appearance === "light" ? "rgba(255,255,255,0.62)" : "rgba(255,255,255,0.08)",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <NativeSymbol ios="plus" android="add" size={18} color={theme.body} />
-          </Pressable>
-          <GlassSurface
-            appearance={appearance}
-            style={{
-              flex: 1,
               flexDirection: "row",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: 6,
-              borderRadius: 27,
-              paddingLeft: 16,
-              paddingRight: 5,
-              paddingVertical: 5,
-              minHeight: 54,
-            }}
-            fallbackStyle={{
-              backgroundColor:
-                appearance === "light" ? "rgba(238,238,235,0.88)" : "rgba(12,12,14,0.78)",
-              borderWidth: 1,
-              borderColor: appearance === "light" ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.1)",
+              gap: 8,
+              marginTop: 16,
+              alignItems: "flex-end",
+              display: dictationStatus === "recording" ? "none" : "flex",
             }}
           >
-            <TextInput
-              nativeID="thread-composer"
-              autoFocus={focus === "1" || Boolean(routeDraft)}
-              value={draft}
-              onChangeText={updateDraft}
-              accessibilityLabel={name ? `Message ${name}` : "Message"}
-              onKeyPress={(event) => {
-                if (
-                  event.nativeEvent.key === "Backspace" &&
-                  draft.length === 0 &&
-                  (selectedSkill !== null || selectedMentions.length > 0)
-                ) {
-                  removeLastChip();
-                }
+            <Pressable
+              accessibilityLabel={t("Attach file")}
+              onPress={showAttachMenu}
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 22,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                alignItems: "center",
+                justifyContent: "center",
               }}
-              placeholder={
-                selectedSkill || selectedMentions.length
-                  ? undefined
-                  : name
-                    ? `Message ${name}`
-                    : "Message…"
-              }
-              placeholderTextColor={theme.muted}
-              keyboardAppearance={appearance}
-              multiline
-              textAlignVertical="center"
-              blurOnSubmit={false}
+            >
+              <NativeSymbol ios="plus" android="add" size={18} color={tokens.mutedForeground} />
+            </Pressable>
+            <GlassSurface
+              appearance={colorScheme}
               style={{
                 flex: 1,
-                minWidth: 0,
-                color: theme.ink,
-                fontSize: 18,
-                lineHeight: 24,
-                paddingVertical: 5,
-                maxHeight: 120,
-                writingDirection: "auto",
+                flexDirection: "row",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 6,
+                borderRadius: 20,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                minHeight: 44,
               }}
-            />
-            {showDictationButton && !canSend ? (
+              fallbackStyle={{
+                backgroundColor: tokens.card,
+                borderWidth: 1,
+                borderColor: tokens.border,
+              }}
+            >
+              {selectedSkill ? (
+                <View
+                  testID="skill-chip"
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    backgroundColor: tokens.muted,
+                    borderRadius: 999,
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    maxWidth: "100%",
+                  }}
+                >
+                  <NativeSymbol
+                    ios="cube"
+                    android="cube-outline"
+                    size={13}
+                    color={tokens.mutedForeground}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    style={{ color: tokens.foreground, fontSize: 13, flexShrink: 1 }}
+                  >
+                    {selectedSkill.name}
+                  </Text>
+                  <Pressable
+                    accessibilityLabel={t("Remove skill {name}", { name: selectedSkill.name })}
+                    hitSlop={8}
+                    onPress={() => setSelectedSkill(null)}
+                  >
+                    <NativeSymbol
+                      ios="xmark"
+                      android="close"
+                      size={12}
+                      color={tokens.mutedForeground}
+                    />
+                  </Pressable>
+                </View>
+              ) : null}
+              {selectedMentions.map((mention) => (
+                <View
+                  key={mentionChipKey(mention)}
+                  testID="mention-chip"
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                    backgroundColor: tokens.muted,
+                    borderRadius: 999,
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    maxWidth: "100%",
+                  }}
+                >
+                  <MentionChipIcon mention={mention} />
+                  <Text
+                    numberOfLines={1}
+                    style={{ color: tokens.foreground, fontSize: 13, flexShrink: 1 }}
+                  >
+                    {mention.name}
+                  </Text>
+                  <Pressable
+                    accessibilityLabel={t("Remove mention {name}", { name: mention.name })}
+                    hitSlop={8}
+                    onPress={() =>
+                      setSelectedMentions((current) =>
+                        current.filter(
+                          (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
+                        ),
+                      )
+                    }
+                  >
+                    <NativeSymbol
+                      ios="xmark"
+                      android="close"
+                      size={12}
+                      color={tokens.mutedForeground}
+                    />
+                  </Pressable>
+                </View>
+              ))}
+              <TextInput
+                nativeID="thread-composer"
+                value={draft}
+                onChangeText={updateDraft}
+                accessibilityLabel={
+                  displayName ? t("Message {name}", { name: displayName }) : t("Message")
+                }
+                onKeyPress={(event) => {
+                  if (
+                    event.nativeEvent.key === "Backspace" &&
+                    draft.length === 0 &&
+                    (selectedSkill !== null || selectedMentions.length > 0)
+                  ) {
+                    removeLastChip();
+                  }
+                }}
+                placeholder={
+                  selectedSkill || selectedMentions.length
+                    ? undefined
+                    : displayName
+                      ? t("Message {name}", { name: displayName })
+                      : t("Message…")
+                }
+                placeholderTextColor={tokens.mutedForeground}
+                keyboardAppearance={colorScheme}
+                multiline
+                textAlignVertical="center"
+                blurOnSubmit={false}
+                style={{
+                  flexGrow: 1,
+                  flexShrink: 1,
+                  minWidth: 96,
+                  color: tokens.foreground,
+                  paddingVertical: 2,
+                  maxHeight: 100,
+                  writingDirection: "auto",
+                }}
+              />
+              {showDictationButton && !canSend ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("Dictate message")}
+                  disabled={dictationStatus === "starting" || dictationStatus === "transcribing"}
+                  onPress={() => void toggleDictation()}
+                  style={{ width: 34, height: 34, alignItems: "center", justifyContent: "center" }}
+                >
+                  {dictationStatus === "starting" || dictationStatus === "transcribing" ? (
+                    <ActivityIndicator color={tokens.mutedForeground} size="small" />
+                  ) : (
+                    <NativeSymbol
+                      ios="mic.fill"
+                      android="mic"
+                      size={19}
+                      color={tokens.mutedForeground}
+                    />
+                  )}
+                </Pressable>
+              ) : null}
+            </GlassSurface>
+            {!inGroup && botId && !canSend && !working ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Dictate message"
-                disabled={dictationStatus === "starting" || dictationStatus === "transcribing"}
-                onPress={() => void toggleDictation()}
-                style={{ width: 38, height: 44, alignItems: "center", justifyContent: "center" }}
+                accessibilityLabel={t("Start voice chat")}
+                onPress={() =>
+                  router.push({
+                    pathname: "/call",
+                    params: { botId, name: displayName ?? t("Bot") },
+                  })
+                }
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 22,
+                  borderWidth: 1,
+                  borderColor: tokens.border,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
               >
-                {dictationStatus === "starting" || dictationStatus === "transcribing" ? (
-                  <ActivityIndicator color={theme.muted} size="small" />
-                ) : (
-                  <NativeSymbol ios="mic.fill" android="mic" size={19} color={theme.muted} />
-                )}
+                <NativeSymbol ios="waveform" android="pulse" size={20} color={tokens.foreground} />
               </Pressable>
             ) : null}
-            {canSend ? (
             <Pressable
-              accessibilityLabel="Send"
-              disabled={sending}
+              accessibilityLabel={t("Send")}
+              disabled={sending || !canSend}
               onPress={() => void send()}
               style={{
-                backgroundColor: appearance === "light" ? "#111111" : "#F4F4F2",
+                backgroundColor: tokens.primary,
                 borderRadius: 22,
                 width: 44,
                 height: 44,
                 alignItems: "center",
                 justifyContent: "center",
-                opacity: sending ? 0.5 : 1,
+                opacity: sending || !canSend ? 0.5 : 1,
               }}
             >
-              <NativeSymbol ios="arrow.up" android="arrow-up" size={20} color={appearance === "light" ? "#FFFFFF" : "#111111"} />
+              <NativeSymbol
+                ios="arrow.up"
+                android="arrow-up"
+                size={18}
+                color={tokens.primaryForeground}
+              />
             </Pressable>
-            ) : botId && !working ? (
+            {working ? (
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Start voice chat"
-                onPress={() => router.push({ pathname: "/call", params: { botId, name } })}
-                style={{ width: 48, height: 44, borderRadius: 22, backgroundColor: appearance === "light" ? "#111111" : "#F4F4F2", alignItems: "center", justifyContent: "center" }}
+                accessibilityLabel={t("Stop")}
+                disabled={sending}
+                onPress={() => void stop()}
+                style={{
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 22,
+                  width: 44,
+                  height: 44,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: sending ? 0.5 : 1,
+                }}
               >
-                <NativeSymbol ios="waveform" android="pulse" size={21} color={appearance === "light" ? "#FFFFFF" : "#111111"} />
+                <NativeSymbol ios="stop.fill" android="stop" size={15} color={tokens.foreground} />
               </Pressable>
             ) : null}
-            {working ? (
-            <Pressable
-              accessibilityLabel="Stop"
-              disabled={sending}
-              onPress={() => void stop()}
-              style={{
-                borderColor: theme.hairlineStrong,
-                borderWidth: 1,
-                borderRadius: 22,
-                width: 38,
-                height: 44,
-                alignItems: "center",
-                justifyContent: "center",
-                opacity: sending ? 0.5 : 1,
-              }}
-            >
-              <NativeSymbol ios="stop.fill" android="stop" size={15} color={theme.body} />
-            </Pressable>
-            ) : null}
-          </GlassSurface>
+          </View>
         </View>
-      </View>
       </KeyboardStickyView>
       {assistantView ? (
         <WorkspacePicker
@@ -2175,35 +2602,59 @@ function Thread() {
           selected="assistant"
           assistantAvailable
           assistantId={botId}
-          assistantName={name}
+          assistantName={displayName}
           onClose={() => setWorkspacePickerOpen(false)}
           onSelect={(next) => {
             if (next === "team") void saveChatView("team").then(() => router.replace("/"));
-            else router.push({ pathname: "/assistant-hub", params: { botId, name } });
           }}
         />
       ) : null}
-      <ActionSheet visible={attachOpen} title="Add to your message" onClose={() => setAttachOpen(false)} onDismiss={() => {
-        const action = afterAttachmentMenu.current;
-        afterAttachmentMenu.current = null;
-        action?.();
-      }} actions={[
-        { label: "Photos", ios: "photo", android: "images-outline", onPress: () => dismissAttachmentMenuThen(() => { void addAttachments(pickFromLibrary); }) },
-        { label: "Camera", ios: "camera", android: "camera-outline", onPress: () => dismissAttachmentMenuThen(() => { void addAttachments(takePhoto); }) },
-        { label: "Files", ios: "doc", android: "document-outline", onPress: () => dismissAttachmentMenuThen(() => { void addAttachments(pickDocuments); }) },
-        ...(showDictationButton ? [{ label: "Dictate", ios: "mic", android: "mic-outline" as const, onPress: () => dismissAttachmentMenuThen(() => { void toggleDictation(); }) }] : []),
-        ...(draft.trim() ? [{ label: draftPreview ? "Hide formatting preview" : "Preview formatting", ios: "textformat", android: "text-outline" as const, onPress: () => { setAttachOpen(false); setDraftPreview((shown) => !shown); } }] : []),
-      ]} />
-      <ActionSheet visible={actionsOpen} title={clearConfirm ? "Clear this conversation?" : name || "Chat"} subtitle={clearConfirm ? "All messages will be removed and current work will stop. Your agent and its memory will remain." : undefined} onClose={() => { setActionsOpen(false); setClearConfirm(false); }} actions={clearConfirm ? [
-        { label: "Clear conversation", ios: "trash", android: "trash-outline", destructive: true, onPress: () => { setActionsOpen(false); setClearConfirm(false); clearConversation(); } },
-        { label: "Keep conversation", ios: "arrow.uturn.backward", android: "arrow-undo-outline", onPress: () => setClearConfirm(false) },
-      ] : [
-        { label: "Chat settings", ios: "slider.horizontal.3", android: "options-outline", onPress: () => { setActionsOpen(false); router.push({ pathname: "/bot-settings", params: { botId } }); } },
-        { label: "Voice call", ios: "waveform", android: "pulse-outline", onPress: () => { setActionsOpen(false); router.push({ pathname: "/call", params: { botId, name } }); } },
-        { label: "Agent computer", ios: "desktopcomputer", android: "desktop-outline", onPress: () => { setActionsOpen(false); router.push({ pathname: "/computer", params: { botId } }); } },
-        { label: "Clear conversation…", ios: "trash", android: "trash-outline", destructive: true, onPress: () => setClearConfirm(true) },
-        { label: "Archive chat", ios: "archivebox", android: "archive-outline", onPress: () => { setActionsOpen(false); void rpc("bots/archive", { botId }).then(leaveBot).catch(() => setError("Couldn't archive this chat. Please try again.")); } },
-      ]} />
+      <Modal
+        visible={botActionsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBotActionsOpen(false)}
+      >
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            padding: 24,
+            backgroundColor: tokens.overlay,
+          }}
+        >
+          <Pressable
+            accessibilityLabel={t("Cancel")}
+            onPress={() => setBotActionsOpen(false)}
+            style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
+          />
+          <View
+            accessibilityViewIsModal
+            style={{ backgroundColor: tokens.popover, borderRadius: 24, paddingVertical: 12 }}
+          >
+            {botActions.map((action) => (
+              <Pressable
+                key={action.text}
+                accessibilityRole="button"
+                onPress={() => {
+                  setBotActionsOpen(false);
+                  action.onPress();
+                }}
+                style={{ minHeight: 56, justifyContent: "center", paddingHorizontal: 24 }}
+              >
+                <Text
+                  style={{
+                    color: action.destructive ? tokens.destructive : tokens.popoverForeground,
+                    fontSize: 16,
+                  }}
+                >
+                  {action.text}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      </Modal>
       {markdownPreview && artifactTarget ? (
         <MarkdownArtifactPreview
           threadTarget={artifactTarget}
@@ -2216,8 +2667,11 @@ function Thread() {
 }
 
 function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
+  const tokens = useMobileTokens();
   if (mention.kind === "routine") {
-    return <NativeSymbol ios="clock" android="time-outline" size={16} color="#9A9AA0" />;
+    return (
+      <NativeSymbol ios="clock" android="time-outline" size={16} color={tokens.mutedForeground} />
+    );
   }
   if (mention.kind === "connector") {
     return (
@@ -2225,7 +2679,7 @@ function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
         ios="puzzlepiece.extension"
         android="extension-puzzle-outline"
         size={16}
-        color="#9A9AA0"
+        color={tokens.mutedForeground}
       />
     );
   }
@@ -2236,12 +2690,12 @@ function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
           width: 16,
           height: 16,
           borderRadius: 8,
-          backgroundColor: "#2A2A2E",
+          backgroundColor: tokens.muted,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        <Text style={{ color: "#C9C9CE", fontSize: 9 }}>G</Text>
+        <Text style={{ color: tokens.foreground, fontSize: 9 }}>G</Text>
       </View>
     );
   }
@@ -2252,12 +2706,12 @@ function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
           width: 16,
           height: 16,
           borderRadius: 8,
-          backgroundColor: "#2A2A2E",
+          backgroundColor: tokens.muted,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        <Text style={{ color: "#C9C9CE", fontSize: 9 }}>@</Text>
+        <Text style={{ color: tokens.foreground, fontSize: 9 }}>@</Text>
       </View>
     );
   }
@@ -2267,15 +2721,18 @@ function MentionOptionIcon({ mention }: { mention: ComposerMention }) {
         width: 16,
         height: 16,
         borderRadius: 4,
-        backgroundColor: mention.color ?? "#85858A",
+        backgroundColor: mention.color ?? tokens.mutedForeground,
       }}
     />
   );
 }
 
 function MentionChipIcon({ mention }: { mention: ComposerMention }) {
+  const tokens = useMobileTokens();
   if (mention.kind === "routine") {
-    return <NativeSymbol ios="clock" android="time-outline" size={13} color="#B0B0B6" />;
+    return (
+      <NativeSymbol ios="clock" android="time-outline" size={13} color={tokens.mutedForeground} />
+    );
   }
   if (mention.kind === "connector") {
     return (
@@ -2283,7 +2740,7 @@ function MentionChipIcon({ mention }: { mention: ComposerMention }) {
         ios="puzzlepiece.extension"
         android="extension-puzzle-outline"
         size={13}
-        color="#B0B0B6"
+        color={tokens.mutedForeground}
       />
     );
   }
@@ -2294,12 +2751,12 @@ function MentionChipIcon({ mention }: { mention: ComposerMention }) {
           width: 14,
           height: 14,
           borderRadius: 7,
-          backgroundColor: "#2A2A2E",
+          backgroundColor: tokens.muted,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        <Text style={{ color: "#C9C9CE", fontSize: 9 }}>
+        <Text style={{ color: tokens.foreground, fontSize: 9 }}>
           {mention.kind === "group" ? "G" : "@"}
         </Text>
       </View>
@@ -2311,7 +2768,7 @@ function MentionChipIcon({ mention }: { mention: ComposerMention }) {
         width: 14,
         height: 14,
         borderRadius: 4,
-        backgroundColor: mention.color ?? "#85858A",
+        backgroundColor: mention.color ?? tokens.mutedForeground,
       }}
     />
   );
@@ -2321,17 +2778,23 @@ function previewMessageText(message: MobileMessage): string {
   const text = message.blocks
     .flatMap((block) => {
       if (block.kind === "channel_message" && block.text) {
-        return [`${messagingProviderLabel(block.provider)} · ${block.fromLabel}: ${block.text}`];
+        return [
+          `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`,
+        ];
       }
-      return block.kind === "text" && block.text ? [block.text] : [];
+      if (block.kind === "text" && block.text) {
+        // Bot text is Markdown; user text is already plain.
+        return [message.role === "bot" ? plainTextFromMarkdown(block.text) : block.text];
+      }
+      return [];
     })
     .join(" ")
     .trim();
   if (text) return text;
   if (message.blocks.some((block) => block.kind === "image" || block.kind === "file")) {
-    return "Attachment";
+    return t("Attachment");
   }
-  return "Message";
+  return t("Message");
 }
 
 function memberName(
@@ -2341,6 +2804,19 @@ function memberName(
   if (!botId || !members) return undefined;
   return members.find((member) => member.botId === botId)?.name;
 }
+
+async function speakMessage(botId: string, message: MobileMessage) {
+  const text = blockText(message);
+  if (!text.trim()) return;
+  if (!(await speakText(text, { botId }))) {
+    throw new Error(t("Add a voice provider in Voice settings."));
+  }
+}
+
+type MessageActionProps = Pick<
+  TextProps,
+  "onLongPress" | "accessibilityActions" | "onAccessibilityAction"
+>;
 
 const MessageBubble = memo(function MessageBubble({
   botId,
@@ -2354,6 +2830,7 @@ const MessageBubble = memo(function MessageBubble({
   onAnswer,
   onOpenBot,
   onPreviewMarkdown,
+  actionProps,
   compactDelegation = false,
 }: {
   botId: string;
@@ -2364,14 +2841,16 @@ const MessageBubble = memo(function MessageBubble({
   members?: MobileSnapshot["members"];
   replyPreview?: MobileMessage;
   canAnswer: boolean;
-  onAnswer: (message: MobileMessage, answer: string) => Promise<void>;
+  onAnswer: (message: MobileMessage, answer: string, username?: string) => Promise<void>;
   onOpenBot: (botId: string, name: string) => void;
   onPreviewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
+  actionProps: MessageActionProps;
   /** Personal view: delegation blocks collapse to one "Worked with <bot>" label. */
   compactDelegation?: boolean;
 }) {
-  const appearance = useResolvedAppearance();
-  const theme = mobileTokens();
+  const colorScheme = useResolvedAppearance();
+  const tokens = mobileTokens();
+  const { t } = useI18n();
   const [peerExpanded, setPeerExpanded] = useState(false);
   const artifactTarget: MobileArtifactTarget = groupId ? { groupId } : { botId };
   const cardBotId = message.botId ?? botId;
@@ -2388,11 +2867,18 @@ const MessageBubble = memo(function MessageBubble({
       <View style={{ gap: 8, width: "100%" }}>
         <AskBlock
           ask={ask}
+          actionProps={actionProps}
           canAnswer={canAnswer}
-          onAnswer={(answer) => onAnswer(message, answer)}
+          onAnswer={(answer, username) => onAnswer(message, answer, username)}
         />
         {appConnectBlocks.map((block, index) => (
-          <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
         ))}
       </View>
     );
@@ -2405,9 +2891,10 @@ const MessageBubble = memo(function MessageBubble({
       chip.name ??
       memberName(members, chip.botId) ??
       bots.find((bot) => bot.id === chip.botId)?.name ??
-      "a teammate";
+      t("a teammate");
     return (
       <AgentEventLabel
+        actionProps={actionProps}
         label={workedWithLabel(peerName)}
         detail={chip.detail}
         expanded={peerExpanded}
@@ -2417,11 +2904,12 @@ const MessageBubble = memo(function MessageBubble({
   }
   const handoff = message.blocks.find((block) => block.kind === "handoff");
   if (handoff) {
-    const from = memberName(members, handoff.fromBotId) ?? "bot";
-    const to = memberName(members, handoff.toBotId) ?? "bot";
+    const from = memberName(members, handoff.fromBotId) ?? t("bot");
+    const to = memberName(members, handoff.toBotId) ?? t("bot");
     return (
       <AgentEventLabel
-        label={`${from} messaged ${to}`}
+        actionProps={actionProps}
+        label={t("{from} messaged {to}", { from, to })}
         detail={handoff.text}
         expanded={peerExpanded}
         onToggle={() => setPeerExpanded((expanded) => !expanded)}
@@ -2438,15 +2926,18 @@ const MessageBubble = memo(function MessageBubble({
     const sent = peerMessage.kind === "bot_message_sent";
     const peer = sent ? peerMessage.toBotName : peerMessage.fromBotName;
     const peerBotId = sent ? peerMessage.toBotId : peerMessage.fromBotId;
-    const label = sent ? `Messaged ${peer}` : `Message from ${peer}`;
+    const label = sent
+      ? t("Messaged {peer}", { peer: peer ?? t("Bot") })
+      : t("Message from {peer}", { peer: peer ?? t("Bot") });
     const peerColor =
       bots.find((bot) => bot.id === peerBotId)?.color ??
       members?.find((member) => member.botId === peerBotId)?.color ??
-      "#85858A";
+      tokens.mutedForeground;
     // Compact receipt only: peer bodies stay out of the human thread.
     // Full view-only peer chat is web-first; mobile keeps the chip without expand.
     return (
-      <View
+      <Pressable
+        {...actionProps}
         accessible
         accessibilityLabel={label}
         style={{
@@ -2459,10 +2950,13 @@ const MessageBubble = memo(function MessageBubble({
         }}
       >
         <BotAvatar color={peerColor} identity={peerBotId} size={16} />
-        <Text numberOfLines={1} style={{ color: "#85858A", fontSize: 13.5, flexShrink: 1 }}>
+        <Text
+          numberOfLines={1}
+          style={{ color: tokens.mutedForeground, fontSize: 13.5, flexShrink: 1 }}
+        >
           {label}
         </Text>
-      </View>
+      </Pressable>
     );
   }
   const channelMessage = message.blocks.find(
@@ -2471,28 +2965,33 @@ const MessageBubble = memo(function MessageBubble({
   );
   if (channelMessage) {
     return (
-      <View style={{ width: "100%", paddingVertical: 4, alignItems: "center" }}>
-        <Text style={{ color: "#85858A", fontSize: 13.5, textAlign: "center" }}>
-          {messagingProviderLabel(channelMessage.provider)} · {channelMessage.fromLabel}:{" "}
-          {channelMessage.text}
+      <Pressable
+        {...actionProps}
+        style={{ width: "100%", paddingVertical: 4, alignItems: "center" }}
+      >
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5, textAlign: "center" }}>
+          {messagingProviderLabel(channelMessage.provider, channelMessage.transport)} ·{" "}
+          {channelMessage.fromLabel}: {channelMessage.text}
         </Text>
-      </View>
+      </Pressable>
     );
   }
   const special = message.blocks.find(
-    (block) => block.kind === "subagent" || block.kind === "child_bot",
+    (block) =>
+      block.kind === "subagent" || block.kind === "child_bot" || block.kind === "cloud_agent",
   );
   if (special?.kind === "subagent") {
     const running = special.status === "running";
     const failed = special.status === "failed";
     return (
-      <View
+      <Pressable
+        {...actionProps}
         style={{
           width: "90%",
           borderRadius: 18,
           borderWidth: 1,
-          borderColor: theme.hairlineStrong,
-          backgroundColor: theme.surface2,
+          borderColor: tokens.border,
+          backgroundColor: tokens.card,
           paddingHorizontal: 16,
           paddingVertical: 14,
         }}
@@ -2504,43 +3003,111 @@ const MessageBubble = memo(function MessageBubble({
             gap: 8,
           }}
         >
-          <Text style={{ color: theme.ink, fontSize: 15, fontWeight: "600" }}>
-            {special.name || "subagent"}
+          <Text style={{ color: tokens.foreground, fontSize: 15, fontWeight: "600" }}>
+            {special.name || t("subagent")}
           </Text>
           <Text
             style={{
-              color: failed ? "#EF4444" : running ? "#F5A03C" : "#4ECB71",
+              color: failed ? tokens.destructive : running ? tokens.warning : tokens.success,
               fontSize: 13,
             }}
           >
-            {running ? "subagent" : special.status}
+            {running
+              ? t("Running")
+              : special.status === "failed"
+                ? t("Failed")
+                : special.status === "completed"
+                  ? t("Completed")
+                  : special.status}
           </Text>
         </View>
         {special.task ? (
-          <Text style={{ color: "#85858A", marginTop: 8, fontSize: 13.5 }}>{special.task}</Text>
+          <Text style={{ color: tokens.mutedForeground, marginTop: 8, fontSize: 13.5 }}>
+            {special.task}
+          </Text>
         ) : null}
         {special.result || special.progress ? (
           <View style={{ marginTop: 8 }}>
-            <ChatMarkdown appearance={appearance} streaming={running}>
+            <ChatMarkdown palette={tokens} colorScheme={colorScheme} streaming={running}>
               {special.result || special.progress || ""}
             </ChatMarkdown>
           </View>
         ) : null}
-      </View>
+      </Pressable>
+    );
+  }
+  if (special?.kind === "cloud_agent") {
+    const title = special.title || t("Cloud agent");
+    const statusLabel =
+      special.status === "running"
+        ? t("running")
+        : special.status === "finished"
+          ? t("finished")
+          : special.status === "cancelled"
+            ? t("cancelled")
+            : t("failed");
+    const running = special.status === "running";
+    const failed = special.status === "failed" || special.status === "cancelled";
+    const prHref = cloudAgentHttpsUrl(special.prUrl);
+    const href = prHref ?? cloudAgentHttpsUrl(special.url);
+    return (
+      <Pressable
+        onPress={() => {
+          if (href) Linking.openURL(href).catch(() => undefined);
+        }}
+        testID="cloud-agent-card"
+        accessibilityRole={href ? "link" : "text"}
+        accessibilityLabel={`${title}: ${statusLabel}`}
+        disabled={!href}
+        style={{
+          width: "90%",
+          borderRadius: 18,
+          borderWidth: 1,
+          borderColor: tokens.border,
+          backgroundColor: tokens.card,
+          paddingHorizontal: 16,
+          paddingVertical: 14,
+        }}
+      >
+        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+          <Text style={{ color: tokens.cardForeground, fontSize: 15, fontWeight: "600" }}>
+            {title}
+          </Text>
+          <Text
+            style={{
+              color: failed ? tokens.destructive : running ? tokens.warning : tokens.success,
+              fontSize: 13,
+            }}
+          >
+            {statusLabel}
+          </Text>
+        </View>
+        {prHref ? (
+          <Text style={{ color: tokens.mutedForeground, marginTop: 8, fontSize: 14.5 }}>
+            {t("Pull request")}
+          </Text>
+        ) : special.branch ? (
+          <Text style={{ color: tokens.mutedForeground, marginTop: 8, fontSize: 13.5 }}>
+            {special.branch}
+          </Text>
+        ) : null}
+      </Pressable>
     );
   }
   if (special?.kind === "child_bot") {
     const removed = special.status === "deleted" || special.status === "archived";
     return (
       <Pressable
-        disabled={removed}
-        onPress={() => onOpenBot(special.botId ?? "", special.name ?? "Bot")}
+        {...actionProps}
+        onPress={
+          removed ? undefined : () => onOpenBot(special.botId ?? "", special.name ?? t("Bot"))
+        }
         style={{
           width: "90%",
           borderRadius: 18,
           borderWidth: 1,
-          borderColor: "#232326",
-          backgroundColor: "#17171A",
+          borderColor: tokens.border,
+          backgroundColor: tokens.card,
           paddingHorizontal: 16,
           paddingVertical: 14,
           opacity: removed ? 0.6 : 1,
@@ -2553,20 +3120,20 @@ const MessageBubble = memo(function MessageBubble({
             gap: 8,
           }}
         >
-          <Text style={{ color: "#ECECEE", fontSize: 15, fontWeight: "600" }}>
-            {special.name || "Bot"}
+          <Text style={{ color: tokens.foreground, fontSize: 15, fontWeight: "600" }}>
+            {special.name || t("Bot")}
           </Text>
-          <Text style={{ color: removed ? "#EF4444" : "#4ECB71", fontSize: 13 }}>
+          <Text style={{ color: removed ? tokens.destructive : tokens.success, fontSize: 13 }}>
             {special.status === "archived"
-              ? "archived"
+              ? t("archived")
               : special.status === "deleted"
-                ? "deleted"
-                : "bot"}
+                ? t("deleted")
+                : t("bot")}
           </Text>
         </View>
         <Text
           style={{
-            color: "#A8A8AD",
+            color: tokens.mutedForeground,
             marginTop: 8,
             fontSize: 14.5,
             lineHeight: 21,
@@ -2574,9 +3141,9 @@ const MessageBubble = memo(function MessageBubble({
         >
           {removed
             ? special.status === "archived"
-              ? "Archived. Chat, memory, and files kept."
-              : "Removed with chat, computer, and memory."
-            : special.title || "Opened its thread."}
+              ? t("Archived. Chat, memory, and files kept.")
+              : t("Removed with chat, computer, and memory.")
+            : special.title || t("Opened its thread.")}
         </Text>
       </Pressable>
     );
@@ -2585,7 +3152,13 @@ const MessageBubble = memo(function MessageBubble({
     return (
       <View style={{ gap: 8, width: "100%" }}>
         {appConnectBlocks.map((block, index) => (
-          <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
         ))}
       </View>
     );
@@ -2601,22 +3174,26 @@ const MessageBubble = memo(function MessageBubble({
             width: "90%",
             borderRadius: 18,
             borderWidth: 1,
-            borderColor: "#232326",
-            backgroundColor: "#17171A",
+            borderColor: tokens.border,
+            backgroundColor: tokens.card,
             paddingHorizontal: 16,
             paddingVertical: 14,
           }}
         >
           {askBlock.text ? (
-            <Text style={{ color: "#ECECEE", fontSize: 15.5, lineHeight: 23 }}>
+            <Text
+              {...actionProps}
+              style={{ color: tokens.foreground, fontSize: 15.5, lineHeight: 23 }}
+            >
               {askBlock.text}
             </Text>
           ) : null}
           {askBlock.detail ? (
             <Text
+              {...(askBlock.text ? {} : actionProps)}
               style={{
-                color: "#85858A",
-                marginTop: 8,
+                color: tokens.mutedForeground,
+                marginTop: askBlock.text ? 8 : 0,
                 fontSize: 12.5,
                 fontFamily: "Menlo",
                 lineHeight: 20,
@@ -2627,8 +3204,9 @@ const MessageBubble = memo(function MessageBubble({
           ) : null}
           {askBlock.status === "answered" ? (
             <Text
+              {...actionProps}
               style={{
-                color: "#4ECB71",
+                color: tokens.success,
                 marginTop: 12,
                 fontSize: 13.5,
                 fontWeight: "600",
@@ -2643,16 +3221,27 @@ const MessageBubble = memo(function MessageBubble({
           ) : canAnswer && onAnswer ? (
             <AskActions
               actions={askBlock.actions}
+              accessibilityActions={actionProps.accessibilityActions}
+              onAccessibilityAction={actionProps.onAccessibilityAction}
               onAnswer={(answer) => onAnswer(message, answer)}
             />
           ) : (
-            <Text style={{ color: "#85858A", marginTop: 12, fontSize: 13.5 }}>
-              No longer active
+            <Text
+              {...actionProps}
+              style={{ color: tokens.mutedForeground, marginTop: 12, fontSize: 13.5 }}
+            >
+              {t("No longer active")}
             </Text>
           )}
         </View>
         {appConnectBlocks.map((block, index) => (
-          <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
         ))}
       </View>
     );
@@ -2663,7 +3252,9 @@ const MessageBubble = memo(function MessageBubble({
   const caption = message.blocks
     .flatMap((block) => {
       if (block.kind === "channel_message" && block.text) {
-        return [`${messagingProviderLabel(block.provider)} · ${block.fromLabel}: ${block.text}`];
+        return [
+          `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`,
+        ];
       }
       return block.kind === "text" && block.text ? [block.text] : [];
     })
@@ -2677,27 +3268,37 @@ const MessageBubble = memo(function MessageBubble({
           maxWidth: "100%",
           borderRadius: 20,
           borderWidth: 1,
-          borderColor: theme.border,
-          backgroundColor: message.role === "user"
-            ? appearance === "light" ? "#DCEBFF" : "#263747"
-            : theme.surface2,
+          borderColor: tokens.border,
+          backgroundColor: message.role === "user" ? tokens.secondary : tokens.muted,
           paddingHorizontal: 14,
           paddingVertical: 12,
           gap: 8,
         }}
       >
         {speaker ? (
-          <Text style={{ color: "#85858A", fontSize: 12.5, fontWeight: "600" }}>{speaker}</Text>
+          <Text style={{ color: tokens.mutedForeground, fontSize: 12.5, fontWeight: "600" }}>
+            {speaker}
+          </Text>
         ) : null}
-        {replyPreview ? (
-          <Text style={{ color: "#85858A", fontSize: 12.5 }} numberOfLines={2}>
-            {previewMessageText(replyPreview)}
+        {replyPreview || (message.replyToMessageId && message.replyQuote) ? (
+          <Text
+            style={{
+              color: message.role === "user" ? tokens.secondaryForeground : tokens.mutedForeground,
+              fontSize: 12.5,
+            }}
+            numberOfLines={2}
+          >
+            {message.replyQuote
+              ? `“${message.replyQuote}”`
+              : replyPreview
+                ? previewMessageText(replyPreview)
+                : ""}
           </Text>
         ) : null}
         {caption ? (
           <Text
             style={{
-              color: message.role === "user" ? (appearance === "light" ? "#17263A" : "#F4F7FF") : theme.body,
+              color: message.role === "user" ? tokens.secondaryForeground : tokens.foreground,
               fontSize: 15,
             }}
           >
@@ -2707,18 +3308,19 @@ const MessageBubble = memo(function MessageBubble({
         {attachments.map((attachment, index) =>
           attachment.kind === "image" ? (
             <Pressable
+              {...actionProps}
               key={`${attachment.artifactId ?? attachment.name ?? "image"}-${index}`}
               onPress={() =>
                 attachment.artifactId
                   ? void openMobileArtifact(
                       artifactTarget,
                       attachment.artifactId,
-                      attachment.name ?? "Image",
+                      attachment.name ?? t("Image"),
                       attachment.mimeType ?? "image/png",
                     ).catch((err) =>
                       Alert.alert(
-                        "Could not open image",
-                        err instanceof Error ? err.message : "Try again.",
+                        t("Could not open image"),
+                        err instanceof Error ? err.message : t("Try again."),
                       ),
                     )
                   : undefined
@@ -2726,33 +3328,34 @@ const MessageBubble = memo(function MessageBubble({
             >
               <Text
                 style={{
-                  color: message.role === "user" ? (appearance === "light" ? "#17263A" : "#F4F7FF") : theme.body,
+                  color: message.role === "user" ? tokens.secondaryForeground : tokens.foreground,
                   fontSize: 15,
                 }}
               >
-                🖼 {attachment.name ?? "Image"}
+                🖼 {attachment.name ?? t("Image")}
               </Text>
             </Pressable>
           ) : (
             <Pressable
+              {...actionProps}
               key={`${attachment.artifactId ?? attachment.name ?? "file"}-${index}`}
               onPress={() =>
                 attachment.artifactId
                   ? attachment.mimeType === "text/markdown"
                     ? onPreviewMarkdown({
                         artifactId: attachment.artifactId,
-                        name: attachment.name ?? "Markdown file",
+                        name: attachment.name ?? t("Markdown file"),
                         mimeType: attachment.mimeType,
                       })
                     : void openMobileArtifact(
                         artifactTarget,
                         attachment.artifactId,
-                        attachment.name ?? "File",
+                        attachment.name ?? t("File"),
                         attachment.mimeType ?? "text/plain",
                       ).catch((err) =>
                         Alert.alert(
-                          "Could not open file",
-                          err instanceof Error ? err.message : "Try again.",
+                          t("Could not open file"),
+                          err instanceof Error ? err.message : t("Try again."),
                         ),
                       )
                   : undefined
@@ -2760,14 +3363,21 @@ const MessageBubble = memo(function MessageBubble({
             >
               <Text
                 style={{
-                  color: message.role === "user" ? (appearance === "light" ? "#17263A" : "#F4F7FF") : theme.body,
+                  color: message.role === "user" ? tokens.secondaryForeground : tokens.foreground,
                   fontSize: 15,
                 }}
               >
-                📎 {attachment.name ?? "File"}
+                📎 {attachment.name ?? t("File")}
               </Text>
               {attachment.size ? (
-                <Text style={{ color: "#85858A", marginTop: 4, fontSize: 13 }}>
+                <Text
+                  style={{
+                    color:
+                      message.role === "user" ? tokens.secondaryForeground : tokens.mutedForeground,
+                    marginTop: 4,
+                    fontSize: 13,
+                  }}
+                >
                   {attachment.mimeType ?? "file"} · {attachment.size} bytes
                 </Text>
               ) : null}
@@ -2775,7 +3385,13 @@ const MessageBubble = memo(function MessageBubble({
           ),
         )}
         {appConnectBlocks.map((block, index) => (
-          <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
+          <AppConnectCard
+            key={`${block.provider}-${index}`}
+            botId={cardBotId}
+            block={block}
+            accessibilityActions={actionProps.accessibilityActions}
+            onAccessibilityAction={actionProps.onAccessibilityAction}
+          />
         ))}
       </View>
     );
@@ -2787,15 +3403,22 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <View style={{ gap: 8, width: "100%" }}>
       {segments.map((segment, index) => (
-          <MessageTextCard
-            key={`${message.id}-content-${index}`}
-            message={{ ...message, blocks: segment.blocks }}
-            speaker={index === firstContent ? speaker : undefined}
-            replyPreview={index === firstContent ? replyPreview : undefined}
-          />
+        <MessageTextCard
+          key={`${message.id}-content-${index}`}
+          message={{ ...message, blocks: segment.blocks }}
+          speaker={index === firstContent ? speaker : undefined}
+          replyPreview={index === firstContent ? replyPreview : undefined}
+          actionProps={actionProps}
+        />
       ))}
       {appConnectBlocks.map((block, index) => (
-        <AppConnectCard key={`${block.provider}-${index}`} botId={cardBotId} block={block} />
+        <AppConnectCard
+          key={`${block.provider}-${index}`}
+          botId={cardBotId}
+          block={block}
+          accessibilityActions={actionProps.accessibilityActions}
+          onAccessibilityAction={actionProps.onAccessibilityAction}
+        />
       ))}
     </View>
   );
@@ -2805,33 +3428,33 @@ function MessageTextCard({
   message,
   speaker,
   replyPreview,
+  actionProps,
 }: {
   message: MobileMessage;
   speaker?: string;
   replyPreview?: MobileMessage;
+  actionProps: MessageActionProps;
 }) {
-  const appearance = useResolvedAppearance();
+  const colorScheme = useResolvedAppearance();
+  const tokens = mobileTokens();
   const contentText = blockText(message);
   if (!contentText) return null;
   return (
-    <View
+    <Pressable
+      {...actionProps}
       style={{
         flexShrink: 1,
         minWidth: 0,
         maxWidth: "100%",
-        backgroundColor:
-          message.role === "user"
-            ? appearance === "light" ? "#DCEBFF" : "#263747"
-            : appearance === "light" ? "#EFEFF1" : "#242426",
-        paddingHorizontal: 14,
-        paddingVertical: 11,
-        borderRadius: 22,
+        backgroundColor: message.role === "user" ? tokens.secondary : tokens.muted,
+        padding: 12,
+        borderRadius: 20,
       }}
     >
       {speaker ? (
         <Text
           style={{
-            color: "#85858A",
+            color: tokens.mutedForeground,
             fontSize: 12.5,
             fontWeight: "600",
             marginBottom: 4,
@@ -2840,19 +3463,36 @@ function MessageTextCard({
           {speaker}
         </Text>
       ) : null}
-      {replyPreview ? (
-        <Text style={{ color: "#85858A", fontSize: 12.5, marginBottom: 6 }} numberOfLines={2}>
-          {previewMessageText(replyPreview)}
+      {replyPreview || (message.replyToMessageId && message.replyQuote) ? (
+        <Text
+          style={{
+            color: message.role === "user" ? tokens.secondaryForeground : tokens.mutedForeground,
+            fontSize: 12.5,
+            marginBottom: 6,
+          }}
+          numberOfLines={2}
+        >
+          {message.replyQuote
+            ? `“${message.replyQuote}”`
+            : replyPreview
+              ? previewMessageText(replyPreview)
+              : ""}
         </Text>
       ) : null}
       {message.role === "user" ? (
-        <Text style={{ color: appearance === "light" ? "#17263A" : "#F4F7FF", fontSize: 17, lineHeight: 25 }}>{contentText}</Text>
+        <Text style={{ color: tokens.secondaryForeground, fontSize: 15.5, lineHeight: 23 }}>
+          {contentText}
+        </Text>
       ) : (
-        <ChatMarkdown appearance={appearance} streaming={message.id.startsWith("progress:")}>
+        <ChatMarkdown
+          palette={tokens}
+          colorScheme={colorScheme}
+          streaming={message.id.startsWith("progress:")}
+        >
           {contentText}
         </ChatMarkdown>
       )}
-    </View>
+    </Pressable>
   );
 }
 
@@ -2861,22 +3501,28 @@ function AgentEventLabel({
   detail,
   expanded,
   onToggle,
+  actionProps,
 }: {
   label: string;
   detail?: string;
   expanded: boolean;
   onToggle: () => void;
+  actionProps: MessageActionProps;
 }) {
-  const appearance = useResolvedAppearance();
-  const theme = mobileTokens();
+  const colorScheme = useResolvedAppearance();
+  const tokens = mobileTokens();
+  const { t } = useI18n();
   return (
     <Pressable
+      {...actionProps}
       onPress={onToggle}
       accessibilityRole="button"
-      accessibilityLabel={`${expanded ? "Hide" : "Show"} ${label}`}
+      accessibilityLabel={expanded ? t("Hide {label}", { label }) : t("Show {label}", { label })}
       style={{ width: "100%", paddingVertical: 4, alignItems: "center" }}
     >
-      <Text style={{ color: "#85858A", fontSize: 13.5, textAlign: "center" }}>↔ {label}</Text>
+      <Text style={{ color: tokens.mutedForeground, fontSize: 13.5, textAlign: "center" }}>
+        ↔ {label}
+      </Text>
       {expanded && detail ? (
         <View
           style={{
@@ -2884,45 +3530,64 @@ function AgentEventLabel({
             marginTop: 6,
             borderRadius: 14,
             borderWidth: 1,
-            borderColor: theme.hairlineStrong,
-            backgroundColor: theme.surface2,
+            borderColor: tokens.border,
+            backgroundColor: tokens.card,
             paddingHorizontal: 14,
             paddingVertical: 10,
           }}
         >
-          <ChatMarkdown appearance={appearance}>{detail}</ChatMarkdown>
+          <ChatMarkdown palette={tokens} colorScheme={colorScheme}>
+            {detail}
+          </ChatMarkdown>
         </View>
       ) : null}
     </Pressable>
   );
 }
 
-
 function AskBlock({
   ask,
   canAnswer,
   onAnswer,
+  actionProps,
 }: {
   ask: Extract<MobileMessage["blocks"][number], { kind: "ask" }>;
   canAnswer: boolean;
-  onAnswer: (answer: string) => Promise<void>;
+  onAnswer: (answer: string, username?: string) => Promise<void>;
+  actionProps: MessageActionProps;
 }) {
+  const tokens = useMobileTokens();
+  const { t } = useI18n();
   const [answer, setAnswer] = useState("");
+  const [username, setUsername] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const answered = ask.status === "answered";
   const secretInput = isSecretAskBlock(ask);
+  const loginInput = secretInput && ask.credential?.auth.type === "login";
+  const incomplete =
+    (secretInput ? answer.length === 0 : !answer.trim()) || (loginInput && !username.trim());
+  const secretLabel =
+    loginInput || ask.purpose === "password"
+      ? t("Password")
+      : ask.purpose === "api_key"
+        ? t("API key")
+        : t("Code");
+  const submitLabel = secretInput ? t("Save") : t("Send answer");
+  const submittingLabel = secretInput ? t("Saving…") : t("Sending…");
 
   async function submit() {
     if (submitting) return;
-    if (secretInput ? answer.length === 0 : !answer.trim()) return;
+    if (incomplete) return;
     const submitValue = secretInput ? answer : answer.trim();
+    const submitUsername = loginInput ? username.trim() : undefined;
     setSubmitting(true);
     setError(null);
+    if (secretInput) setAnswer("");
     try {
-      await onAnswer(submitValue);
+      await onAnswer(submitValue, submitUsername);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not send answer");
+      setError(!secretInput && cause instanceof Error ? cause.message : t("Could not send answer"));
     } finally {
       setSubmitting(false);
     }
@@ -2934,63 +3599,99 @@ function AskBlock({
         width: "90%",
         borderRadius: 18,
         borderWidth: 1,
-        borderColor: "#2D2D31",
-        backgroundColor: "#17171A",
+        borderColor: tokens.border,
+        backgroundColor: tokens.card,
         paddingHorizontal: 16,
         paddingVertical: 14,
         gap: 10,
       }}
     >
-      <Text style={{ color: "#ECECEE", fontSize: 15.5, fontWeight: "600" }}>{ask.text}</Text>
-      {ask.detail ? <Text style={{ color: "#85858A", fontSize: 13.5 }}>{ask.detail}</Text> : null}
+      <Text
+        {...actionProps}
+        style={{ color: tokens.foreground, fontSize: 15.5, fontWeight: "600" }}
+      >
+        {ask.text}
+      </Text>
+      {secretInput && ask.credential ? (
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }}>
+          {ask.credential.origin}
+        </Text>
+      ) : null}
+      {ask.detail && !secretInput ? (
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }}>{ask.detail}</Text>
+      ) : null}
       {answered ? (
-        <Text style={{ color: "#4ECB71", fontSize: 14 }}>
-          {secretInput ? "Submitted" : `Answered: ${ask.answer ?? "Done"}`}
+        <Text style={{ color: tokens.success, fontSize: 14 }}>
+          {secretInput ? t("Saved") : t("Answered: {answer}", { answer: ask.answer ?? t("Done") })}
         </Text>
       ) : canAnswer ? (
         <>
+          {loginInput ? (
+            <TextInput
+              accessibilityLabel={t("Username")}
+              value={username}
+              onChangeText={setUsername}
+              placeholder={t("Username")}
+              placeholderTextColor={tokens.mutedForeground}
+              autoComplete="off"
+              autoCorrect={false}
+              autoCapitalize="none"
+              editable={!submitting}
+              style={[
+                askInputStyles.field,
+                { borderColor: tokens.border, color: tokens.foreground },
+              ]}
+            />
+          ) : null}
           <TextInput
-            accessibilityLabel={secretInput ? "Code" : "Answer"}
+            accessibilityLabel={secretInput ? secretLabel : t("Answer")}
             value={answer}
             onChangeText={setAnswer}
-            placeholder={secretInput ? "Code" : "Type your answer"}
-            placeholderTextColor="#6C6C70"
+            placeholder={secretInput ? secretLabel : t("Type your answer")}
+            placeholderTextColor={tokens.mutedForeground}
             secureTextEntry={secretInput}
             autoComplete="off"
+            autoCorrect={secretInput ? false : undefined}
+            autoCapitalize={secretInput ? "none" : "sentences"}
+            editable={!submitting}
             onSubmitEditing={() => void submit()}
-            style={{
-              minHeight: 42,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: "#35353A",
-              color: "#ECECEE",
-              paddingHorizontal: 12,
-              paddingVertical: 9,
-            }}
+            style={[askInputStyles.field, { borderColor: tokens.border, color: tokens.foreground }]}
           />
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Send answer"
-            disabled={(secretInput ? answer.length === 0 : !answer.trim()) || submitting}
+            accessibilityLabel={submitLabel}
+            disabled={incomplete || submitting}
             onPress={() => void submit()}
             style={{
               alignSelf: "flex-end",
               borderRadius: 999,
-              backgroundColor: "#ECECEE",
-              opacity: (secretInput ? answer.length === 0 : !answer.trim()) || submitting ? 0.5 : 1,
+              backgroundColor: tokens.foreground,
+              opacity: incomplete || submitting ? 0.5 : 1,
               paddingHorizontal: 16,
               paddingVertical: 9,
             }}
           >
-            <Text style={{ color: "#17171A", fontWeight: "600" }}>
-              {submitting ? "Sending…" : "Send answer"}
+            <Text style={{ color: tokens.primaryForeground, fontWeight: "600" }}>
+              {submitting ? submittingLabel : submitLabel}
             </Text>
           </Pressable>
         </>
       ) : (
-        <Text style={{ color: "#85858A", fontSize: 13.5 }}>Waiting for this bot’s response.</Text>
+        <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }}>
+          {t("Waiting for this bot’s response.")}
+        </Text>
       )}
-      {error ? <Text style={{ color: "#EF4444", fontSize: 13 }}>{error}</Text> : null}
+      {error ? <Text style={{ color: tokens.destructive, fontSize: 13 }}>{error}</Text> : null}
     </View>
   );
 }
+
+const askInputStyles = StyleSheet.create({
+  field: {
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+});

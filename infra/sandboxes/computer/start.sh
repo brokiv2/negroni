@@ -9,6 +9,24 @@ export NPM_CONFIG_PREFIX="$AGENT_HOME/.local"
 export PIP_USER=1
 cd "$AGENT_HOME"
 
+# This script is PID 1. Without a handler, PID 1 ignores SIGTERM and `docker stop` waits its
+# full grace period before killing the container, so every stop, sleep and computer switch
+# took ten seconds. Install the handler before any child starts so a stop during startup is
+# honoured too: forward the signal to the desktop processes and exit promptly.
+XVFB_PID=""
+shutdown() {
+  trap - TERM INT
+  if [[ -n "$XVFB_PID" ]]; then
+    kill -TERM "$XVFB_PID" 2>/dev/null || true
+  fi
+  kill -TERM -- -1 2>/dev/null || true
+  if [[ -n "$XVFB_PID" ]]; then
+    wait "$XVFB_PID" 2>/dev/null || true
+  fi
+  exit 0
+}
+trap shutdown TERM INT
+
 if [[ -n "${RAKAZO_COMPUTER_CONTROL_TOKEN:-}" ]]; then
   /usr/local/bin/rakazo-computer-control >/tmp/rakazo/control.log 2>&1 &
 fi
@@ -66,29 +84,6 @@ if ! xdg-settings set default-web-browser rakazo-browser.desktop >/dev/null 2>&1
   exit 1
 fi
 
-rm -f "$AGENT_HOME/.browser-profiles/chromium/SingletonLock" \
-  "$AGENT_HOME/.browser-profiles/chromium/SingletonCookie" \
-  "$AGENT_HOME/.browser-profiles/chromium/SingletonSocket"
-
-HOME="$AGENT_HOME" rakazo-browser >/tmp/rakazo/browser.log 2>&1 &
-browser_up=0
-for _ in $(seq 1 40); do
-  if xdotool search --onlyvisible --class chromium >/dev/null 2>&1; then
-    browser_up=1
-    break
-  fi
-  if xdotool search --onlyvisible --class Chromium >/dev/null 2>&1; then
-    browser_up=1
-    break
-  fi
-  sleep 0.25
-done
-if [[ "$browser_up" -ne 1 ]]; then
-  echo "browser failed to start" >&2
-  cat /tmp/rakazo/browser.log >&2 || true
-  xterm -geometry 100x28+48+48 -bg "#111113" -fg "#E8E8EA" -cr "#E8E8EA" -title "Terminal" >/tmp/rakazo/xterm.log 2>&1 &
-fi
-
 x11vnc -display :1 -forever -shared -viewonly -nopw -listen 127.0.0.1 -rfbport 5900 -xkb -ncache 0 >/tmp/rakazo/x11vnc.log 2>&1 &
 
 NOVNC_ROOT=/usr/share/novnc
@@ -104,10 +99,12 @@ if [[ ! -f "$NOVNC_ROOT/clipboard-bridge.js" ]]; then
   echo "noVNC clipboard-bridge.js is missing from the computer image" >&2
   exit 1
 fi
-websockify --heartbeat=30 --web="$NOVNC_ROOT" 0.0.0.0:6080 127.0.0.1:5900 >/tmp/rakazo/novnc.log 2>&1 &
+if [[ ! -f "$NOVNC_ROOT/mobile-keyboard.js" ]]; then
+  echo "noVNC mobile-keyboard.js is missing from the computer image" >&2
+  exit 1
+fi
+websockify --heartbeat=30 --web="$NOVNC_ROOT" --token-plugin=TokenFile --token-source=/tmp/rakazo/view-target-1 0.0.0.0:6080 >/tmp/rakazo/novnc.log 2>&1 &
 
-while kill -0 "$XVFB_PID" 2>/dev/null; do
-  sleep 2
-done
+wait "$XVFB_PID"
 echo "Xvfb exited" >&2
 exit 1

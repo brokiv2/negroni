@@ -1,23 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import {
-  activeBotId,
   captureScreenshot,
   completeOnboarding,
-  openNewBot,
+  createNamedBot,
+  openNewGroup,
   rpc,
   signup,
 } from "./helpers";
 
-async function createBot(page: import("@playwright/test").Page, name: string) {
-  const botList = page.locator("aside").first();
-  await openNewBot(page);
-  await expect(page.getByText("New bot", { exact: true })).toBeVisible();
-  await page.locator("label:has-text('Name') input").fill(name);
-  await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(botList.getByRole("button", { name: new RegExp(`^${name}`) })).toBeVisible();
-  await expect(page.getByRole("combobox", { name: `Message ${name}` })).toBeVisible();
-  await page.waitForURL(/\/app\/[^/]+$/);
-  return activeBotId(page);
+async function createBot(page: Page, name: string) {
+  return createNamedBot(page, name);
 }
 
 test("create group from + and see two bots in one transcript", async ({ page }, testInfo) => {
@@ -30,8 +22,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   const researcherId = await createBot(page, "Researcher");
   const writerId = await createBot(page, "Research Writer");
 
-  await page.getByTitle("Create", { exact: true }).click();
-  await page.getByRole("button", { name: "New group" }).click();
+  await openNewGroup(page);
   await page.locator("label:has-text('Name') input").fill("Draft team");
   const panel = page.getByTestId("side-panel");
   await panel.getByRole("button", { name: "Researcher" }).click();
@@ -106,7 +97,10 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(groupAvatar.locator(".rakazo-bot-avatar")).toHaveCount(2);
   const workingAvatar = groupAvatar.locator('[data-working="true"]');
   await expect(workingAvatar).toHaveCount(1);
-  await expect(workingAvatar.locator("svg")).toHaveCSS("animation-name", "rakazo-avatar-spin");
+  await expect(workingAvatar.locator(".rakazo-bot-avatar-ring")).toHaveCSS(
+    "animation-name",
+    "rakazo-avatar-spin",
+  );
   await captureScreenshot(page, testInfo, "group-avatar-active");
   await page.unroute("**/rpc/groups/list");
   await page.unroute("**/rpc/threads/get");
@@ -155,12 +149,17 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   const transcript = page.getByTestId("transcript");
   await expect(transcript.getByText("Researcher", { exact: true }).first()).toBeVisible();
   await expect(transcript.getByText("Research Writer", { exact: true }).first()).toBeVisible();
-  const researcherReply = transcript.getByText("Researcher", { exact: true }).first().locator("..");
+  const researcherSpeak = transcript
+    .locator("div")
+    .filter({ has: page.getByText("Researcher", { exact: true }) })
+    .filter({ has: page.getByRole("button", { name: "Speak this reply" }) })
+    .first()
+    .getByRole("button", { name: "Speak this reply" });
   const [speechRequest] = await Promise.all([
     page.waitForRequest(
       (request) => request.url().includes("/api/voice/speak") && request.method() === "POST",
     ),
-    researcherReply.getByRole("button", { name: "Speak this reply" }).click(),
+    researcherSpeak.click(),
   ]);
   expect(speechRequest.postDataJSON()).toMatchObject({ botId: researcherId });
   await captureScreenshot(page, testInfo, "group-transcript");
@@ -172,10 +171,18 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   ).toBeVisible();
   await composer.fill("ask me which city to use");
   await composer.press("Enter");
-  // threads/get / member status can observe waiting_input before realtime paints the ask card.
-  await expect(page.getByRole("button", { name: /Research Writer waiting_input/ })).toBeVisible({
-    timeout: 60_000,
-  });
+  // threads/get can observe waiting_input before the shell realtime feed paints the ask card.
+  await expect
+    .poll(
+      async () => {
+        const snapshot = await rpc<{ run?: { status: string } | null }>(page, "threads/get", {
+          groupId: draftGroupId,
+        });
+        return snapshot.run?.status ?? null;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe("waiting_input");
   const cityAsk = page.locator("p").filter({ hasText: /^Which city should I use\?$/ });
   if ((await cityAsk.count()) === 0) {
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -237,7 +244,10 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
-  expect((await transcript.boundingBox())?.width).toBeGreaterThan(350);
+  await expect(page.getByTestId("app-rail")).toBeVisible();
+  // AppRail stays visible on mobile (w-14 ≈ 56px); chat should still fill the rest.
+  const railWidth = (await page.getByTestId("app-rail").boundingBox())?.width ?? 56;
+  expect((await transcript.boundingBox())?.width).toBeGreaterThan(390 - railWidth - 24);
   await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("button", { name: "Close navigation" })).toBeVisible();
   await page.getByRole("button", { name: "Close navigation" }).click();

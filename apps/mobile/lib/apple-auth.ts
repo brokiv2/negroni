@@ -21,7 +21,12 @@ export async function requestAppleIdentity(): Promise<{ token: string; nonce: st
     if (!credential.identityToken) throw new Error("Apple did not return an identity token");
     return { token: credential.identityToken, nonce };
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ERR_REQUEST_CANCELED") {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ERR_REQUEST_CANCELED"
+    ) {
       return null;
     }
     throw error;

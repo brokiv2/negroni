@@ -1,8 +1,10 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ThreadSnapshot } from "@rakazo/contracts";
+import type { SearchHit, ThreadSnapshot } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { BotIntroHarness } from "./discard-bot-intro.js";
+import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 
 type App = { request: (input: string, init?: RequestInit) => Promise<Response> };
@@ -13,6 +15,7 @@ process.env.AGENT_RUNTIME = "scripted";
 
 const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const describeSearch = hasDb ? describe : describe.skip;
+let botIntroHarness: BotIntroHarness | undefined;
 
 describeSearch("workspace search", () => {
   let app: App;
@@ -30,6 +33,7 @@ describeSearch("workspace search", () => {
     });
     app = handles.app;
     stop = handles.stop;
+    botIntroHarness = handles;
   });
 
   afterAll(async () => {
@@ -54,7 +58,38 @@ describeSearch("workspace search", () => {
       mimeType: "text/plain",
       contentBase64: Buffer.from("fixture file").toString("base64"),
     });
+    const secondArtifact = await rpc<{ id: string }>(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "fixture-second.txt",
+      mimeType: "text/plain",
+      contentBase64: Buffer.from("second fixture").toString("base64"),
+    });
+    await rpc(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "fixture-unattached.txt",
+      mimeType: "text/plain",
+      contentBase64: Buffer.from("unattached fixture").toString("base64"),
+    });
+    await sendAndWait(app, cookie, bot.id, { artifactIds: [artifact.id, secondArtifact.id] });
+    const initialFiles = await rpc<{ hits: SearchHit[] }>(app, cookie, "search/query", {
+      q: "fixture",
+    });
+    expect(
+      initialFiles.hits.filter((hit) => hit.kind === "file").map((hit) => hit.artifactId),
+    ).toEqual(expect.arrayContaining([artifact.id, secondArtifact.id]));
+    expect(initialFiles.hits.filter((hit) => hit.kind === "file")).toHaveLength(2);
+    const initialMessageId = initialFiles.hits.find(
+      (hit) => hit.artifactId === artifact.id,
+    )?.messageId;
     await sendAndWait(app, cookie, bot.id, { artifactIds: [artifact.id] });
+    const latestFiles = await rpc<{ hits: SearchHit[] }>(app, cookie, "search/query", {
+      q: "fixture",
+    });
+    const latestMessageId = latestFiles.hits.find(
+      (hit) => hit.artifactId === artifact.id,
+    )?.messageId;
+    expect(latestMessageId).toBeDefined();
+    expect(latestMessageId).not.toBe(initialMessageId);
     await rpc(app, cookie, "routines/create", {
       botId: bot.id,
       name: "Weekly fixture",
@@ -175,7 +210,7 @@ async function rpc<T>(app: App, cookie: string, proc: string, body: unknown = {}
   if (res.status >= 400 || parsed.error) {
     throw new Error(`${proc} ${res.status}: ${parsed.error?.message ?? text}`);
   }
-  return parsed.json as T;
+  return discardBotIntroFromCreate(botIntroHarness, cookie, proc, parsed.json as T);
 }
 
 async function raw(app: App, cookie: string, proc: string, body: unknown) {

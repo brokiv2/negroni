@@ -49,10 +49,15 @@ export default function VoiceCall() {
     };
   }, []);
 
-  useFocusEffect(useCallback(() => () => {
-    active.current?.abort();
-    playback.current?.abort();
-  }, [botId]));
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        active.current?.abort();
+        playback.current?.abort();
+      },
+      [botId],
+    ),
+  );
 
   async function start() {
     if (active.current || !botId) return;
@@ -123,9 +128,9 @@ export default function VoiceCall() {
     active.current?.abort();
     playback.current?.abort();
   }
-  const buttonStyle = { padding: 18, borderRadius: 28, backgroundColor: tokens.surface2 };
+  const buttonStyle = { padding: 18, borderRadius: 28, backgroundColor: tokens.secondary };
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: tokens.page }} edges={["bottom"]}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }} edges={["bottom"]}>
       <View
         style={{ flex: 1, width: "100%", maxWidth: 680, alignSelf: "center", padding: 28, gap: 24 }}
       >
@@ -137,9 +142,9 @@ export default function VoiceCall() {
             router.back();
           }}
         >
-          <Text style={{ color: tokens.muted }}>Back to chat</Text>
+          <Text style={{ color: tokens.mutedForeground }}>Back to chat</Text>
         </Pressable>
-        <Text style={{ color: tokens.ink, fontSize: 30, textAlign: "center" }}>
+        <Text style={{ color: tokens.foreground, fontSize: 30, textAlign: "center" }}>
           {params.name || "Bot"}
         </Text>
         <View
@@ -149,24 +154,26 @@ export default function VoiceCall() {
             width: 180,
             height: 180,
             borderRadius: 90,
-            backgroundColor: phase === "listening" ? "#2965EC" : tokens.surface2,
+            backgroundColor: phase === "listening" ? "#2965EC" : tokens.secondary,
             alignItems: "center",
             justifyContent: "center",
           }}
         >
-          <Text style={{ color: phase === "listening" ? "#FFFFFF" : tokens.ink, fontSize: 19 }}>
+          <Text
+            style={{ color: phase === "listening" ? "#FFFFFF" : tokens.foreground, fontSize: 19 }}
+          >
             {labels[phase]}
           </Text>
         </View>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 18 }}>
           {transcript ? (
-            <Text style={{ color: tokens.muted, fontSize: 17 }}>{transcript}</Text>
+            <Text style={{ color: tokens.mutedForeground, fontSize: 17 }}>{transcript}</Text>
           ) : null}
           {reply ? (
-            <Text style={{ color: tokens.ink, fontSize: 19, lineHeight: 28 }}>{reply}</Text>
+            <Text style={{ color: tokens.foreground, fontSize: 19, lineHeight: 28 }}>{reply}</Text>
           ) : null}
           {error ? (
-            <Text accessibilityRole="alert" style={{ color: tokens.ink, fontSize: 16 }}>
+            <Text accessibilityRole="alert" style={{ color: tokens.foreground, fontSize: 16 }}>
               {error}
             </Text>
           ) : null}
@@ -177,7 +184,9 @@ export default function VoiceCall() {
             style={buttonStyle}
             onPress={() => playback.current?.abort()}
           >
-            <Text style={{ color: tokens.ink, textAlign: "center" }}>Interrupt and speak</Text>
+            <Text style={{ color: tokens.foreground, textAlign: "center" }}>
+              Interrupt and speak
+            </Text>
           </Pressable>
         ) : null}
         {phase === "ready" ? (
@@ -188,11 +197,13 @@ export default function VoiceCall() {
               style={buttonStyle}
               onPress={() => void start()}
             >
-              <Text style={{ color: tokens.ink, textAlign: "center" }}>Start call</Text>
+              <Text style={{ color: tokens.foreground, textAlign: "center" }}>Start call</Text>
             </Pressable>
             {error ? (
               <Pressable accessibilityRole="button" onPress={() => router.push("/voice")}>
-                <Text style={{ color: tokens.muted, textAlign: "center" }}>Voice settings</Text>
+                <Text style={{ color: tokens.mutedForeground, textAlign: "center" }}>
+                  Voice settings
+                </Text>
               </Pressable>
             ) : null}
           </>

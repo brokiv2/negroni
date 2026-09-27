@@ -49,6 +49,99 @@ describe("inferScript message_bot", () => {
   });
 });
 
+describe("inferScript quote markdown fixture", () => {
+  it("returns the markdown fixture including the caller marker", () => {
+    expect(inferScript("quote markdown fixture md-stamp")[0]?.assistant).toContain(
+      "md-stamp\n1. list-a",
+    );
+  });
+});
+
+describe("inferScript request_secret", () => {
+  it("opens a masked api key card via request_secret", () => {
+    expect(inferScript("show a secret card for a masked api key")).toEqual([
+      {
+        assistant: "i need that value in a protected field.",
+        toolCalls: [
+          {
+            name: "request_secret",
+            args: {
+              label: "API key",
+              purpose: "api_key",
+              credential: {
+                name: "example_api",
+                origin: "https://api.example.test",
+                auth: { type: "bearer" },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("inferScript login request_secret", () => {
+  it("opens a login card via request_secret", () => {
+    expect(inferScript("show a login card")).toEqual([
+      {
+        assistant: "i need that sign-in in a protected card.",
+        toolCalls: [
+          {
+            name: "request_secret",
+            args: {
+              label: "Example sign-in",
+              purpose: "password",
+              credential: {
+                name: "example_login",
+                origin: "https://login.example.test",
+                auth: { type: "login" },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("inferScript write_file", () => {
+  it("posts the reply after the tool so a routine run still has a durable final", () => {
+    expect(
+      inferScript("write a file in your home called notes/result.txt that says routine-ok"),
+    ).toEqual([
+      {
+        toolCalls: [
+          { name: "write_file", args: { path: "notes/result.txt", content: "routine-ok\n" } },
+        ],
+      },
+      { assistant: "writing that into my home now.", complete: true },
+    ]);
+  });
+});
+
+describe("inferScript update_bot", () => {
+  it("silences finish notifications on this bot", () => {
+    expect(inferScript("silence finish notifications")).toEqual([
+      {
+        assistant: "silencing finish notifications.",
+        toolCalls: [{ name: "update_bot", args: { notifyOnFinish: false } }],
+        complete: true,
+      },
+    ]);
+  });
+
+  it("resumes finish notifications on this bot", () => {
+    expect(inferScript("resume finish notifications")).toEqual([
+      {
+        assistant: "enabling finish notifications.",
+        toolCalls: [{ name: "update_bot", args: { notifyOnFinish: true } }],
+        complete: true,
+      },
+    ]);
+  });
+});
+
 describe("ScriptedAgentRuntime executionIds", () => {
   it("gives repeated tools distinct executionIds within a run", async () => {
     const runtime = new ScriptedAgentRuntime();

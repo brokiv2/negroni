@@ -1,7 +1,14 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  type ColorTokens,
+  cssVariableName,
+  darkTokens,
+  lightTokens,
   normalizeAppearancePreference,
   persistAppearancePreference,
+  renderTokensCss,
   resolveAppearance,
   resolveAppearancePreference,
   tokensForAppearance,
@@ -36,27 +43,32 @@ describe("appearance preference", () => {
   });
 
   it("returns distinct light and dark token sets", () => {
-    expect(tokensForAppearance("dark").page).toBe("#050506");
-    expect(tokensForAppearance("light").page).toBe("#F4F4F2");
-    expect(tokensForAppearance("light").ink).not.toBe(tokensForAppearance("dark").ink);
+    expect(tokensForAppearance("dark")).toBe(darkTokens);
+    expect(tokensForAppearance("light")).toBe(lightTokens);
+    for (const key of Object.keys(darkTokens) as (keyof ColorTokens)[]) {
+      if (key === "destructiveForeground") continue;
+      expect(darkTokens[key], key).not.toBe(lightTokens[key]);
+    }
   });
 
-  it("maps cream button ink separately from hairline", () => {
+  it("keeps user message surfaces muted, not cream invert", () => {
     const dark = tokensForAppearance("dark");
     const light = tokensForAppearance("light");
-    expect(dark.creamInk).toBe("#1A1A1A");
-    expect(light.creamInk).toBe("#F1F1EF");
-    expect(dark.creamInk).not.toBe(dark.hairline);
-    expect(light.creamInk).not.toBe(light.hairline);
+    expect(dark.secondary).not.toBe(dark.primary);
+    expect(light.secondary).not.toBe(light.primary);
+    expect(dark.secondaryForeground).not.toBe(dark.primaryForeground);
+  });
+
+  it("separates user bubbles from bot bubbles and the sidebar from the app", () => {
+    const dark = tokensForAppearance("dark");
+    const light = tokensForAppearance("light");
+    expect(dark.chatUser).not.toBe(dark.muted);
+    expect(light.chatUser).not.toBe(light.muted);
+    expect(dark.sidebar).not.toBe(dark.background);
+    expect(light.sidebar).not.toBe(light.background);
   });
 
   it("tolerates a throwing localStorage getter", () => {
-    const storageProbe = {
-      get storage() {
-        throw new Error("blocked");
-      },
-    };
-    // Simulate environments where accessing localStorage throws.
     const desc = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
@@ -72,6 +84,26 @@ describe("appearance preference", () => {
       if (desc) Object.defineProperty(globalThis, "localStorage", desc);
       else delete (globalThis as { localStorage?: Storage }).localStorage;
     }
-    void storageProbe;
+  });
+});
+
+describe("tokens.css", () => {
+  it("derives kebab-case variable names", () => {
+    expect(cssVariableName("background")).toBe("--background");
+    expect(cssVariableName("mutedForeground")).toBe("--muted-foreground");
+    expect(cssVariableName("sidebarAccentForeground")).toBe("--sidebar-accent-foreground");
+  });
+
+  it("is generated from the TS palette", () => {
+    const onDisk = readFileSync(fileURLToPath(new URL("./tokens.css", import.meta.url)), "utf8");
+    expect(onDisk).toBe(renderTokensCss());
+  });
+
+  it("scopes light and dark under data-theme", () => {
+    const css = renderTokensCss();
+    expect(css).toContain('[data-theme="dark"] {\n  color-scheme: dark;');
+    expect(css).toContain('[data-theme="light"] {\n  color-scheme: light;');
+    expect(css).toContain(`--background: ${lightTokens.background.toLowerCase()};`);
+    expect(css).toContain(`--background: ${darkTokens.background.toLowerCase()};`);
   });
 });

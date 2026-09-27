@@ -583,6 +583,87 @@ describe("automatic outcome return", () => {
     });
   });
 
+  it("still returns a final result after an interim status update", async () => {
+    const harness = deps({
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-target",
+          fromBotName: "Coordinator",
+          text: "research this",
+          hop: 1,
+          intent: "request",
+          returnToMessageId: "message-request",
+        },
+      ],
+    });
+    vi.mocked(harness.deps.prisma.message.findMany).mockResolvedValue([
+      {
+        blocks: [
+          {
+            kind: "bot_message_sent",
+            toBotId: "bot-target",
+            toBotName: "Coordinator",
+            text: "still looking",
+            hop: 2,
+            intent: "status",
+          },
+        ],
+      },
+    ] as never);
+
+    const returned = await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "The answer is 42.",
+    );
+
+    expect(returned).toBe(true);
+    expect(harness.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it("skips the automatic return when a result was already sent", async () => {
+    const harness = deps({
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-target",
+          fromBotName: "Coordinator",
+          text: "research this",
+          hop: 1,
+          intent: "request",
+          returnToMessageId: "message-request",
+        },
+      ],
+    });
+    vi.mocked(harness.deps.prisma.message.findMany).mockResolvedValue([
+      {
+        blocks: [
+          {
+            kind: "bot_message_sent",
+            toBotId: "bot-target",
+            toBotName: "Coordinator",
+            text: "done",
+            hop: 2,
+            intent: "result",
+          },
+        ],
+      },
+    ] as never);
+
+    const returned = await returnBotMessageOutcome(
+      harness.deps,
+      { ...run, sourceMessageId: "message-source" },
+      sender,
+      "The answer is 42.",
+    );
+
+    expect(returned).toBe(true);
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.deps.prisma.run.updateMany).toHaveBeenCalled();
+  });
+
   const requestFromCoordinator = [
     {
       kind: "bot_message_received",

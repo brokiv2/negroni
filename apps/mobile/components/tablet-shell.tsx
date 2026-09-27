@@ -10,7 +10,10 @@ export function TabletShell({ children }: { children: ReactNode }) {
   const { width } = useWindowDimensions();
   const pathname = usePathname();
   const { view } = useGlobalSearchParams<{ view?: string }>();
-  const wide = width >= 768 && view !== "assistant" && !["/", "/sign-in", "/call", "/assistant-hub"].includes(pathname);
+  const wide =
+    width >= 768 &&
+    view !== "assistant" &&
+    !["/", "/sign-in", "/call", "/assistant-hub"].includes(pathname);
   return (
     <View style={{ flex: 1, flexDirection: "row" }}>
       {wide ? <TabletSidebar /> : null}
@@ -74,7 +77,7 @@ function TabletSidebar() {
         width: 300,
         paddingTop: insets.top + 12,
         paddingBottom: insets.bottom,
-        backgroundColor: tokens.page,
+        backgroundColor: tokens.background,
         borderRightWidth: 1,
         borderRightColor: tokens.border,
       }}
@@ -84,11 +87,11 @@ function TabletSidebar() {
         onPress={() => router.replace("/")}
         style={{ padding: 20 }}
       >
-        <Text style={{ color: tokens.ink, fontSize: 23, fontWeight: "600" }}>Negroni</Text>
-        <Text style={{ color: tokens.muted, marginTop: 8 }}>All chats</Text>
+        <Text style={{ color: tokens.foreground, fontSize: 23, fontWeight: "600" }}>Negroni</Text>
+        <Text style={{ color: tokens.mutedForeground, marginTop: 8 }}>All chats</Text>
       </Pressable>
       {error ? (
-        <Text style={{ color: tokens.muted, padding: 20 }}>Could not refresh chats</Text>
+        <Text style={{ color: tokens.mutedForeground, padding: 20 }}>Could not refresh chats</Text>
       ) : null}
       <FlatList
         data={chats}
@@ -115,14 +118,14 @@ function TabletSidebar() {
               paddingVertical: 16,
               backgroundColor:
                 item.id === (item.group ? params.groupId : params.botId)
-                  ? tokens.surface2
+                  ? tokens.secondary
                   : "transparent",
             }}
           >
-            <Text numberOfLines={1} style={{ color: tokens.ink, fontSize: 17 }}>
+            <Text numberOfLines={1} style={{ color: tokens.foreground, fontSize: 17 }}>
               {item.name}
             </Text>
-            <Text numberOfLines={2} style={{ color: tokens.muted, marginTop: 6 }}>
+            <Text numberOfLines={2} style={{ color: tokens.mutedForeground, marginTop: 6 }}>
               {item.preview}
             </Text>
           </Pressable>

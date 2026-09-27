@@ -19,7 +19,9 @@ function fixture(active = false, threadKind: "team" | "personal" = "team") {
     task: { create: vi.fn(async () => ({ id: "task" })) },
     run: {
       findFirst: vi.fn(async () => (active ? { id: "busy", status: "running" } : null)),
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async () =>
+        active ? [{ id: "busy", taskId: "task", status: "running", trigger: "user" }] : [],
+      ),
       create: vi.fn(async () => ({ id: "run", taskId: "task", status: "queued" })),
     },
     steeringMessage: { create: vi.fn() },

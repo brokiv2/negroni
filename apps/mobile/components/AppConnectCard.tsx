@@ -1,20 +1,27 @@
 import type { MessageBlock } from "@rakazo/contracts";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View, type ViewProps } from "react-native";
 import { rpc } from "../lib/api";
 import { appConnectPresentation } from "../lib/app-connect";
 import { authorizeConnection } from "../lib/connection-auth";
-import { native } from "../lib/native";
+import { useI18n } from "../lib/i18n";
+import { native, useMobileTokens } from "../lib/native";
 import { openConnectionAuthSession } from "../lib/open-auth-session";
 import { AppLogo } from "./AppLogo";
 
 export function AppConnectCard({
   botId,
   block,
+  accessibilityActions,
+  onAccessibilityAction,
 }: {
   botId: string;
   block: Extract<MessageBlock, { kind: "app_connect" }>;
+  accessibilityActions?: ViewProps["accessibilityActions"];
+  onAccessibilityAction?: ViewProps["onAccessibilityAction"];
 }) {
+  const { t } = useI18n();
+  const tokens = useMobileTokens();
   const [busy, setBusy] = useState(false);
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +41,7 @@ export function AppConnectCard({
       const started = await rpc<{ connectionId: string; authorizationUrl: string | null }>(
         "connections/begin",
         {
+          connectorId: block.connectorId,
           provider: block.provider,
           displayName: block.name,
         },
@@ -54,15 +62,19 @@ export function AppConnectCard({
       });
       if (outcome === "aborted") return;
       if (outcome === "pending") {
-        setError("Still pending. Finish in the browser, then try again.");
+        setError(t("Still pending. Finish in the browser, then try again."));
         return;
       }
-      await rpc("onboarding/appConnected", { botId, provider: block.provider });
+      await rpc("onboarding/appConnected", {
+        botId,
+        provider: block.provider,
+        connectorId: block.connectorId,
+      });
       if (controller.signal.aborted) return;
       setLocalStatus("connected");
     } catch (reason) {
       if (!controller.signal.aborted) {
-        setError(reason instanceof Error ? reason.message : "Could not authorize this app");
+        setError(reason instanceof Error ? reason.message : t("Could not authorize this app"));
       }
     } finally {
       if (connectionAttempt.current === controller) {
@@ -74,13 +86,13 @@ export function AppConnectCard({
 
   return (
     <View
-      accessibilityLabel={`${block.name} connection`}
+      accessibilityLabel={t("{name} connection", { name: block.name })}
       style={{
         width: "90%",
         borderRadius: 18,
         borderWidth: 1,
-        borderColor: "#232326",
-        backgroundColor: "#17171A",
+        borderColor: tokens.border,
+        backgroundColor: tokens.card,
         paddingHorizontal: 16,
         paddingVertical: 14,
         gap: 8,
@@ -89,15 +101,21 @@ export function AppConnectCard({
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <AppLogo name={block.name} logo={block.logo} size={40} />
         <View style={{ flex: 1, gap: 2 }}>
-          <Text style={{ color: "#ECECEE", fontSize: 15, fontWeight: "600" }}>{view.title}</Text>
-          <Text style={{ color: "#85858A", fontSize: 13.5 }} numberOfLines={2}>
+          <Text
+            accessibilityActions={accessibilityActions}
+            onAccessibilityAction={onAccessibilityAction}
+            style={{ color: tokens.foreground, fontSize: 15, fontWeight: "600" }}
+          >
+            {view.title}
+          </Text>
+          <Text style={{ color: tokens.mutedForeground, fontSize: 13.5 }} numberOfLines={2}>
             {view.description}
           </Text>
         </View>
         {view.showAuthorize ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Authorize ${block.name}`}
+            accessibilityLabel={t("Authorize {name}", { name: block.name })}
             disabled={busy}
             onPress={() => void authorize()}
             style={{
@@ -118,12 +136,12 @@ export function AppConnectCard({
             )}
           </Pressable>
         ) : (
-          <Text style={{ color: "#4ECB71", fontSize: 13.5, fontWeight: "600" }}>
+          <Text style={{ color: tokens.success, fontSize: 13.5, fontWeight: "600" }}>
             {view.actionLabel}
           </Text>
         )}
       </View>
-      {error ? <Text style={{ color: "#E96B6B", fontSize: 13 }}>{error}</Text> : null}
+      {error ? <Text style={{ color: tokens.destructive, fontSize: 13 }}>{error}</Text> : null}
     </View>
   );
 }

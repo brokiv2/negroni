@@ -1,12 +1,32 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import type { Me } from "@rakazo/contracts";
+import type { Me, ThinkingLevel } from "@rakazo/contracts";
 import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  DEFAULT_MODEL_MAX_TOKENS,
+  MAX_MODEL_CONTEXT_WINDOW,
+  MAX_MODEL_MAX_TOKENS,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   openAiCompatibleConnectReady,
   openAiCompatibleProbeSuccessMessage,
+  parseModelContextWindow,
+  parseModelMaxImagesPerPrompt,
+  parseModelMaxTokens,
 } from "@rakazo/contracts";
-import { Button } from "@rakazo/ui-web";
-import { ChevronDown } from "lucide-react";
+import { createModelProbe, initialModelProbeState } from "@rakazo/core";
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  ModelThinkingOptions,
+  NativeSelect,
+  NativeSelectOption,
+} from "@rakazo/ui-web";
+import { ChevronDown, X } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
@@ -21,7 +41,23 @@ import type { ModelCatalogEntry, ModelCredential } from "../lib/model-auth";
 import { rpc } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 
-export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
+function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
+  if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID) {
+    return String(stored ?? DEFAULT_MODEL_MAX_TOKENS);
+  }
+  return stored !== undefined ? String(stored) : "";
+}
+
+export function ModelSettingsOverlay({
+  onClose,
+  embedded = false,
+  localOwner = false,
+}: {
+  onClose: () => void;
+  /** Render panel body only for the shared Settings shell. */
+  embedded?: boolean;
+  localOwner?: boolean;
+}) {
   const { t } = useLingui();
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
@@ -31,21 +67,26 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
   const [modelId, setModelId] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [probeModels, setProbeModels] = useState<string[]>([]);
-  const [probedBaseUrl, setProbedBaseUrl] = useState<string | null>(null);
-  const [probing, setProbing] = useState(false);
-  const [providerProbeModels, setProviderProbeModels] = useState<string[]>([]);
-  const [providerProbing, setProviderProbing] = useState(false);
-  const [providerProbeError, setProviderProbeError] = useState<string | null>(null);
-  const [addingOverrideId, setAddingOverrideId] = useState<string | null>(null);
+  const [reasoning, setReasoning] = useState(false);
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | null>(null);
+  const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
+  const [contextWindow, setContextWindow] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW));
+  const [supportsImages, setSupportsImages] = useState(false);
+  const [maxImagesPerPrompt, setMaxImagesPerPrompt] = useState("");
+  const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
+  const [modelProbe] = useState(() => createModelProbe(setProbe));
+  const resetOpenAiCompatibleProbe = modelProbe.reset;
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [providerProbeModels, setProviderProbeModels] = useState<string[]>([]);
+  const [providerProbing, setProviderProbing] = useState(false);
+  const [providerProbeError, setProviderProbeError] = useState<string | null>(null);
+  const [addingOverrideId, setAddingOverrideId] = useState<string | null>(null);
   const detailScrollRef = useRef<HTMLDivElement>(null);
   const refreshRevisionRef = useRef(0);
   const selectionRevisionRef = useRef(0);
-  const probeRequestIdRef = useRef(0);
   const selectedLabelRef = useRef<string | undefined>(undefined);
 
   const {
@@ -101,7 +142,13 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
       setModelId(nextModel);
       if (nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID) {
         setBaseUrl(nextCredential?.baseUrl ?? "");
+        setReasoning(nextCredential?.reasoning ?? false);
+        setThinkingLevel(nextCredential?.thinkingLevel ?? null);
+        setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
+        setSupportsImages(nextCredential?.supportsImages ?? false);
+        setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
       }
+      setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
     }
   }
 
@@ -113,7 +160,7 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
       .finally(() => setLoading(false));
     return () => {
       refreshRevisionRef.current += 1;
-      probeRequestIdRef.current += 1;
+      modelProbe.invalidate();
     };
   }, []);
 
@@ -141,46 +188,16 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
     );
   }, [groups, providerQuery]);
   const modelsForProvider = catalog.filter((entry) => entry.provider === provider);
-  const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
-  selectedLabelRef.current = selected?.label;
-  const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
-  const credential = credentials.find((entry) => entry.provider === provider);
-  const currentEntry = catalog.find(
-    (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
-  );
-  const isActive =
-    me?.defaultProvider === selected?.provider &&
-    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id);
-  const acceptsKey = selected?.auth !== "oauth";
-  const subscriptionSignIn = selected?.signIn !== undefined;
-  const busy = pending !== null || oauthPending;
-  const effectiveBaseUrl = baseUrl.trim();
-  const openAiCompatibleReady = openAiCompatibleConnectReady({
-    baseUrl: effectiveBaseUrl,
-    modelId,
-    probedBaseUrl,
-    storedBaseUrl: credential?.baseUrl,
-  });
 
-  function resetOpenAiCompatibleProbe() {
-    probeRequestIdRef.current += 1;
-    setProbeModels([]);
-    setProbedBaseUrl(null);
-    setProbing(false);
+  function suggestBasedOn(id: string): string | undefined {
+    const ids = modelsForProvider.map((entry) => entry.id);
+    const token = id.split(/[-._]/)[0]?.toLowerCase() ?? "";
+    return (
+      ids.find((candidate) => candidate.toLowerCase().startsWith(token)) ?? ids[ids.length - 1]
+    );
   }
 
-  function updateBaseUrl(nextBaseUrl: string) {
-    setBaseUrl(nextBaseUrl);
-    resetOpenAiCompatibleProbe();
-    setError(null);
-    setNotice(null);
-  }
-
-  function updateApiKey(nextApiKey: string) {
-    setApiKey(nextApiKey);
-    resetOpenAiCompatibleProbe();
-  }
-
+  /** Ask the connected provider what it actually serves; catalogs go stale fast. */
   async function probeConnectedProvider() {
     if (!provider || !credential) return;
     setProviderProbing(true);
@@ -213,28 +230,56 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
       setAddingOverrideId(null);
     }
   }
+  const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
+  selectedLabelRef.current = selected?.label;
+  const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
+  const credential = credentials.find((entry) => entry.provider === provider);
+  const currentEntry = catalog.find(
+    (entry) => entry.provider === me?.defaultProvider && entry.id === me?.defaultModel,
+  );
+  const isActive =
+    me?.defaultProvider === selected?.provider &&
+    me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id);
+  const acceptsKey = selected?.auth !== "oauth";
+  const subscriptionSignIn = selected?.signIn !== undefined;
+  const busy = pending !== null || oauthPending;
+  const effectiveBaseUrl = baseUrl.trim();
+  const openAiCompatibleReady = openAiCompatibleConnectReady({
+    baseUrl: effectiveBaseUrl,
+    modelId,
+  });
+  const builtinLimitSave = !isOpenAiCompatible && Boolean(credential) && apiKey.trim().length === 0;
 
-  function suggestBasedOn(id: string): string | undefined {
-    const ids = modelsForProvider.map((entry) => entry.id);
-    const token = id.split(/[-._]/)[0]?.toLowerCase() ?? "";
-    return (
-      ids.find((candidate) => candidate.toLowerCase().startsWith(token)) ?? ids[ids.length - 1]
-    );
+  function updateBaseUrl(nextBaseUrl: string) {
+    setBaseUrl(nextBaseUrl);
+    resetOpenAiCompatibleProbe();
+    setError(null);
+    setNotice(null);
+  }
+
+  function updateApiKey(nextApiKey: string) {
+    setApiKey(nextApiKey);
+    resetOpenAiCompatibleProbe();
   }
 
   function chooseProvider(nextProvider: string) {
     cancelOAuthAttempt();
     selectionRevisionRef.current += 1;
+    const nextCredential = credentials.find((entry) => entry.provider === nextProvider);
     setProvider(nextProvider);
+    setReasoning(nextCredential?.reasoning ?? false);
+    setThinkingLevel(nextCredential?.thinkingLevel ?? null);
+    setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
+    setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
+    setSupportsImages(nextCredential?.supportsImages ?? false);
+    setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (credentials.find((entry) => entry.provider === nextProvider)?.modelId ?? "")
+        ? (nextCredential?.modelId ?? "")
         : (catalog.find((entry) => entry.provider === nextProvider)?.id ?? ""),
     );
     setBaseUrl(
-      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
-        ? (credentials.find((entry) => entry.provider === nextProvider)?.baseUrl ?? "")
-        : "",
+      nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID ? (nextCredential?.baseUrl ?? "") : "",
     );
     detailScrollRef.current?.scrollTo({ top: 0 });
     setApiKey("");
@@ -246,29 +291,20 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
   }
 
   async function probeServerModels() {
-    const trimmedBaseUrl = effectiveBaseUrl;
-    if (!trimmedBaseUrl) return;
-    resetOpenAiCompatibleProbe();
-    const requestId = probeRequestIdRef.current;
-    setProbing(true);
+    if (!baseUrl.trim()) return;
     setError(null);
     setNotice(null);
-    try {
-      const result = await rpc.models.probeOpenAiCompatible({
-        baseUrl: trimmedBaseUrl,
-        apiKey: apiKey.trim() || undefined,
-      });
-      if (requestId !== probeRequestIdRef.current) return;
-      setProbeModels(result.models);
-      setProbedBaseUrl(trimmedBaseUrl);
-      setModelId((current) => current.trim() || result.models[0] || "");
-      setNotice(openAiCompatibleProbeSuccessMessage(result.models.length));
-    } catch (err) {
-      if (requestId !== probeRequestIdRef.current) return;
-      setError(err instanceof Error ? err.message : t`Could not reach this model server`);
-    } finally {
-      if (requestId === probeRequestIdRef.current) setProbing(false);
-    }
+    await modelProbe.probe({
+      baseUrl,
+      apiKey,
+      request: rpc.models.probeOpenAiCompatible,
+      onSuccess: (models) => {
+        setModelId((current) => current.trim() || models[0] || "");
+        setNotice(openAiCompatibleProbeSuccessMessage(models.length));
+      },
+      onError: (err) =>
+        setError(err instanceof Error ? err.message : t`Could not reach this model server`),
+    });
   }
 
   async function setModelDefault() {
@@ -291,11 +327,45 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
 
   async function connectKey() {
     if (!selected) return;
+    const savingLimitOnly = !isOpenAiCompatible && !apiKey.trim();
     if (isOpenAiCompatible) {
       if (!effectiveBaseUrl || !modelId.trim()) return;
-    } else if (!apiKey.trim()) {
+    } else if (savingLimitOnly) {
+      if (!credential) return;
+    } else if (apiKey.trim().length < 8) {
       return;
     }
+    const parsedMaxTokens = maxTokens.trim() ? parseModelMaxTokens(maxTokens) : undefined;
+    if ((isOpenAiCompatible || maxTokens.trim()) && parsedMaxTokens === undefined) {
+      setError(
+        t`Enter a whole number from 1 to ${MAX_MODEL_MAX_TOKENS} for maximum output tokens.`,
+      );
+      return;
+    }
+    const parsedMaxImagesPerPrompt = isOpenAiCompatible
+      ? parseModelMaxImagesPerPrompt(maxImagesPerPrompt, supportsImages)
+      : undefined;
+    if (
+      isOpenAiCompatible &&
+      supportsImages &&
+      maxImagesPerPrompt.trim() &&
+      parsedMaxImagesPerPrompt === undefined
+    ) {
+      setError(t`Enter a whole number from 1 to 1000 for the image limit.`);
+      return;
+    }
+    const maxImagesPerPromptInput =
+      supportsImages && !maxImagesPerPrompt.trim() ? null : parsedMaxImagesPerPrompt;
+    const parsedContextWindow = isOpenAiCompatible
+      ? parseModelContextWindow(contextWindow)
+      : undefined;
+    if (isOpenAiCompatible && parsedContextWindow === undefined) {
+      setError(
+        t`Enter a whole number from 1 to ${MAX_MODEL_CONTEXT_WINDOW} for the context limit.`,
+      );
+      return;
+    }
+    if (isOpenAiCompatible && parsedMaxTokens === undefined) return;
     setError(null);
     setNotice(null);
     setPending("connect");
@@ -306,20 +376,31 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
               provider: selected.provider,
               baseUrl: effectiveBaseUrl,
               modelId: modelId.trim(),
+              reasoning,
+              thinkingLevel: reasoning ? thinkingLevel : null,
+              maxTokens: parsedMaxTokens,
+              contextWindow: parsedContextWindow,
+              supportsImages,
+              maxImagesPerPrompt: maxImagesPerPromptInput,
               apiKey: apiKey.trim() || undefined,
               label: selected.providerName ?? selected.provider,
             }
           : {
               provider: selected.provider,
-              apiKey: apiKey.trim(),
+              ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
               modelId: selected.id,
+              maxTokens: parsedMaxTokens ?? null,
               label: selected.providerName ?? selected.provider,
             },
       );
       setApiKey("");
       await refresh();
       detailScrollRef.current?.scrollTo({ top: 0 });
-      setNotice(isOpenAiCompatible ? t`Saved.` : t`Connected and using ${selected.label}.`);
+      setNotice(
+        isOpenAiCompatible || savingLimitOnly
+          ? t`Saved.`
+          : t`Connected and using ${selected.label}.`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : t`Could not connect this provider`);
     } finally {
@@ -342,488 +423,582 @@ export function ModelSettingsOverlay({ onClose }: { onClose: () => void }) {
     });
   }
 
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-[rgba(4,4,5,.62)] p-4 sm:p-10">
-      <div className="flex h-[min(760px,100%)] w-[1080px] max-w-full flex-col overflow-hidden rounded-[26px] border border-[var(--rk-hairline-strong)] bg-[var(--rk-surface)] shadow-[0_40px_90px_rgba(0,0,0,.55)]">
-        <div className="flex items-start justify-between px-6 pt-6 sm:px-8 sm:pt-7">
-          <div>
-            <div className="text-2xl font-medium text-[var(--rk-ink-strong)]">
-              <Trans>Models</Trans>
-            </div>
-            <p className="mt-1 text-[13.5px] text-[var(--rk-faint)]">
-              {loading ? (
-                <Trans>Loading model catalog…</Trans>
-              ) : (
-                <Trans>Choose which connected model Rakazo uses.</Trans>
-              )}
-            </p>
-          </div>
-          <button
-            type="button"
-            aria-label={t`Close model settings`}
-            onClick={handleClose}
-            className="text-[var(--rk-muted)]"
-          >
-            ✕
-          </button>
-        </div>
+  const description = loading ? (
+    <Trans>Loading model catalog…</Trans>
+  ) : localOwner ? (
+    <Trans>Models for the server owner’s default space.</Trans>
+  ) : (
+    <Trans>Choose which connected model Rakazo uses.</Trans>
+  );
 
-        <div className="mx-6 mt-5 rounded-[14px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-4 py-3 sm:mx-8">
-          <div className="text-[12.5px] uppercase tracking-[0.08em] text-[var(--rk-muted-2)]">
-            <Trans>Active model</Trans>
+  const body = (
+    <>
+      {!embedded ? (
+        <DialogHeader className="flex-row items-start justify-between px-6 pt-6 sm:px-8 sm:pt-7">
+          <div>
+            <DialogTitle className="text-2xl text-foreground">
+              <Trans>Models</Trans>
+            </DialogTitle>
+            <DialogDescription className="mt-1 text-[13.5px] text-muted-foreground/70">
+              {description}
+            </DialogDescription>
           </div>
-          <div className="mt-1 text-[16px] text-[var(--rk-ink-strong)]">
-            {currentEntry?.label ?? me?.defaultModel ?? t`Deployment default`}
+          <DialogClose
+            render={<Button variant="ghost" size="icon-sm" aria-label={t`Close model settings`} />}
+          >
+            <X />
+          </DialogClose>
+        </DialogHeader>
+      ) : (
+        <p className="px-6 pt-1 text-[13.5px] text-muted-foreground/70 sm:px-8">{description}</p>
+      )}
+
+      <div
+        className={`mx-6 rounded-xl border border-border px-4 py-3 sm:mx-8 ${embedded ? "mt-4" : "mt-5"}`}
+      >
+        <div className="text-[12.5px] uppercase tracking-[0.08em] text-muted-foreground/80">
+          <Trans>Active model</Trans>
+        </div>
+        <div className="mt-1 text-[16px] text-foreground">
+          {currentEntry?.label ?? me?.defaultModel ?? t`Deployment default`}
+        </div>
+        <div className="mt-1 text-[13px] text-muted-foreground">
+          {currentEntry?.providerName ?? me?.defaultProvider ?? (
+            <Trans>Configured by deployment</Trans>
+          )}
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden px-6 py-6 sm:px-8 md:flex-row">
+        <div className="flex min-h-0 shrink-0 flex-col md:w-[310px]">
+          <div className="mb-3 text-[13.5px] text-muted-foreground">
+            <Trans>Providers</Trans>
           </div>
-          <div className="mt-1 text-[13px] text-[var(--rk-muted)]">
-            {currentEntry?.providerName ?? me?.defaultProvider ?? (
-              <Trans>Configured by deployment</Trans>
+          <label className="sr-only" htmlFor="model-provider-search">
+            <Trans>Search providers</Trans>
+          </label>
+          <Input
+            id="model-provider-search"
+            value={providerQuery}
+            onChange={(event) => setProviderQuery(event.target.value)}
+            placeholder={t`Search providers`}
+            className="h-10 rounded-xl px-3.5"
+          />
+          <div className="rk-scroll mt-3 max-h-[240px] overflow-y-auto rounded-xl border border-border md:min-h-0 md:max-h-none md:flex-1">
+            {filteredGroups.length ? (
+              filteredGroups.map((group) => {
+                const connected = credentials.some((entry) => entry.provider === group.id);
+                return (
+                  <button
+                    key={group.id}
+                    type="button"
+                    onClick={() => chooseProvider(group.id)}
+                    className={`flex w-full items-center gap-3 border-b border-border px-3.5 py-3 text-start last:border-0 ${
+                      group.id === provider ? "bg-muted" : "hover:bg-accent"
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[15px] text-foreground">
+                        {group.name}
+                      </span>
+                      <span className="mt-0.5 block text-[12px] text-muted-foreground/80">
+                        <Plural value={group.entries.length} one="# model" other="# models" />
+                        {" · "}
+                        {localizedProviderHint(group.entries[0]!)}
+                      </span>
+                    </span>
+                    {connected ? (
+                      <span className="text-[12px] text-success">
+                        <Trans>Connected</Trans>
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            ) : (
+              <p className="px-3.5 py-4 text-[13px] text-muted-foreground">
+                <Trans>No providers found.</Trans>
+              </p>
             )}
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden px-6 py-6 sm:px-8 md:flex-row">
-          <div className="flex min-h-0 shrink-0 flex-col md:w-[310px]">
-            <div className="mb-3 text-[13.5px] text-[var(--rk-muted)]">
-              <Trans>Providers</Trans>
-            </div>
-            <label className="sr-only" htmlFor="model-provider-search">
-              <Trans>Search providers</Trans>
-            </label>
-            <input
-              id="model-provider-search"
-              value={providerQuery}
-              onChange={(event) => setProviderQuery(event.target.value)}
-              placeholder={t`Search providers`}
-              className="w-full rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-2.5 text-[14px] text-[var(--rk-ink)] outline-none placeholder:text-[var(--rk-muted-2)] focus:border-[var(--rk-muted-2)]"
-            />
-            <div className="rk-scroll mt-3 max-h-[240px] overflow-y-auto rounded-[13px] border border-[var(--rk-border)] md:min-h-0 md:max-h-none md:flex-1">
-              {filteredGroups.length ? (
-                filteredGroups.map((group) => {
-                  const connected = credentials.some((entry) => entry.provider === group.id);
-                  return (
-                    <button
-                      key={group.id}
-                      type="button"
-                      onClick={() => chooseProvider(group.id)}
-                      className={`flex w-full items-center gap-3 border-b border-[var(--rk-hairline-strong)] px-3.5 py-3 text-start last:border-0 ${
-                        group.id === provider
-                          ? "bg-[var(--rk-surface-2)]"
-                          : "hover:bg-[var(--rk-inset)]"
-                      }`}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[15px] text-[var(--rk-ink)]">
-                          {group.name}
-                        </span>
-                        <span className="mt-0.5 block text-[12px] text-[var(--rk-muted-2)]">
-                          <Plural value={group.entries.length} one="# model" other="# models" />
-                          {" · "}
-                          {localizedProviderHint(group.entries[0]!)}
-                        </span>
-                      </span>
-                      {connected ? (
-                        <span className="text-[12px] text-[var(--rk-success-soft)]">
-                          <Trans>Connected</Trans>
-                        </span>
-                      ) : null}
-                    </button>
-                  );
-                })
-              ) : (
-                <p className="px-3.5 py-4 text-[13px] text-[var(--rk-muted)]">
-                  <Trans>No providers found.</Trans>
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div ref={detailScrollRef} className="rk-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
-            {error ? <p className="mb-4 text-sm text-[var(--rk-danger)]">{error}</p> : null}
-            {notice ? <p className="mb-4 text-sm text-[var(--rk-success-soft)]">{notice}</p> : null}
-            {selected ? (
-              <>
-                <div className="block text-[13.5px] text-[var(--rk-muted)]">
-                  {isOpenAiCompatible ? (
-                    <>
-                      <label className="block">
-                        <Trans>Server URL</Trans>
-                        <input
-                          value={baseUrl}
-                          onChange={(event) => updateBaseUrl(event.target.value)}
-                          aria-label={t`OpenAI-compatible server URL`}
-                          placeholder="http://127.0.0.1:8000/v1"
-                          autoComplete="off"
-                          className="mt-2 w-full rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-[var(--rk-ink)] outline-none"
-                        />
-                      </label>
-                      <details className="mt-2 text-[13px] leading-[1.5] text-[var(--rk-muted)]">
-                        <summary className="w-fit cursor-pointer select-none">
-                          <Trans>Setup help</Trans>
-                        </summary>
-                        <p className="mt-1">
-                          {t`Paste the OpenAI-compatible address from your server. Rakazo adds /v1 if needed.`}
-                        </p>
-                      </details>
-                      <div className="mt-3 flex items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy || probing || !effectiveBaseUrl}
-                          onClick={() => void probeServerModels()}
-                        >
-                          {probing ? <Trans>Finding…</Trans> : <Trans>Find models</Trans>}
-                        </Button>
-                      </div>
-                      <div className="mt-4 block">
-                        <span>
-                          <Trans>Model</Trans>
-                        </span>
-                        {probeModels.length && probeModels.includes(modelId) ? (
-                          <div className="relative mt-2">
-                            <select
-                              value={modelId}
-                              onChange={(event) => {
-                                cancelOAuthAttempt();
-                                selectionRevisionRef.current += 1;
-                                setModelId(event.target.value);
-                                setError(null);
-                                setNotice(null);
-                              }}
-                              aria-label={t`Models from server`}
-                              className="w-full appearance-none rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] py-3 pl-3.5 pr-11 text-sm text-[var(--rk-ink)]"
-                            >
-                              {probeModels.map((id) => (
-                                <option key={id} value={id}>
-                                  {id}
-                                </option>
-                              ))}
-                              <option value="">
-                                <Trans>Other model…</Trans>
-                              </option>
-                            </select>
-                            <span
-                              aria-hidden="true"
-                              className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[var(--rk-muted)]"
-                            >
-                              <ChevronDown size={16} strokeWidth={1.8} />
-                            </span>
-                          </div>
-                        ) : (
-                          <input
-                            value={modelId}
-                            onChange={(event) => {
-                              cancelOAuthAttempt();
-                              selectionRevisionRef.current += 1;
-                              setModelId(event.target.value);
-                              setError(null);
-                              setNotice(null);
-                            }}
-                            aria-label={t`Model id`}
-                            placeholder="exact-model-id"
-                            className="mt-2 w-full rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-[var(--rk-ink)] outline-none"
-                          />
-                        )}
-                        {probeModels.length && !probeModels.includes(modelId) ? (
-                          <button
-                            type="button"
-                            className="mt-2 text-[13px] text-[var(--rk-muted)] underline"
-                            onClick={() => setModelId(probeModels[0] ?? "")}
-                          >
-                            <Trans>Use a found model</Trans>
-                          </button>
-                        ) : null}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <span>
-                        <Trans>Model</Trans>
-                      </span>
-                      <ModelPicker
-                        options={modelsForProvider}
-                        value={selected.id}
-                        onChange={(nextModelId) => {
-                          cancelOAuthAttempt();
-                          selectionRevisionRef.current += 1;
-                          setModelId(nextModelId);
-                          setError(null);
-                          setNotice(null);
-                        }}
+        <div ref={detailScrollRef} className="rk-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {error ? <p className="mb-4 text-sm text-destructive">{error}</p> : null}
+          {notice ? <p className="mb-4 text-sm text-success">{notice}</p> : null}
+          {selected ? (
+            <>
+              <div className="block text-[13.5px] text-muted-foreground">
+                {isOpenAiCompatible ? (
+                  <>
+                    <label className="block" htmlFor="model-base-url">
+                      <Trans>Server URL</Trans>
+                      <Input
+                        id="model-base-url"
+                        value={baseUrl}
+                        onChange={(event) => updateBaseUrl(event.target.value)}
+                        aria-label={t`OpenAI-compatible server URL`}
+                        placeholder="http://127.0.0.1:8000/v1"
+                        autoComplete="off"
+                        className="mt-2 h-10 text-foreground"
                       />
-                      {selected.auth !== "oauth" ? (
-                        <div className="mt-2">
-                          <button
-                            type="button"
-                            className="text-[13px] text-[var(--rk-muted)] underline disabled:opacity-60"
-                            disabled={providerProbing || !credential}
-                            onClick={() => void probeConnectedProvider()}
-                          >
-                            {providerProbing ? (
-                              <Trans>Checking models…</Trans>
-                            ) : (
-                              <Trans>Fetch model list from provider</Trans>
-                            )}
-                          </button>
-                          {providerProbeError ? (
-                            <p className="mt-1 text-[13px] text-[var(--rk-muted)]">
-                              {providerProbeError}
-                            </p>
-                          ) : null}
-                          {providerProbeModels.length ? (
-                            <ul className="mt-2 space-y-1">
-                              {providerProbeModels.map((id) => {
-                                const known = modelsForProvider.some((entry) => entry.id === id);
-                                return (
-                                  <li
-                                    key={id}
-                                    className="flex items-center justify-between gap-2 text-[13px] text-[var(--rk-ink)]"
-                                  >
-                                    <span className="truncate">
-                                      {id}
-                                      {known ? " ✓" : ""}
-                                    </span>
-                                    {!known ? (
-                                      <button
-                                        type="button"
-                                        className="underline disabled:opacity-60"
-                                        disabled={addingOverrideId !== null}
-                                        onClick={() => void addOverrideModel(id)}
-                                      >
-                                        {addingOverrideId === id ? (
-                                          <Trans>Adding…</Trans>
-                                        ) : (
-                                          <Trans>Add to list</Trans>
-                                        )}
-                                      </button>
-                                    ) : null}
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-                {!isOpenAiCompatible && selected.billing ? (
-                  <p className="mt-2 text-[13px] leading-[1.5] text-[var(--rk-muted)]">
-                    {selected.billing}
-                  </p>
-                ) : null}
-
-                {!isOpenAiCompatible ? (
-                  <div className="mt-5 rounded-[13px] border border-[var(--rk-border)] px-4 py-3">
-                    <div className="text-[12.5px] uppercase tracking-[0.08em] text-[var(--rk-muted-2)]">
-                      <Trans>Personal credential</Trans>
-                    </div>
-                    <div className="mt-1 text-[15px] text-[var(--rk-ink)]">
-                      {credential ? (
-                        <Trans>Connected · {credential.label}</Trans>
-                      ) : (
-                        <Trans>Not connected</Trans>
-                      )}
-                    </div>
-                    <div className="mt-1 text-[13px] text-[var(--rk-muted)]">
-                      {credential ? (
-                        <Trans>
-                          Your key or subscription token is stored securely and is never shown here.
-                        </Trans>
-                      ) : (
-                        <Trans>Connect this provider to use it as your personal model.</Trans>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-
-                {subscriptionSignIn ? (
-                  <div className="mt-5">
-                    {oauth ? (
-                      <div className="rounded-[13px] border border-[var(--rk-border)] px-4 py-3">
-                        {oauth.mode === "auth-url" ? (
-                          <>
-                            <p className="text-sm leading-[1.5] text-[var(--rk-muted)]">
-                              <Trans>
-                                Finish signing in at{" "}
-                                <a
-                                  href={oauth.verificationUri}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-[var(--rk-ink)] underline"
-                                >
-                                  {new URL(oauth.verificationUri).hostname}
-                                </a>
-                                . The final page may not load; paste its URL or code here.
-                              </Trans>
-                            </p>
-                            <div className="mt-3 flex items-center gap-2">
-                              <input
-                                value={pasteCode}
-                                onChange={(e) => setPasteCode(e.target.value)}
-                                aria-label={t`Authorization code or callback URL`}
-                                autoComplete="off"
-                                spellCheck={false}
-                                placeholder="http://localhost:53692/callback?code=…"
-                                className="w-full rounded-[11px] border border-[var(--rk-border)] bg-transparent px-3.5 py-2.5 text-[13px] text-[var(--rk-ink)]"
-                              />
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                disabled={!pasteCode.trim()}
-                                onClick={() => void submitOAuthCode()}
-                              >
-                                <Trans>Submit</Trans>
-                              </Button>
-                            </div>
-                            <p className="mt-2 text-sm text-[var(--rk-muted)]">
-                              <Trans>Waiting for sign-in…</Trans>
-                            </p>
-                          </>
-                        ) : (
-                          <>
-                            <p className="text-sm leading-[1.5] text-[var(--rk-muted)]">
-                              <Trans>
-                                Enter this code at{" "}
-                                <a
-                                  href={oauth.verificationUri}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-[var(--rk-ink)] underline"
-                                >
-                                  {oauth.verificationUri.replace(/^https:\/\//, "")}
-                                </a>
-                              </Trans>
-                            </p>
-                            <p className="mt-2 font-mono text-[22px] tracking-[0.2em] text-[var(--rk-ink-strong)]">
-                              {oauth.userCode}
-                            </p>
-                            <p className="mt-2 text-sm text-[var(--rk-muted)]">
-                              <Trans>Waiting for sign-in…</Trans>
-                            </p>
-                          </>
-                        )}
-                      </div>
-                    ) : (
+                    </label>
+                    <details className="mt-2 text-[13px] leading-[1.5] text-muted-foreground">
+                      <summary className="w-fit cursor-pointer select-none">
+                        <Trans>Setup help</Trans>
+                      </summary>
+                      <p className="mt-1">
+                        {t`Paste the OpenAI-compatible address from your server. Rakazo adds /v1 if needed.`}
+                      </p>
+                    </details>
+                    <div className="mt-3 flex items-center gap-2">
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={busy}
-                        onClick={() => beginSelectedSubscriptionSignIn()}
+                        disabled={busy || probing || !effectiveBaseUrl}
+                        onClick={() => void probeServerModels()}
                       >
-                        {oauthPending ? (
-                          <Trans>Starting…</Trans>
-                        ) : (
-                          (selected.oauthLabel ?? t`Sign in`)
-                        )}
+                        {probing ? <Trans>Finding…</Trans> : <Trans>Find models</Trans>}
                       </Button>
-                    )}
-                  </div>
-                ) : null}
-
-                {acceptsKey ? (
-                  <div className="mt-5">
-                    {isOpenAiCompatible ? (
-                      <details className="text-[13.5px] text-[var(--rk-muted)]">
-                        <summary className="w-fit cursor-pointer select-none">
-                          <Trans>API key</Trans>
-                        </summary>
-                        <input
-                          aria-label={t`API key`}
-                          value={apiKey}
-                          onChange={(event) => updateApiKey(event.target.value)}
-                          placeholder={t`Optional`}
-                          type="password"
-                          autoComplete="new-password"
-                          className="mt-2 w-full rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-[var(--rk-ink)] outline-none"
+                    </div>
+                    <div className="mt-4 block">
+                      <span>
+                        <Trans>Model</Trans>
+                      </span>
+                      {probeModels.length && probeModels.includes(modelId) ? (
+                        <NativeSelect
+                          className="mt-2 w-full text-foreground"
+                          value={modelId}
+                          onChange={(event) => {
+                            cancelOAuthAttempt();
+                            selectionRevisionRef.current += 1;
+                            setModelId(event.target.value);
+                            setError(null);
+                            setNotice(null);
+                          }}
+                          aria-label={t`Models from server`}
+                        >
+                          {probeModels.map((id) => (
+                            <NativeSelectOption key={id} value={id}>
+                              {id}
+                            </NativeSelectOption>
+                          ))}
+                          <NativeSelectOption value="">
+                            <Trans>Other model…</Trans>
+                          </NativeSelectOption>
+                        </NativeSelect>
+                      ) : (
+                        <Input
+                          value={modelId}
+                          onChange={(event) => {
+                            cancelOAuthAttempt();
+                            selectionRevisionRef.current += 1;
+                            setModelId(event.target.value);
+                            setError(null);
+                            setNotice(null);
+                          }}
+                          aria-label={t`Model id`}
+                          placeholder="exact-model-id"
+                          className="mt-2 h-10 text-foreground"
                         />
-                      </details>
+                      )}
+                      {probeModels.length && !probeModels.includes(modelId) ? (
+                        <Button
+                          type="button"
+                          variant="link"
+                          className="mt-2 h-auto px-0 text-[13px] text-muted-foreground underline"
+                          onClick={() => setModelId(probeModels[0] ?? "")}
+                        >
+                          <Trans>Use a found model</Trans>
+                        </Button>
+                      ) : null}
+                    </div>
+                    <ModelThinkingOptions
+                      reasoning={reasoning}
+                      onReasoningChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setReasoning(value);
+                        if (!value) setThinkingLevel(null);
+                        setNotice(null);
+                      }}
+                      disabled={busy}
+                      advancedLabel={t`Advanced`}
+                      thinkingLabel={t`Supports thinking`}
+                      thinkingLevel={thinkingLevel}
+                      onThinkingLevelChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setThinkingLevel(value as ThinkingLevel | null);
+                        setNotice(null);
+                      }}
+                      thinkingLevelOptions={[
+                        { value: "minimal", label: t`Minimal` },
+                        { value: "low", label: t`Low` },
+                        { value: "medium", label: t`Medium` },
+                        { value: "high", label: t`High` },
+                        { value: "xhigh", label: t`Extra high` },
+                        { value: "max", label: t`Max` },
+                      ]}
+                      thinkingLevelLabel={t`Reasoning effort`}
+                      thinkingLevelDefaultLabel={t`Default`}
+                      maxTokens={maxTokens}
+                      onMaxTokensChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setMaxTokens(value);
+                        setNotice(null);
+                      }}
+                      maxTokensLabel={t`Maximum output tokens`}
+                      contextWindow={contextWindow}
+                      onContextWindowChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setContextWindow(value);
+                        setNotice(null);
+                      }}
+                      contextWindowLabel={t`Context limit`}
+                      supportsImages={supportsImages}
+                      onSupportsImagesChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setSupportsImages(value);
+                        setNotice(null);
+                      }}
+                      imagesLabel={t`Supports images`}
+                      maxImagesPerPrompt={maxImagesPerPrompt}
+                      onMaxImagesPerPromptChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setMaxImagesPerPrompt(value);
+                        setNotice(null);
+                      }}
+                      maxImagesLabel={t`Maximum images per request`}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      <Trans>Model</Trans>
+                    </span>
+                    <ModelPicker
+                      options={modelsForProvider}
+                      value={selected.id}
+                      onChange={(nextModelId) => {
+                        cancelOAuthAttempt();
+                        selectionRevisionRef.current += 1;
+                        setModelId(nextModelId);
+                        setError(null);
+                        setNotice(null);
+                      }}
+                    />
+                    <ModelThinkingOptions
+                      showThinking={false}
+                      disabled={busy}
+                      advancedLabel={t`Advanced`}
+                      maxTokens={maxTokens}
+                      onMaxTokensChange={(value) => {
+                        selectionRevisionRef.current += 1;
+                        setMaxTokens(value);
+                        setNotice(null);
+                      }}
+                      maxTokensLabel={t`Maximum output tokens`}
+                    />
+                    {selected.auth !== "oauth" ? (
+                      <div className="col-span-full mt-2">
+                        <button
+                          type="button"
+                          className="text-[13px] text-muted-foreground underline disabled:opacity-60"
+                          disabled={providerProbing || !credential}
+                          onClick={() => void probeConnectedProvider()}
+                        >
+                          {providerProbing ? (
+                            <Trans>Checking models…</Trans>
+                          ) : (
+                            <Trans>Fetch model list from provider</Trans>
+                          )}
+                        </button>
+                        {providerProbeError ? (
+                          <p className="mt-1 text-[13px] text-muted-foreground">
+                            {providerProbeError}
+                          </p>
+                        ) : null}
+                        {providerProbeModels.length ? (
+                          <ul className="mt-2 space-y-1">
+                            {providerProbeModels.map((id) => {
+                              const known = modelsForProvider.some((entry) => entry.id === id);
+                              return (
+                                <li
+                                  key={id}
+                                  className="flex items-center justify-between gap-2 text-[13px] text-foreground"
+                                >
+                                  <span className="truncate">
+                                    {id}
+                                    {known ? " ✓" : ""}
+                                  </span>
+                                  {!known ? (
+                                    <button
+                                      type="button"
+                                      className="underline disabled:opacity-60"
+                                      disabled={addingOverrideId !== null}
+                                      onClick={() => void addOverrideModel(id)}
+                                    >
+                                      {addingOverrideId === id ? (
+                                        <Trans>Adding…</Trans>
+                                      ) : (
+                                        <Trans>Add to list</Trans>
+                                      )}
+                                    </button>
+                                  ) : null}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+              {!isOpenAiCompatible && selected.billing ? (
+                <p className="mt-2 text-[13px] leading-[1.5] text-muted-foreground">
+                  {selected.billing}
+                </p>
+              ) : null}
+
+              {!isOpenAiCompatible ? (
+                <div className="mt-5 rounded-xl border border-border px-4 py-3">
+                  <div className="text-[12.5px] uppercase tracking-[0.08em] text-muted-foreground/80">
+                    <Trans>Personal credential</Trans>
+                  </div>
+                  <div className="mt-1 text-[15px] text-foreground">
+                    {credential ? (
+                      <Trans>Connected · {credential.label}</Trans>
                     ) : (
-                      <label className="block text-[13.5px] text-[var(--rk-muted)]">
-                        {credential ? (
-                          <Trans>Replace API key</Trans>
-                        ) : subscriptionSignIn ? (
-                          <Trans>Or connect an API key</Trans>
-                        ) : (
-                          <Trans>API key</Trans>
-                        )}
-                        <input
-                          value={apiKey}
-                          onChange={(event) => updateApiKey(event.target.value)}
-                          placeholder="sk-…"
-                          type="password"
-                          autoComplete="new-password"
-                          className="mt-2 w-full rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-[var(--rk-ink)] outline-none"
-                        />
-                      </label>
+                      <Trans>Not connected</Trans>
                     )}
+                  </div>
+                  <div className="mt-1 text-[13px] text-muted-foreground">
+                    {credential ? (
+                      <Trans>Stored securely. Never shown here.</Trans>
+                    ) : (
+                      <Trans>Connect this provider to use it as your personal model.</Trans>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              {subscriptionSignIn ? (
+                <div className="mt-5">
+                  {oauth ? (
+                    <div className="rounded-xl border border-border px-4 py-3">
+                      {oauth.mode === "auth-url" ? (
+                        <>
+                          <p className="text-sm leading-[1.5] text-muted-foreground">
+                            <Trans>
+                              Finish signing in at{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {new URL(oauth.verificationUri).hostname}
+                              </a>
+                              . The final page may not load; paste its URL or code here.
+                            </Trans>
+                          </p>
+                          <div className="mt-3 flex items-center gap-2">
+                            <Input
+                              value={pasteCode}
+                              onChange={(e) => setPasteCode(e.target.value)}
+                              aria-label={t`Authorization code or callback URL`}
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder="http://localhost:53692/callback?code=…"
+                              className="text-foreground md:text-[13px]"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={!pasteCode.trim()}
+                              onClick={() => void submitOAuthCode()}
+                            >
+                              <Trans>Submit</Trans>
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            <Trans>Waiting for sign-in…</Trans>
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm leading-[1.5] text-muted-foreground">
+                            <Trans>
+                              Enter this code at{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {oauth.verificationUri.replace(/^https:\/\//, "")}
+                              </a>
+                            </Trans>
+                          </p>
+                          <p className="mt-2 font-mono text-[22px] tracking-[0.2em] text-foreground">
+                            {oauth.userCode}
+                          </p>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            <Trans>Waiting for sign-in…</Trans>
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  ) : (
                     <Button
                       type="button"
-                      variant="pill"
+                      variant="outline"
                       size="sm"
-                      disabled={
-                        busy ||
-                        (isOpenAiCompatible ? !openAiCompatibleReady : apiKey.trim().length < 8)
-                      }
-                      onClick={() => void connectKey()}
-                      className="mt-3"
+                      disabled={busy}
+                      onClick={() => beginSelectedSubscriptionSignIn()}
                     >
-                      {pending === "connect" ? (
-                        <Trans>Saving…</Trans>
-                      ) : isOpenAiCompatible ? (
-                        <Trans>Save</Trans>
-                      ) : credential ? (
+                      {oauthPending ? (
+                        <Trans>Starting…</Trans>
+                      ) : (
+                        (selected.oauthLabel ?? t`Sign in`)
+                      )}
+                    </Button>
+                  )}
+                </div>
+              ) : null}
+
+              {acceptsKey || builtinLimitSave ? (
+                <div className="mt-5">
+                  {acceptsKey && isOpenAiCompatible ? (
+                    <details className="text-[13.5px] text-muted-foreground">
+                      <summary className="w-fit cursor-pointer select-none">
+                        <Trans>API key</Trans>
+                      </summary>
+                      <Input
+                        aria-label={t`API key`}
+                        value={apiKey}
+                        onChange={(event) => updateApiKey(event.target.value)}
+                        placeholder={t`Optional`}
+                        type="password"
+                        autoComplete="new-password"
+                        className="mt-2 h-10 text-foreground"
+                      />
+                    </details>
+                  ) : acceptsKey ? (
+                    <label
+                      className="block text-[13.5px] text-muted-foreground"
+                      htmlFor="model-api-key"
+                    >
+                      {credential ? (
                         <Trans>Replace API key</Trans>
+                      ) : subscriptionSignIn ? (
+                        <Trans>Or connect an API key</Trans>
                       ) : (
-                        <Trans>Connect API key</Trans>
+                        <Trans>API key</Trans>
                       )}
-                    </Button>
-                  </div>
-                ) : null}
+                      <Input
+                        id="model-api-key"
+                        value={apiKey}
+                        onChange={(event) => updateApiKey(event.target.value)}
+                        placeholder="sk-…"
+                        type="password"
+                        autoComplete="new-password"
+                        className="mt-2 h-10 text-foreground"
+                      />
+                    </label>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="mt-3 rounded-full"
+                    size="sm"
+                    disabled={
+                      busy ||
+                      (isOpenAiCompatible
+                        ? !openAiCompatibleReady
+                        : !builtinLimitSave && apiKey.trim().length < 8)
+                    }
+                    onClick={() => void connectKey()}
+                  >
+                    {pending === "connect" ? (
+                      <Trans>Saving…</Trans>
+                    ) : isOpenAiCompatible || builtinLimitSave ? (
+                      <Trans>Save</Trans>
+                    ) : credential ? (
+                      <Trans>Replace API key</Trans>
+                    ) : (
+                      <Trans>Connect API key</Trans>
+                    )}
+                  </Button>
+                </div>
+              ) : null}
 
-                {selected.auth === "oauth" && !subscriptionSignIn ? (
-                  <p className="mt-5 text-sm leading-[1.5] text-[var(--rk-muted)]">
-                    <Trans>
-                      This subscription sign-in is not available in Rakazo yet. Use a deployment
-                      credential or choose another provider.
-                    </Trans>
-                  </p>
-                ) : null}
+              {selected.auth === "oauth" && !subscriptionSignIn ? (
+                <p className="mt-5 text-sm leading-[1.5] text-muted-foreground">
+                  <Trans>
+                    This subscription sign-in is not available in Rakazo yet. Use a deployment
+                    credential or choose another provider.
+                  </Trans>
+                </p>
+              ) : null}
 
-                {credential && !isActive ? (
-                  <div className="mt-6">
-                    <Button
-                      type="button"
-                      variant="pill"
-                      size="sm"
-                      disabled={busy || (isOpenAiCompatible && !modelId.trim())}
-                      onClick={() => void setModelDefault()}
-                    >
-                      {pending === "default" ? (
-                        <Trans>Switching…</Trans>
-                      ) : (
-                        <Trans>Use this model</Trans>
-                      )}
-                    </Button>
-                  </div>
-                ) : null}
-              </>
-            ) : loading ? (
-              <p className="text-[var(--rk-muted)]">
-                <Trans>Loading model catalog…</Trans>
-              </p>
-            ) : (
-              <p className="text-[var(--rk-muted)]">
-                <Trans>No model catalog is available.</Trans>
-              </p>
-            )}
-          </div>
+              {credential && !isActive ? (
+                <div className="mt-6">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="rounded-full"
+                    size="sm"
+                    disabled={busy || (isOpenAiCompatible && !modelId.trim())}
+                    onClick={() => void setModelDefault()}
+                  >
+                    {pending === "default" ? (
+                      <Trans>Switching…</Trans>
+                    ) : (
+                      <Trans>Use this model</Trans>
+                    )}
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          ) : loading ? (
+            <p className="text-muted-foreground">
+              <Trans>Loading model catalog…</Trans>
+            </p>
+          ) : (
+            <p className="text-muted-foreground">
+              <Trans>No model catalog is available.</Trans>
+            </p>
+          )}
         </div>
       </div>
-    </div>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div data-testid="model-settings" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) handleClose();
+      }}
+    >
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[760px] max-h-[calc(100%-2rem)] w-[1080px] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-card p-0 sm:max-w-[1080px]"
+      >
+        {body}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -961,6 +1136,7 @@ function ModelPicker({
       choose(activeOptionIndex());
     } else if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     }
@@ -969,6 +1145,7 @@ function ModelPicker({
   function onTriggerKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
     if (event.key === "Escape" && open) {
       event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       return;
     }
@@ -1002,6 +1179,7 @@ function ModelPicker({
       choose(index);
     } else if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     }
@@ -1017,17 +1195,17 @@ function ModelPicker({
         aria-controls={listboxId}
         aria-expanded={open}
         aria-haspopup="listbox"
-        className="flex w-full items-center justify-between rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] px-3.5 py-3 text-start text-[var(--rk-ink)] outline-none focus-visible:border-[var(--rk-muted-2)]"
+        className="flex h-10 w-full items-center justify-between rounded-lg border border-input bg-transparent px-3 text-start text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
         onClick={() => setOpen((current) => !current)}
         onKeyDown={onTriggerKeyDown}
       >
         <span className="min-w-0 truncate">{options[selectedIndex]?.label}</span>
-        <span className="ml-3 shrink-0 text-[var(--rk-muted)]" aria-hidden="true">
+        <span className="ml-3 shrink-0 text-muted-foreground" aria-hidden="true">
           <ChevronDown size={16} strokeWidth={1.8} />
         </span>
       </button>
       {open ? (
-        <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-[11px] border border-[var(--rk-border)] bg-[var(--rk-inset)] shadow-[0_20px_45px_rgba(0,0,0,.55)]">
+        <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10">
           <input
             ref={searchRef}
             type="text"
@@ -1044,7 +1222,7 @@ function ModelPicker({
               setHighlightedIndex(0);
             }}
             onKeyDown={onSearchKeyDown}
-            className="w-full border-b border-[var(--rk-border)] bg-transparent px-3 py-2.5 text-[13.5px] text-[var(--rk-ink)] outline-none placeholder:text-[var(--rk-muted-2)]"
+            className="w-full border-b border-border bg-transparent px-3 py-2.5 text-[13.5px] text-foreground outline-none placeholder:text-muted-foreground/80"
           />
           <div
             id={listboxId}
@@ -1054,7 +1232,7 @@ function ModelPicker({
           >
             {groupRanges.map((group) => (
               <div key={group.name}>
-                <p className="px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--rk-muted-2)]">
+                <p className="px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/80">
                   {group.name}
                 </p>
                 {group.entries.map((option, groupIndex) => {
@@ -1076,7 +1254,7 @@ function ModelPicker({
               </div>
             ))}
             {filteredOptions.length === 0 ? (
-              <p className="px-3 py-2 text-[13px] text-[var(--rk-muted)]">
+              <p className="px-3 py-2 text-[13px] text-muted-foreground">
                 <Trans>No matching models</Trans>
               </p>
             ) : null}
@@ -1117,15 +1295,15 @@ function ModelOption({
       role="option"
       aria-selected={option.id === value}
       tabIndex={highlighted ? 0 : -1}
-      className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-start text-[13.5px] text-[var(--rk-ink)] outline-none hover:bg-[var(--rk-surface-2)] focus-visible:bg-[var(--rk-surface-2)] ${
-        highlighted || option.id === value ? "bg-[var(--rk-surface-2)]" : ""
+      className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-start text-[13.5px] text-foreground outline-none hover:bg-accent focus-visible:bg-accent ${
+        highlighted || option.id === value ? "bg-accent" : ""
       }`}
       onClick={() => choose(index)}
       onKeyDown={(event) => onOptionKeyDown(event, index)}
     >
       <span className="min-w-0 truncate">{option.label}</span>
       {option.billing.toLowerCase().includes("free") ? (
-        <span className="shrink-0 text-[12px] text-[var(--rk-muted)]">{t`Free`}</span>
+        <span className="shrink-0 text-[12px] text-muted-foreground">{t`Free`}</span>
       ) : null}
     </button>
   );

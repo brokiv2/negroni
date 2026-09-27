@@ -30,7 +30,7 @@ export async function loadAppearancePreference(): Promise<AppearancePreference> 
   } catch {
     memoryPreference = memoryPreference ?? "system";
   }
-  if (memoryPreference !== previous) notify();
+  notify();
   return memoryPreference;
 }
 

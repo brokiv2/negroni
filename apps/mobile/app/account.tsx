@@ -4,6 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Button,
   Platform,
   Pressable,
   ScrollView,
@@ -14,48 +15,103 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ActionSheet } from "../components/action-sheet";
 import { useAvatarStyle } from "../components/avatar-style";
 import { BotAvatar } from "../components/bot-avatar";
-import type { MobileBot } from "../lib/api";
+import type { MobileBot, MobileMe } from "../lib/api";
 import {
-  changePassword as changeAccountPassword,
+  authHeaders,
   currentApiBase,
   deleteAccount,
-  linkAppleId,
-  linkedAppleIds,
   loadSessionToken,
-  type MobileMe,
   rpc,
   selectedSpaceId,
   signOut,
 } from "../lib/api";
+import { formatUpdateLabel, getAppVersionInfo } from "../lib/app-version";
 import {
   getCachedAppearancePreference,
+  mobileTokens,
   setAppearancePreference,
-  subscribeAppearance,
 } from "../lib/appearance";
+import { appleSignInAvailable, requestAppleIdentity } from "../lib/apple-auth";
+import { explicitSignInRoute } from "../lib/auth-routing";
 import { confirmDeleteBot } from "../lib/bot-lifecycle";
+import { setUiLocale, t as translate, useI18n } from "../lib/i18n";
+import type { LiveNotificationSettings } from "../lib/live-notifications";
 import {
   canPostPromotedNotifications,
   DEFAULT_LIVE_NOTIFICATION_SETTINGS,
   getLiveNotificationSettings,
-  type LiveNotificationSettings,
   openLiveNotificationSettings,
   openPromotedNotificationSettings,
   setLiveNotificationSettings,
 } from "../lib/live-notifications";
-import { native, useThemedStyles } from "../lib/native";
+import { presentMessageActionSheet } from "../lib/message-action-sheet";
+import { native, useResolvedAppearance, useThemedStyles } from "../lib/native";
 import { registerPushToken } from "../lib/push";
-import { appleSignInAvailable, requestAppleIdentity } from "../lib/apple-auth";
+import {
+  getCachedResponseStreamingEnabled,
+  setResponseStreamingPreference,
+  subscribeResponseStreaming,
+} from "../lib/response-streaming";
+import type { AccountUiLocale } from "../lib/ui-locale";
+import { ACCOUNT_UI_LOCALES, UI_LOCALE_LABELS } from "../lib/ui-locale";
 
+/**
+ * Attach an Apple ID to the signed-in Negroni account so every device this user owns
+ * lands in the same space.
+ */
+async function linkAppleId(identityToken: string, nonce: string): Promise<void> {
+  const headers = await authHeaders();
+  if (!headers.authorization) {
+    throw new Error(translate("Sign in to Negroni before connecting Apple ID"));
+  }
+  const response = await fetch(`${currentApiBase()}/api/auth/link-social`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "rakazo://", ...headers },
+    body: JSON.stringify({ provider: "apple", idToken: { token: identityToken, nonce } }),
+  });
+  if (response.ok) return;
+  const body: unknown = await response.json().catch(() => ({}));
+  if (appleAlreadyLinked(body)) {
+    throw new Error(
+      translate("This Apple ID may already be connected to another Negroni account."),
+    );
+  }
+  throw new Error(translate("Couldn’t connect this Apple ID. Try again."));
+}
+
+/** Better Auth rejects a re-used Apple ID with a generic account-creation failure. */
+function appleAlreadyLinked(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) return false;
+  const record = body as { code?: unknown; message?: unknown };
+  const detail = [record.code, record.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return detail.includes("unable to create account") || detail.includes("linking_failed");
+}
+
+/** How many Apple IDs already point at this account. */
+async function linkedAppleIds(): Promise<number> {
+  const response = await fetch(`${currentApiBase()}/api/auth/list-accounts`, {
+    headers: { origin: "rakazo://", ...(await authHeaders()) },
+  });
+  if (!response.ok) throw new Error(translate("Could not load linked Apple IDs"));
+  const accounts = (await response.json()) as Array<{ providerId?: string }>;
+  return accounts.filter((account) => account.providerId === "apple").length;
+}
+
+/** Render account settings, including the entry point for voice configuration. */
 export default function Account() {
+  const { t, locale } = useI18n();
+  const colorScheme = useResolvedAppearance();
   const router = useRouter();
   const { focus } = useLocalSearchParams<{ focus?: string }>();
   const [me, setMe] = useState<MobileMe | null>(null);
   const [password, setPassword] = useState("");
-  const [passwordOpen, setPasswordOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [localeSaving, setLocaleSaving] = useState(false);
+  const [localeError, setLocaleError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [avatarPending, setAvatarPending] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
@@ -66,11 +122,6 @@ export default function Account() {
   const [notificationPending, setNotificationPending] = useState(false);
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [passwordConfirmation, setPasswordConfirmation] = useState("");
-  const [passwordPending, setPasswordPending] = useState(false);
-  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [appleAvailable, setAppleAvailable] = useState(false);
   const [appleCount, setAppleCount] = useState<number | null>(null);
   const [applePending, setApplePending] = useState(false);
@@ -82,16 +133,25 @@ export default function Account() {
     outputTokens: number;
   } | null>(null);
   const { avatarStyle, updateAvatarStyle } = useAvatarStyle();
-  const appearance = useSyncExternalStore(
-    subscribeAppearance,
-    getCachedAppearancePreference,
-    () => "system" as const,
+  const appearance = getCachedAppearancePreference();
+  const streamReplies = useSyncExternalStore(
+    subscribeResponseStreaming,
+    getCachedResponseStreamingEnabled,
+    () => false,
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const styles = useThemedStyles(createAccountStyles);
+  const versionInfo = getAppVersionInfo();
+  const updateLabel = formatUpdateLabel(versionInfo.update, t);
+  const versionAccessibility = [versionInfo.nativeLabel, updateLabel].filter(Boolean).join(". ");
 
   useEffect(() => {
-    void appleSignInAvailable().then(setAppleAvailable).catch(() => undefined);
-    void linkedAppleIds().then(setAppleCount).catch(() => undefined);
+    void appleSignInAvailable()
+      .then(setAppleAvailable)
+      .catch(() => undefined);
+    void linkedAppleIds()
+      .then(setAppleCount)
+      .catch(() => undefined);
     void rpc<MobileMe>("me")
       .then(setMe)
       .catch(() => undefined);
@@ -110,14 +170,16 @@ export default function Account() {
   }, []);
 
   const usageBlock = (
-    <View accessibilityLabel="Usage" style={styles.profile}>
-      <Text style={styles.settingsTitle}>Usage</Text>
+    <View accessibilityLabel={t("Usage")} style={styles.profile}>
+      <Text style={styles.settingsTitle}>{t("Usage")}</Text>
       {usage ? (
         <Text style={styles.email}>
-          {usage.runs} runs · {usage.inputTokens + usage.outputTokens} tokens
+          {t("{runs} runs · {tokens} tokens", {
+            runs: usage.runs,
+            tokens: usage.inputTokens + usage.outputTokens,
+          })}
         </Text>
       ) : null}
-      <Text style={styles.settingsExplanation}>Model spend uses your provider keys.</Text>
     </View>
   );
 
@@ -127,8 +189,8 @@ export default function Account() {
       setArchivedBots((bots) => bots.filter((bot) => bot.id !== botId));
     } catch (restoreError) {
       Alert.alert(
-        "Could not restore bot",
-        restoreError instanceof Error ? restoreError.message : "Try again.",
+        t("Could not restore bot"),
+        restoreError instanceof Error ? restoreError.message : t("Try again."),
       );
     }
   }
@@ -140,7 +202,7 @@ export default function Account() {
     try {
       await updateAvatarStyle(next);
     } catch {
-      setAvatarError("Couldn't update avatars");
+      setAvatarError(t("Couldn't update avatars"));
     } finally {
       setAvatarPending(false);
     }
@@ -152,31 +214,10 @@ export default function Account() {
     try {
       await signOut();
       router.dismissAll();
-      router.replace("/sign-in");
+      router.replace(explicitSignInRoute);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not sign out");
+      setError(err instanceof Error ? err.message : t("Could not sign out"));
       setPending(false);
-    }
-  }
-
-  async function handlePasswordChange() {
-    if (newPassword !== passwordConfirmation) {
-      setPasswordMessage("Passwords do not match");
-      return;
-    }
-    setPasswordPending(true);
-    setPasswordMessage(null);
-    try {
-      await changeAccountPassword(currentPassword, newPassword);
-      setCurrentPassword("");
-      setNewPassword("");
-      setPasswordConfirmation("");
-      setPasswordMessage("Password updated");
-      setPasswordOpen(false);
-    } catch (cause) {
-      setPasswordMessage(cause instanceof Error ? cause.message : "Could not change password");
-    } finally {
-      setPasswordPending(false);
     }
   }
 
@@ -188,11 +229,10 @@ export default function Account() {
       const identity = await requestAppleIdentity();
       if (!identity) return;
       await linkAppleId(identity.token, identity.nonce);
-      const count = await linkedAppleIds();
-      setAppleCount(count);
-      setAppleMessage("Apple ID connected to this Negroni account");
+      setAppleCount(await linkedAppleIds());
+      setAppleMessage(t("Apple ID connected to this Negroni account"));
     } catch (cause) {
-      setAppleMessage(cause instanceof Error ? cause.message : "Could not connect Apple ID");
+      setAppleMessage(cause instanceof Error ? cause.message : t("Could not connect Apple ID"));
     } finally {
       setApplePending(false);
     }
@@ -217,7 +257,7 @@ export default function Account() {
     } catch (cause) {
       setNotifications(previous);
       setNotificationError(
-        cause instanceof Error ? cause.message : "Could not update notifications",
+        cause instanceof Error ? cause.message : t("Could not update notifications"),
       );
     } finally {
       setNotificationPending(false);
@@ -227,12 +267,14 @@ export default function Account() {
   function confirmDeletion() {
     setError(null);
     Alert.alert(
-      "Delete your account?",
-      "This permanently deletes your account, bots, conversations, memories, files, and saved connections. This cannot be undone.",
+      t("Delete your account?"),
+      t(
+        "This permanently deletes your account, bots, conversations, memories, files, and saved connections. This cannot be undone.",
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("Cancel"), style: "cancel" },
         {
-          text: "Delete account",
+          text: t("Delete account"),
           style: "destructive",
           onPress: () => void handleDeletion(),
         },
@@ -240,72 +282,104 @@ export default function Account() {
     );
   }
 
+  function applyLocale(code: AccountUiLocale) {
+    if (code === locale || localeSaving) return;
+    setLocaleSaving(true);
+    setLocaleError(null);
+    void setUiLocale(code)
+      .catch(() => {
+        setLocaleError(t("Could not change language"));
+      })
+      .finally(() => setLocaleSaving(false));
+  }
+
+  function openLanguagePicker() {
+    if (localeSaving) return;
+    presentMessageActionSheet({
+      title: t("Language"),
+      actions: ACCOUNT_UI_LOCALES.map((code) => ({
+        text: UI_LOCALE_LABELS[code],
+        onPress: () => applyLocale(code),
+      })),
+      colorScheme,
+      cancel: t("Cancel"),
+      more: t("More"),
+    });
+  }
+
   async function handleDeletion() {
     setPending(true);
     setError(null);
     try {
       await deleteAccount(password);
-      setPassword("");
       router.dismissAll();
       router.replace("/sign-in");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not delete account");
+      setError(err instanceof Error ? err.message : t("Could not delete account"));
     } finally {
       setPending(false);
     }
   }
 
-  function closePasswordSheet() {
-    if (passwordPending) return;
-    setPasswordOpen(false);
-    setCurrentPassword("");
-    setNewPassword("");
-    setPasswordConfirmation("");
-    setPasswordMessage(null);
-  }
-
-  function closeDeleteSheet() {
-    if (pending) return;
-    setDeleteOpen(false);
-    setPassword("");
-    setError(null);
-  }
-
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
+        <Button
+          color={mobileTokens().primary}
+          title="AI data sharing"
+          onPress={() => router.push("/ai-data-sharing")}
+        />
         {focus === "usage" ? usageBlock : null}
         <View style={styles.profile}>
-          <Text style={styles.name}>{me?.name || "Your account"}</Text>
+          <Text style={styles.name}>{me?.name || t("Your account")}</Text>
           {me?.email ? <Text style={styles.email}>{me.email}</Text> : null}
         </View>
         {focus !== "usage" ? usageBlock : null}
 
-        <Text style={styles.groupLabel}>ACCOUNT</Text>
-
         {appleAvailable ? (
           <>
-            <Pressable accessibilityRole="button" accessibilityLabel="Connect this Apple ID" disabled={applePending} onPress={() => void handleAppleLink()} style={({ pressed }) => [styles.settingsButton, applePending && styles.disabled, pressed && styles.pressed]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("Connect this Apple ID")}
+              disabled={applePending}
+              onPress={() => void handleAppleLink()}
+              style={({ pressed }) => [
+                styles.settingsButton,
+                applePending && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+            >
               <View style={styles.rowCopy}>
-                <Text style={styles.settingsTitle}>Apple ID</Text>
-                <Text style={styles.settingsExplanation}>{appleCount === null ? "Connect each Apple ID here to share chats and bots" : `${appleCount} connected · One account, shared chats and bots`}</Text>
+                <Text style={styles.settingsTitle}>{t("Apple ID")}</Text>
+                <Text style={styles.rowSubtitle}>
+                  {appleCount === null
+                    ? t("Connect each Apple ID here to share chats and bots")
+                    : t("{count} connected · One account, shared chats and bots", {
+                        count: appleCount,
+                      })}
+                </Text>
               </View>
-              {applePending ? <ActivityIndicator color={native.label} /> : <Text style={styles.rowAction}>Connect</Text>}
+              {applePending ? (
+                <ActivityIndicator color={native.label} />
+              ) : (
+                <Text style={styles.rowAction}>{t("Connect")}</Text>
+              )}
             </Pressable>
             {appleMessage ? <Text style={styles.inlineMessage}>{appleMessage}</Text> : null}
           </>
         ) : null}
 
-        <Pressable accessibilityRole="button" accessibilityLabel="Change password" onPress={() => { setPasswordMessage(null); setPasswordOpen(true); }} style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}>
-          <View style={styles.rowCopy}><Text style={styles.settingsTitle}>Password</Text><Text style={styles.settingsExplanation}>Change your sign-in password</Text></View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push("/change-password")}
+          style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.settingsTitle}>{t("Change password")}</Text>
           <Text style={styles.chevron}>›</Text>
         </Pressable>
-        {passwordMessage ? <Text style={styles.inlineMessage}>{passwordMessage}</Text> : null}
 
-        <Text style={styles.groupLabel}>PREFERENCES</Text>
-
-        <View accessibilityLabel="Appearance" style={styles.avatarSection}>
-          <Text style={styles.settingsTitle}>Appearance</Text>
+        <View accessibilityLabel={t("Appearance")} style={styles.avatarSection}>
+          <Text style={styles.settingsTitle}>{t("Appearance")}</Text>
           <View style={styles.appearanceOptions}>
             {(
               [
@@ -315,10 +389,11 @@ export default function Account() {
               ] as const
             ).map(([value, label]) => {
               const selected = appearance === value;
+              const translated = t(label);
               return (
                 <Pressable
                   key={value}
-                  accessibilityLabel={label}
+                  accessibilityLabel={translated}
                   accessibilityRole="button"
                   accessibilityState={{ selected }}
                   onPress={() => void setAppearancePreference(value)}
@@ -328,22 +403,23 @@ export default function Account() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <Text style={styles.appearanceLabel}>{label}</Text>
+                  <Text style={styles.appearanceLabel}>{translated}</Text>
                 </Pressable>
               );
             })}
           </View>
         </View>
 
-        <View accessibilityLabel="Avatar style" style={styles.avatarSection}>
-          <Text style={styles.settingsTitle}>Avatars</Text>
+        <View accessibilityLabel={t("Avatar style")} style={styles.avatarSection}>
+          <Text style={styles.settingsTitle}>{t("Avatars")}</Text>
           <View style={styles.avatarOptions}>
             {(["robot", "organic"] as const).map((style) => {
               const selected = avatarStyle === style;
+              const styleLabel = style === "robot" ? t("Robot") : t("Organic");
               return (
                 <Pressable
                   key={style}
-                  accessibilityLabel={`${style === "robot" ? "Robot" : "Organic"} avatars`}
+                  accessibilityLabel={t("{style} avatars", { style: styleLabel })}
                   accessibilityRole="button"
                   accessibilityState={{ selected, disabled: avatarPending }}
                   disabled={avatarPending}
@@ -360,7 +436,7 @@ export default function Account() {
                     size={42}
                     variant={style}
                   />
-                  <Text style={styles.avatarLabel}>{style === "robot" ? "Robot" : "Organic"}</Text>
+                  <Text style={styles.avatarLabel}>{styleLabel}</Text>
                 </Pressable>
               );
             })}
@@ -368,12 +444,33 @@ export default function Account() {
           {avatarError ? <Text style={styles.error}>{avatarError}</Text> : null}
         </View>
 
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("Language")}
+          accessibilityValue={{ text: UI_LOCALE_LABELS[locale] }}
+          accessibilityState={{ disabled: localeSaving }}
+          disabled={localeSaving}
+          onPress={openLanguagePicker}
+          style={({ pressed }) => [
+            styles.settingsButton,
+            pressed && styles.pressed,
+            localeSaving && { opacity: 0.6 },
+          ]}
+        >
+          <Text style={styles.settingsTitle}>{t("Language")}</Text>
+          <View style={styles.settingsTrailing}>
+            <Text style={styles.settingsValue}>{UI_LOCALE_LABELS[locale]}</Text>
+            <Text style={styles.chevron}>›</Text>
+          </View>
+        </Pressable>
+        {localeError ? <Text style={styles.error}>{localeError}</Text> : null}
+
         {Platform.OS === "android" ? (
-          <View accessibilityLabel="Notifications" style={styles.profile}>
-            <Text style={styles.settingsTitle}>Notifications</Text>
+          <View accessibilityLabel={t("Notifications")} style={styles.profile}>
+            <Text style={styles.settingsTitle}>{t("Notifications")}</Text>
             <NotificationSwitch
-              label="Live working status"
-              detail="While agents are working"
+              label={t("Live working status")}
+              detail={t("While agents are working")}
               value={notifications.liveConnection}
               disabled={notificationPending || !notificationsReady}
               onChange={(liveConnection) =>
@@ -381,15 +478,15 @@ export default function Account() {
               }
             />
             <NotificationSwitch
-              label="Agent messages"
-              detail="Replies and completed work"
+              label={t("Agent messages")}
+              detail={t("Replies and completed work")}
               value={notifications.messages}
               disabled={notificationPending || !notificationsReady}
               onChange={(messages) => void updateNotifications({ ...notifications, messages })}
             />
             <NotificationSwitch
-              label="Scheduled tasks"
-              detail="Alerts from routines"
+              label={t("Scheduled tasks")}
+              detail={t("Alerts from routines")}
               value={notifications.scheduledTasks}
               disabled={notificationPending || !notificationsReady}
               onChange={(scheduledTasks) =>
@@ -397,8 +494,8 @@ export default function Account() {
               }
             />
             <NotificationSwitch
-              label="Needs attention"
-              detail="Questions, approvals, takeover"
+              label={t("Needs attention")}
+              detail={t("Questions, approvals, takeover")}
               value={notifications.needsAttention}
               disabled={notificationPending || !notificationsReady}
               onChange={(needsAttention) =>
@@ -410,20 +507,20 @@ export default function Account() {
               onPress={() => void openPromotedNotificationSettings()}
               style={{ minHeight: 44, justifyContent: "center" }}
             >
-              <Text style={{ color: "#4C8DFF", fontSize: 14 }}>Live update settings</Text>
+              <Text style={{ color: native.label, fontSize: 14 }}>{t("Live update settings")}</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               onPress={() => void openLiveNotificationSettings()}
               style={{ minHeight: 44, justifyContent: "center" }}
             >
-              <Text style={{ color: "#4C8DFF", fontSize: 14 }}>Notification settings</Text>
+              <Text style={{ color: native.label, fontSize: 14 }}>
+                {t("Notification settings")}
+              </Text>
             </Pressable>
             {notificationError ? <Text style={styles.error}>{notificationError}</Text> : null}
           </View>
         ) : null}
-
-        <Text style={styles.groupLabel}>WORKSPACE</Text>
 
         <Pressable
           accessibilityRole="button"
@@ -431,10 +528,7 @@ export default function Account() {
           onPress={() => router.push("/models")}
           style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
         >
-          <View>
-            <Text style={styles.settingsTitle}>Models</Text>
-            <Text style={styles.settingsExplanation}>Choose your provider and active model</Text>
-          </View>
+          <Text style={styles.settingsTitle}>{t("Models")}</Text>
           <Text style={styles.chevron}>›</Text>
         </Pressable>
 
@@ -444,12 +538,7 @@ export default function Account() {
           onPress={() => router.push("/voice")}
           style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
         >
-          <View>
-            <Text style={styles.settingsTitle}>Dictation</Text>
-            <Text style={styles.settingsExplanation}>
-              Transcribe messages with ElevenLabs or OpenAI
-            </Text>
-          </View>
+          <Text style={styles.settingsTitle}>{t("Voice")}</Text>
           <Text style={styles.chevron}>›</Text>
         </Pressable>
 
@@ -459,38 +548,42 @@ export default function Account() {
           onPress={() => router.push("/integrations")}
           style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
         >
-          <View>
-            <Text style={styles.settingsTitle}>Integrations</Text>
-            <Text style={styles.settingsExplanation}>Connect apps.</Text>
-          </View>
+          <Text style={styles.settingsTitle}>{t("Integrations")}</Text>
           <Text style={styles.chevron}>›</Text>
         </Pressable>
 
-        <Text style={styles.groupLabel}>DATA & ACCESS</Text>
+        {me?.isDeploymentOwner ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push("/integration-setup")}
+            style={styles.settingsButton}
+          >
+            <Text style={styles.settingsTitle}>{t("Server integrations")}</Text>
+          </Pressable>
+        ) : null}
 
-        {archivedBots.length > 0 ? (
-          <View style={styles.archivedSection}>
-            <Text style={styles.sectionTitle}>Archived bots</Text>
-            {archivedBots.map((bot) => (
-              <View key={bot.id} style={styles.archivedRow}>
-                <Text numberOfLines={1} style={styles.archivedName}>
-                  {bot.name}
-                </Text>
-                <Pressable onPress={() => void restoreBot(bot.id)} hitSlop={8}>
-                  <Text style={styles.restoreLabel}>Restore</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    confirmDeleteBot(bot, () =>
-                      setArchivedBots((bots) => bots.filter((item) => item.id !== bot.id)),
-                    )
-                  }
-                  hitSlop={8}
-                >
-                  <Text style={styles.archivedDeleteLabel}>Delete</Text>
-                </Pressable>
-              </View>
-            ))}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("Advanced")}
+          accessibilityState={{ expanded: advancedOpen }}
+          onPress={() => setAdvancedOpen((open) => !open)}
+          style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.settingsTitle}>{t("Advanced")}</Text>
+          <Text style={styles.chevron}>{advancedOpen ? "⌃" : "›"}</Text>
+        </Pressable>
+        {advancedOpen ? (
+          <View style={styles.avatarSection}>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>{t("Stream replies")}</Text>
+              <Switch
+                accessibilityLabel={t("Stream replies")}
+                value={streamReplies}
+                onValueChange={(checked) =>
+                  void setResponseStreamingPreference(checked ? "on" : "off")
+                }
+              />
+            </View>
           </View>
         ) : null}
 
@@ -500,35 +593,85 @@ export default function Account() {
           onPress={() => void handleSignOut()}
           style={({ pressed }) => [styles.button, pressed && styles.pressed]}
         >
-          <Text style={styles.buttonLabel}>Sign out</Text>
+          <Text style={styles.buttonLabel}>{t("Sign out")}</Text>
         </Pressable>
-        {error && !deleteOpen ? <Text style={styles.error}>{error}</Text> : null}
 
-        <Pressable accessibilityRole="button" accessibilityLabel="Delete account" disabled={pending} onPress={() => { setError(null); setDeleteOpen(true); }} style={({ pressed }) => [styles.settingsButton, styles.deleteRow, pressed && styles.pressed]}>
-          <View style={styles.rowCopy}><Text style={styles.dangerTitle}>Delete account</Text><Text style={styles.settingsExplanation}>Permanently remove your data</Text></View>
-          <Text style={styles.chevron}>›</Text>
-        </Pressable>
-      </ScrollView>
-      <ActionSheet visible={passwordOpen} title="Change password" subtitle="Use the password for this Negroni account." onClose={closePasswordSheet}>
-        <View style={styles.sheetBody}>
-          <AccountPasswordInput label="Current password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
-          <AccountPasswordInput label="New password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
-          <AccountPasswordInput label="Confirm password" value={passwordConfirmation} onChange={setPasswordConfirmation} autoComplete="new-password" />
-          {passwordMessage ? <Text style={styles.error}>{passwordMessage}</Text> : null}
-          <Pressable accessibilityRole="button" disabled={passwordPending || !currentPassword || newPassword.length < 8} onPress={() => void handlePasswordChange()} style={({ pressed }) => [styles.sheetPrimary, (passwordPending || !currentPassword || newPassword.length < 8) && styles.disabled, pressed && styles.pressed]}>
-            {passwordPending ? <ActivityIndicator color={native.page} /> : <Text style={styles.sheetPrimaryLabel}>Update password</Text>}
-          </Pressable>
-        </View>
-      </ActionSheet>
-      <ActionSheet visible={deleteOpen} title="Delete account" subtitle="This permanently removes your bots, conversations, memories, files, and connections." onClose={closeDeleteSheet}>
-        <View style={styles.sheetBody}>
-          <AccountPasswordInput label="Current password" value={password} onChange={(value) => { setPassword(value); setError(null); }} autoComplete="current-password" />
+        {archivedBots.length > 0 ? (
+          <View style={styles.archivedSection}>
+            <Text style={styles.sectionTitle}>{t("Archived bots")}</Text>
+            {archivedBots.map((bot) => (
+              <View key={bot.id} style={styles.archivedRow}>
+                <Text numberOfLines={1} style={styles.archivedName}>
+                  {bot.name}
+                </Text>
+                <Pressable onPress={() => void restoreBot(bot.id)} hitSlop={8}>
+                  <Text style={styles.restoreLabel}>{t("Restore")}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    confirmDeleteBot(bot, () =>
+                      setArchivedBots((bots) => bots.filter((item) => item.id !== bot.id)),
+                    )
+                  }
+                  hitSlop={8}
+                >
+                  <Text style={styles.archivedDeleteLabel}>{t("Delete")}</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {versionInfo.nativeLabel || updateLabel ? (
+          <View
+            accessibilityLabel={versionAccessibility}
+            accessibilityRole="summary"
+            style={styles.versionFooter}
+          >
+            {versionInfo.nativeLabel ? (
+              <Text style={styles.versionLine}>{versionInfo.nativeLabel}</Text>
+            ) : null}
+            {updateLabel ? <Text style={styles.versionLine}>{updateLabel}</Text> : null}
+          </View>
+        ) : null}
+
+        <View style={styles.dangerZone}>
+          <Text style={styles.dangerTitle}>{t("Delete account")}</Text>
+          <TextInput
+            accessibilityLabel={t("Current password")}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!pending}
+            onChangeText={(value) => {
+              setPassword(value);
+              setError(null);
+            }}
+            placeholder={t("Current password")}
+            placeholderTextColor={native.tertiaryLabel}
+            secureTextEntry
+            style={styles.password}
+            textContentType="password"
+            value={password}
+          />
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          <Pressable accessibilityRole="button" disabled={pending || !password} onPress={confirmDeletion} style={({ pressed }) => [styles.deleteButton, (pending || !password) && styles.disabled, pressed && styles.pressed]}>
-            {pending ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.deleteLabel}>Delete account</Text>}
+          <Pressable
+            accessibilityRole="button"
+            disabled={pending || !password}
+            onPress={confirmDeletion}
+            style={({ pressed }) => [
+              styles.deleteButton,
+              (pending || !password) && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            {pending ? (
+              <ActivityIndicator color={mobileTokens().destructiveForeground} />
+            ) : (
+              <Text style={styles.deleteLabel}>{t("Delete account")}</Text>
+            )}
           </Pressable>
         </View>
-      </ActionSheet>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -570,35 +713,8 @@ function NotificationSwitch({
   );
 }
 
-function AccountPasswordInput({
-  label,
-  value,
-  onChange,
-  autoComplete,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  autoComplete: "current-password" | "new-password";
-}) {
-  const styles = useThemedStyles(createAccountStyles);
-  return (
-    <TextInput
-      accessibilityLabel={label}
-      autoCapitalize="none"
-      autoComplete={autoComplete}
-      autoCorrect={false}
-      onChangeText={onChange}
-      placeholder={label}
-      placeholderTextColor={native.tertiaryLabel}
-      secureTextEntry
-      style={styles.accountPassword}
-      value={value}
-    />
-  );
-}
-
 function createAccountStyles() {
+  const tokens = mobileTokens();
   return StyleSheet.create({
     screen: {
       flex: 1,
@@ -606,15 +722,13 @@ function createAccountStyles() {
     },
     content: {
       flexGrow: 1,
-      paddingHorizontal: 18,
-      paddingTop: 16,
-      paddingBottom: 34,
-      gap: 10,
+      padding: 20,
+      gap: 20,
     },
     profile: {
-      borderRadius: 18,
+      borderRadius: 16,
       backgroundColor: native.fill,
-      padding: 17,
+      padding: 18,
       gap: 4,
     },
     name: {
@@ -665,12 +779,12 @@ function createAccountStyles() {
       fontWeight: "600",
     },
     archivedDeleteLabel: {
-      color: "#FF6961",
+      color: tokens.destructive,
       fontSize: 14,
     },
     settingsButton: {
-      minHeight: 60,
-      borderRadius: 16,
+      minHeight: 62,
+      borderRadius: 14,
       backgroundColor: native.fill,
       paddingHorizontal: 16,
       paddingVertical: 12,
@@ -679,10 +793,25 @@ function createAccountStyles() {
       justifyContent: "space-between",
       gap: 12,
     },
-    rowCopy: { flex: 1 },
-    rowAction: { color: native.label, fontSize: 13, fontWeight: "600" },
-    groupLabel: { color: native.secondaryLabel, fontSize: 11, fontWeight: "700", letterSpacing: 1.1, marginTop: 18, marginBottom: 2, marginLeft: 8 },
-    inlineMessage: { color: native.secondaryLabel, fontSize: 13, marginHorizontal: 8, marginTop: 2 },
+    rowCopy: {
+      flex: 1,
+    },
+    rowSubtitle: {
+      color: native.secondaryLabel,
+      fontSize: 13,
+      marginTop: 2,
+    },
+    rowAction: {
+      color: native.label,
+      fontSize: 13,
+      fontWeight: "600",
+    },
+    inlineMessage: {
+      color: native.secondaryLabel,
+      fontSize: 13,
+      marginTop: 2,
+      marginHorizontal: 8,
+    },
     avatarSection: {
       borderRadius: 16,
       backgroundColor: native.fill,
@@ -739,35 +868,65 @@ function createAccountStyles() {
       fontSize: 17,
       fontWeight: "600",
     },
-    settingsExplanation: {
-      color: native.secondaryLabel,
-      fontSize: 13,
-      marginTop: 3,
+    switchRow: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
     },
-    accountPassword: {
-      minHeight: 46,
-      borderRadius: 12,
-      backgroundColor: native.fillPressed,
+    switchLabel: {
+      flex: 1,
       color: native.label,
-      paddingHorizontal: 14,
-      marginTop: 8,
+      fontSize: 15,
+    },
+    settingsTrailing: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      minWidth: 0,
+    },
+    settingsValue: {
+      color: native.secondaryLabel,
+      fontSize: 15,
     },
     chevron: {
       color: native.secondaryLabel,
       fontSize: 28,
       fontWeight: "300",
     },
-    deleteRow: { marginTop: 16 },
+    versionFooter: {
+      marginTop: 4,
+      alignItems: "center",
+      gap: 2,
+    },
+    versionLine: {
+      color: native.tertiaryLabel,
+      fontSize: 12,
+      textAlign: "center",
+    },
+    dangerZone: {
+      marginTop: 12,
+      borderRadius: 16,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: tokens.destructive,
+      padding: 18,
+    },
     dangerTitle: {
-      color: "#FF6961",
-      fontSize: 15,
+      color: tokens.destructive,
+      fontSize: 17,
       fontWeight: "600",
     },
-    sheetBody: { paddingHorizontal: 12, paddingBottom: 12, gap: 9 },
-    sheetPrimary: { minHeight: 48, marginTop: 8, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: native.label },
-    sheetPrimaryLabel: { color: native.page, fontSize: 15, fontWeight: "700" },
+    password: {
+      height: 48,
+      borderRadius: 12,
+      backgroundColor: native.fill,
+      color: native.label,
+      paddingHorizontal: 14,
+      marginTop: 16,
+      fontSize: 16,
+    },
     error: {
-      color: "#FF6961",
+      color: tokens.destructive,
       fontSize: 14,
       marginTop: 10,
     },
@@ -776,11 +935,11 @@ function createAccountStyles() {
       borderRadius: 12,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: "#C9363E",
-      marginTop: 8,
+      backgroundColor: tokens.destructive,
+      marginTop: 14,
     },
     deleteLabel: {
-      color: "#FFFFFF",
+      color: tokens.destructiveForeground,
       fontSize: 16,
       fontWeight: "700",
     },

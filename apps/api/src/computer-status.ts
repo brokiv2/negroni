@@ -1,16 +1,18 @@
+import { computerSupportsUpdate } from "@rakazo/adapters";
 import type { ComputerStatus } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES, computerScreenSize } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
-/** Mirrors computer.takeover: an execution lease blocks user control unless waiting_takeover. */
+/** Mirrors computer.takeover: an execution lease blocks user control unless a takeover is pending. */
 export function executionBlocksUserTakeover(input: {
   hasLease: boolean;
   leaseExpiresAt: Date | null | undefined;
   runStatus: string | null | undefined;
   now?: number;
+  takeoverRequested?: boolean;
 }): boolean {
   if (!input.hasLease) return false;
-  if (input.runStatus === "waiting_takeover") return false;
+  if (input.runStatus === "waiting_takeover" || input.takeoverRequested) return false;
   const now = input.now ?? Date.now();
   const leaseActive = Boolean(input.leaseExpiresAt && input.leaseExpiresAt.getTime() > now);
   const runActive = Boolean(
@@ -30,7 +32,7 @@ export async function resolveBusyBotName(
   if (!input.computerId) return null;
   const lease = await prisma.computerExecutionLease.findUnique({
     where: { computerId_botId: { computerId: input.computerId, botId: input.botId } },
-    select: { expiresAt: true, runId: true },
+    select: { expiresAt: true, runId: true, computer: { select: { controlRunId: true } } },
   });
   if (!lease) return null;
   const run = await prisma.run.findUnique({
@@ -41,6 +43,7 @@ export async function resolveBusyBotName(
     hasLease: true,
     leaseExpiresAt: lease.expiresAt,
     runStatus: run?.status,
+    takeoverRequested: lease.computer.controlRunId === lease.runId,
   })
     ? input.botName
     : null;
@@ -56,11 +59,13 @@ export function toComputerStatus(
     controlBotId?: string | null;
     controlRunId?: string | null;
     homeRevision: string;
+    maintenanceId?: string | null;
   } | null,
   busyBotName: string | null = null,
 ): ComputerStatus {
-  const state =
-    computer?.state === "suspending"
+  const state = computer?.maintenanceId
+    ? "booting"
+    : computer?.state === "suspending"
       ? "running"
       : computer?.state === "stopped" ||
           computer?.state === "booting" ||
@@ -79,11 +84,11 @@ export function toComputerStatus(
     controlHolder: (computer?.controlHolder ?? "none") as ComputerStatus["controlHolder"],
     controlBotId: computer?.controlBotId ?? null,
     takeoverRequested: Boolean(computer?.controlRunId),
-    screenAvailable: state === "running" || state === "booting",
+    screenAvailable: !computer?.maintenanceId && (state === "running" || state === "booting"),
     screenWidth: screen.width,
     screenHeight: screen.height,
     homeRevision: computer?.homeRevision ?? null,
     busyBotName,
-    updateAvailable: kind !== "desktop",
+    canUpdate: computerSupportsUpdate(kind),
   };
 }
