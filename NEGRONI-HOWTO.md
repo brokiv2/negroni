@@ -45,7 +45,7 @@ curl http://127.0.0.1:3100/health
 - **Автостарт**: LaunchAgent `dev.negroni.mac-control` (`launchctl kickstart -k gui/$(id -u)/dev.negroni.mac-control` для перезапуска).
 - **Подключён в Negroni**: Integrations → Advanced → MCP servers → «Mac Control».
 - **Инструменты**: `mac_osascript` (AppleScript — универсальный рычаг), `mac_open_url` (открыть ссылку в Comet/Chrome/Safari с залогиненными сессиями), `screen_view` (скриншот → картинка модели), `screen_click` / `screen_type` / `screen_key` / `screen_scroll` (cliclick), `screen_info` (какое приложение/окно на переднем плане, текстом), `ui_tree` (AX-дерево элементов окна текстом — работает даже без vision-модели).
-- **Патч форка**: `packages/adapters/src/remote-mcp.ts` — loopback-URL разрешены по HTTP (апстрим требует HTTPS всегда). При обновлении апстрима проверить, что патч пережил merge.
+- **Loopback по HTTP**: наш патч в `packages/adapters/src/remote-mcp.ts` снят при мерже апстрима v0.1.6 (2026-09-27). Апстрим теперь сам пускает `127.0.0.1` / `localhost` / `::1` по HTTP (`isLocalMcpHost`, с DNS-пиннингом), `MCP_ALLOW_PRIVATE_ENDPOINT` для loopback не нужен. Проверено живьём: непатченный код видит все 9 инструментов Mac Control.
 - **Права macOS** (System Settings → Privacy & Security):
   - **Screen Recording → node** — чтобы работал `screen_view` (иначе «could not create image from display»).
   - **Accessibility → cliclick и node** — чтобы работали клики/клавиатура (`screen_click` и др.).
@@ -88,14 +88,15 @@ curl http://127.0.0.1:3100/health
 
 - Репо лежит в iCloud. Скрипт стека работает без tsx watch именно поэтому: watch-режим ловил рестарт-шторм от синка iCloud, и сообщения в чате «пропадали» (API умирал на лету). Не редактируй исходники во время работы ботов — горячая перезагрузка выключена, изменения подхватятся после перезапуска стека.
 - Если Negroni.app не может подключиться — проверь `curl http://127.0.0.1:3100/health`; если пусто, перезапусти launchd-джобу командой выше и посмотри `~/Library/Logs/Negroni/api.log`.
-- Обновление апстрима: `git pull` в `Sandbox/negroni`, потом `pnpm install && pnpm db:migrate && pnpm db:generate`, перезапустить джобу, пересобрать приложение (`pnpm --filter @rakazo/desktop pack:dir`).
+- **Апстрим**: `git fetch upstream` и мерж делать в клоне вне iCloud (`~/dev/negroni`, origin = наш форк). Мерж в iCloud-папке ловит синк-шторм и оставляет файлы `<имя> 2.ts` (так было 2026-09-27: три файла откатились на версию до коммитов, правильные копии лежали рядом как ` 2.ts`). Перед любой git-операцией в iCloud-копии смотреть `git status` и такие дубликаты сверять с HEAD, а не удалять вслепую.
+- **После мержа апстрима** перед сборкой TestFlight вернуть наши иконки `apps/mobile/assets/{icon,adaptive-icon,monochrome-icon}.png` (апстрим подменяет их без конфликта, а `inspect` требует равенства мобильной и десктопной).
 - **Правки UI не подхватываются живьём**: Negroni.app отдаёт веб из своего бандла (`Contents/Resources/web`), а не с dev-сервера. После изменения веб-кода: `pnpm --filter @rakazo/web build`, потом заменить папку:
   ```bash
   rm -rf /Applications/Negroni.app/Contents/Resources/web
   cp -R apps/web/dist /Applications/Negroni.app/Contents/Resources/web
   ```
   и перезапустить приложение. (Правки бэкенда — просто перезапуск launchd-джобы.)
-- **Бэкенд крутится из зеркала вне iCloud**: `~/Library/Application Support/Negroni/runtime-20260906` (см. `REPO` в `negroni-stack.sh`). Изменённые исходники api/packages нужно скопировать туда, собранный веб положить и в `/Applications/Negroni.app/Contents/Resources/web`, и в `runtime-20260906/apps/web/dist` (его отдаёт `vite preview` на 5173), потом перезапустить джобу.
+- **Бэкенд крутится из зеркала вне iCloud**: `~/Library/Application Support/Negroni/runtime-20260906` (см. `REPO` в `negroni-stack.sh`). С 2026-09-27 это нормальный git-checkout, а не россыпь скопированных файлов. Деплой: `git fetch` в зеркале из `~/dev/negroni` (ref `refs/negroni-deploy/merged`), `git checkout --force <sha>`, проверить что `.env` и `data/model-overrides.json` не изменились, `pnpm install` (Node ≥ 24.15.0), `pnpm db:generate`, при новых миграциях сначала `pg_dump -Fc` в `db-backups/` и `pnpm db:migrate`; собрать веб в `~/dev/negroni` и разложить `apps/web/dist` в `/Applications/Negroni.app/Contents/Resources/web` и в `runtime-20260906/apps/web/dist`; перезапустить джобу; проверить `/health`, хэш `index.html` на :5173, четыре процесса и логи. `negroni-stack.sh` берёт tsx по пути `node_modules/tsx/dist/cli.mjs` без версии в пути (раньше версия была зашита и ломала рестарт после каждого апдейта tsx).
 - 2026-09-03: починили нечитаемый код в светлой теме — `packages/chat-ui/src/markdown.web.css`, инлайн-код и код-блоки теперь `#ececf0` на тёмной заливке.
 
 ## TestFlight (2026-09-24)
@@ -103,3 +104,16 @@ curl http://127.0.0.1:3100/health
 - Пайплайн: `apps/mobile/Scripts/testflight_release.sh testflight` (prepare, archive, export, inspect, upload). Перед запуском синхронизировать номер билда в трёх местах: `apps/mobile/app.json` (`ios.buildNumber`), `CURRENT_PROJECT_VERSION` в `project.pbxproj`, `CFBundleVersion` в `ios/Negroni/Info.plist`.
 - Из неинтерактивного шелла запускать с `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8`: без этого `pod install` падает с `Unicode Normalization not appropriate for ASCII-8BIT`.
 - GitHub: `origin` = `brokiv2/negroni` (наш форк, main = состояние Negroni), `upstream` = `elie222/rakazo`; апстрим на момент форка сохранён в ветке `upstream-main`.
+- Приватные env для релиза (`apps/mobile/.env.local`, `.env.testflight.local`) в git не лежат: при сборке из клона вне iCloud копировать их из iCloud-копии.
+- Архивы с IPA и логами складывать в `~/Library/Developer/Negroni-Releases/build<N>/`, хранить последний подтверждённый и предыдущий. Предупреждения про dSYM для React / ReactNativeDependencies / hermesvm при загрузке штатные.
+- Билд 27 (2026-09-28): первая сборка с Vesper внутри, апстрим v0.1.6, `RCTNewArchEnabled`, expo-updates. Vesper в нём недостижим (не было входа), вход добавлен в билде 28.
+
+## Vesper — личный шелл внутри Negroni (2026-09-28)
+
+- **Что это.** Второй шелл в том же приложении и том же бандле (`com.artempaskov.aisy`): Negroni остался командным, Vesper это личный ассистент в UI по мотивам OpenMuse (`CopilotKit/openmuse`, MIT): светлый холст, шапка с аватаром и строкой статуса, пилюля «Computer · take control», карточки результатов инструментов, композер-пилюля со стрелкой, которая во время рана становится стопом, нижняя нав-пилюля из пяти разделов (Chat, Activity, Ideas, Goals, Apps). Только светлая тема, иконки `lucide-react-native`.
+- **Кем управляет.** Тем же главным ассистентом (`mainAssistantBot()`) и его Personal-тредом, что и прежний personal-режим: память, цели, рутины и компьютер общие с первого дня. Старый `assistant-hub` и тумблер Assistant/Team удалены в билде 28; вход в Vesper через тот же тумблер, теперь «Vesper / Team», выход через Apps → «Switch to Negroni». Выбор шелла хранится на устройстве (`lib/shell-mode.ts`).
+- **Где код.** `apps/mobile/app/(vesper)/`, `apps/mobile/components/vesper/`, `apps/mobile/lib/vesper/`, токены `packages/ui-tokens/src/vesper.ts` (`tokensForBrand`). Аватар один файл `apps/mobile/assets/vesper-avatar.png`, ссылка на него в одном месте (`components/vesper/avatar.tsx`).
+- **Карточки инструментов.** Пять новых видов `MessageBlock` в `packages/contracts/src/events.ts`: `browser`, `mail`, `pdf`, `plan`, `finance`, у всех обязательный `summary`. Незнакомый блок деградирует в строку (`StoredMessageBlock`), а не роняет `threads.get`. Живой эмиттер пока один: `browser` на каждый `browser_navigate` со скриншотом как артефактом (2 MiB на кадр, дедуп по хэшу, `packages/adapters/src/browser-card.ts`); скриншоты видны в Files как `Screenshot — <host>`. Остальные четыре имеют форму и тесты, но данных под ними в Negroni нет.
+- **Activity.** Новый RPC `effects.list` (чеки по `ExternalEffect` только своих ранов, поля по allowlist). Аппрувы через `threads.answer`. Паузы и повтора ранов нет, потому что нет RPC.
+- **Чего пока нет (фаза 9 спеки):** терминал, просмотр PDF и формы, почта и календарь, финансы, инбокс уведомлений, боковые чаты, вехи у целей и источники у идей (нет колонок), события scratchpad и настроек уведомлений (есть таблица, нет RPC), optimistic-concurrency на памяти. Спека переноса и принятые решения: `~/dev/vesper-ui-port-spec.md` (вне репы). Переводы ru/zh/de для ~200 новых строк машинные, носитель не смотрел.
+
