@@ -21,7 +21,7 @@ export function MessageBubble({
   message: MobileMessage;
   target?: ArtifactImageTarget | null;
   computerReachable?: boolean;
-  onAnswer?: (block: MessageBlock, answer: string) => void;
+  onAnswer?: (block: MessageBlock, answer: string, username?: string) => void | Promise<void>;
   onOpenComputer?: () => void;
 }) {
   const user = message.role === "user";

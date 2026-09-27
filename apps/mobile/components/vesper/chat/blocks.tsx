@@ -16,6 +16,7 @@ import type { ArtifactImageTarget } from "../../../lib/vesper/artifact-image";
 import { vesperBlockRenderer } from "../../../lib/vesper/blocks";
 import { Button } from "../kit";
 import { colors, s, vt } from "../theme";
+import { VesperAskCard } from "./ask-card";
 import { BrowserCard, FinanceCard, MailCard, PdfCard, PlanCard } from "./tool-cards";
 
 /**
@@ -222,7 +223,7 @@ export function VesperBlock({
   target?: ArtifactImageTarget | null;
   /** From `computer.status` — a card never asserts its own liveness. */
   computerReachable?: boolean;
-  onAnswer?: (block: MessageBlock, answer: string) => void;
+  onAnswer?: (block: MessageBlock, answer: string, username?: string) => void | Promise<void>;
   onOpenComputer?: () => void;
   onOpenArtifact?: (artifactId: string) => void;
   onOpenRun?: (runId: string) => void;
@@ -258,37 +259,11 @@ export function VesperBlock({
       ) : null;
     case "ask":
       if (block.kind === "ask") {
-        const answered = block.status === "answered";
         return (
-          <View
-            style={{
-              backgroundColor: answered ? vt.extras.tintGreen : vt.extras.tintLavender,
-              borderRadius: vt.radius.card,
-              padding: vt.space.cardPadding,
-              gap: 10,
-              maxWidth: vt.size.toolCardMaxWidth,
-              width: "100%",
-            }}
-          >
-            <Text style={s.text}>{block.text}</Text>
-            {!!block.detail && <Text style={s.muted}>{block.detail}</Text>}
-            {answered ? (
-              <Text style={s.small}>{block.answer}</Text>
-            ) : (
-              <View style={[s.row, { gap: 8, flexWrap: "wrap" }]}>
-                {(block.actions ?? []).map((action) => (
-                  <Button
-                    key={action.id}
-                    small
-                    primary={action.outcome !== "cancelled"}
-                    onPress={() => onAnswer?.(block, action.id)}
-                  >
-                    {action.label}
-                  </Button>
-                ))}
-              </View>
-            )}
-          </View>
+          <VesperAskCard
+            block={block}
+            onAnswer={(answered, value, username) => onAnswer?.(answered, value, username)}
+          />
         );
       }
       if (block.kind === "choice") {

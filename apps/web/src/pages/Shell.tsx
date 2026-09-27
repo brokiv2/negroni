@@ -6749,6 +6749,21 @@ const MessageView = memo(function MessageView({
             </div>
           );
         }
+        // Tool-result cards (browser, mail, pdf, plan, finance) render as their
+        // own components in the Vesper shell only. Negroni has no port of them,
+        // so show the summary the emitter already wrote rather than dropping the
+        // block: a fallback line, not a card.
+        if ("summary" in block && typeof block.summary === "string" && block.summary) {
+          return (
+            <div
+              key={i}
+              data-testid="tool-card-summary"
+              className="text-[14.5px] leading-[1.5] text-foreground/75"
+            >
+              {block.summary}
+            </div>
+          );
+        }
         return null;
       })}
     </>

@@ -172,6 +172,7 @@ import {
   toComputerStatus,
 } from "./computer-status.js";
 import { resolveConnectionCallbackUrl } from "./connection-callback.js";
+import { listSpaceEffects } from "./effects.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
 import {
@@ -4941,6 +4942,11 @@ export function createRouter(deps: RouterDeps) {
     runs: {
       list: authed.runs.list.handler(async ({ context, input }) => ({
         runs: await listSpaceRuns(deps.prisma, context.actor, input.filter),
+      })),
+    },
+    effects: {
+      list: authed.effects.list.handler(async ({ context, input }) => ({
+        effects: await listSpaceEffects(deps.prisma, context.actor, input),
       })),
     },
     voice: {

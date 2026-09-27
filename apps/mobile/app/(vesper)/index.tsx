@@ -1,15 +1,14 @@
 import type { ComputerStatus, PersonalThread, RunActivityRow } from "@rakazo/contracts";
 import { useRouter } from "expo-router";
-import { PanelsTopLeft } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { VesperActivityScreen } from "../../components/vesper/activity/activity-screen";
 import { VesperAppsScreen } from "../../components/vesper/apps/apps-screen";
 import { VesperChatScreen } from "../../components/vesper/chat/chat-screen";
 import { useAssistantName } from "../../components/vesper/context/assistant-scope";
 import { VesperGoalsScreen } from "../../components/vesper/goals/goals-screen";
 import { VesperIdeasScreen } from "../../components/vesper/ideas/ideas-screen";
-import { Empty } from "../../components/vesper/kit";
 import { VesperBottomNav, VesperToast } from "../../components/vesper/shell/bottom-nav";
 import { VesperHeader } from "../../components/vesper/shell/header";
 import { colors, s, vt } from "../../components/vesper/theme";
@@ -17,6 +16,7 @@ import { rpc } from "../../lib/api";
 import { t } from "../../lib/i18n";
 import { setShellMode } from "../../lib/shell-mode";
 import { type ComputerPillState, computerPillState } from "../../lib/vesper/computer-pill";
+import { isComputerEvent, isRunActivityEvent } from "../../lib/vesper/computer-session";
 import {
   DEFAULT_VESPER_SECTION,
   type VesperSection,
@@ -43,6 +43,8 @@ export default function VesperShell() {
   const [runs, setRuns] = useState<RunActivityRow[]>([]);
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Bumped on every run event so Activity reloads off the stream, not a timer.
+  const [activityToken, setActivityToken] = useState(0);
 
   const botId = personal?.botId ?? null;
   const assistantName = useAssistantName(botId, VESPER_NAME);
@@ -65,8 +67,22 @@ export default function VesperShell() {
     void refreshComputer();
   }, [refreshComputer, refreshRuns]);
 
-  // Foreground reconciliation only. Everything live arrives on the thread's SSE
-  // stream; this is the one place a fetch is the right tool.
+  // Live updates arrive on the chat's SSE stream: a computer event re-reads the
+  // status behind the pill, a run event re-reads the runs behind the status line
+  // and the bell. Nothing here is on a timer.
+  const onThreadEvent = useCallback(
+    (event: { type: string }) => {
+      if (isComputerEvent(event.type)) void refreshComputer();
+      if (isRunActivityEvent(event.type)) {
+        void refreshRuns();
+        setActivityToken((token) => token + 1);
+      }
+    },
+    [refreshComputer, refreshRuns],
+  );
+
+  // Foreground reconciliation only: catches whatever the stream missed while the
+  // app was backgrounded.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
       if (next !== "active") return;
@@ -97,7 +113,7 @@ export default function VesperShell() {
           onOpenNotifications={() => setSection("activity")}
           onOpenIdentity={() => setSection("activity")}
           onOpenComputer={() => {
-            if (botId) router.push({ pathname: "/computer", params: { botId } });
+            if (botId) router.push({ pathname: "/(vesper)/computer", params: { botId } });
           }}
         />
         <View style={{ flex: 1, minHeight: 0 }}>
@@ -122,6 +138,7 @@ export default function VesperShell() {
               <VesperSectionBody
                 section={section}
                 botId={botId}
+                activityToken={activityToken}
                 onOpenChat={() => setSection("chat")}
                 onSwitchToNegroni={() => {
                   void setShellMode("negroni").then(() => router.replace("/"));
@@ -136,8 +153,9 @@ export default function VesperShell() {
               onBotResolved={setPersonal}
               computerReachable={pillState !== "offline"}
               onRunsChanged={() => void refreshRuns()}
+              onThreadEvent={onThreadEvent}
               onOpenComputer={() => {
-                if (botId) router.push({ pathname: "/computer", params: { botId } });
+                if (botId) router.push({ pathname: "/(vesper)/computer", params: { botId } });
               }}
             />
           </View>
@@ -150,28 +168,26 @@ export default function VesperShell() {
 }
 
 /**
- * Activity is still Phase 5 and says so rather than showing an empty list that
- * looks broken. Ideas, Goals and Apps are built.
+ * Every section is built. Activity re-reads when `activityToken` changes;
+ * Ideas, Goals and Apps read on entry and after their own mutations.
  */
 function VesperSectionBody({
   section,
   botId,
+  activityToken,
   onOpenChat,
   onSwitchToNegroni,
 }: {
   section: VesperSection;
   botId: string | null;
+  activityToken: number;
   onOpenChat: () => void;
   onSwitchToNegroni: () => void;
 }) {
   switch (section) {
     case "activity":
       return (
-        <Empty
-          icon={PanelsTopLeft}
-          title={t("Nothing running")}
-          detail={t("Plans, progress and results will land here.")}
-        />
+        <VesperActivityScreen botId={botId} refreshToken={activityToken} onOpenChat={onOpenChat} />
       );
     case "ideas":
       return <VesperIdeasScreen botId={botId} onOpenChat={onOpenChat} />;

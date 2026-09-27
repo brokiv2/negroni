@@ -6,6 +6,8 @@ import {
   composerAction,
   composerActionEnabled,
   composerPlaceholder,
+  composerQueueEnabled,
+  composerSecondaryAction,
   type VesperComposerState,
 } from "../../../lib/vesper/composer";
 import type { VesperQueueSnapshot } from "../../../lib/vesper/follow-up-queue";
@@ -43,6 +45,10 @@ export function VesperComposer({
   const action = composerAction(state);
   const enabled = composerActionEnabled(state);
   const stopping = action === "stop";
+  // Option (c): during a run a typed draft gets its own arrow next to the stop
+  // square, and goes into the durable follow-up queue instead of being stranded.
+  const queueing = composerSecondaryAction(state) === "queue";
+  const queueEnabled = composerQueueEnabled(state);
   return (
     <View
       style={[
@@ -143,6 +149,30 @@ export function VesperComposer({
               : undefined
           }
         />
+        {stopping && queueing && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("Send when this finishes")}
+            disabled={!queueEnabled}
+            onPress={onSubmit}
+            style={({ pressed }) => ({
+              width: vt.size.touchTarget,
+              height: vt.size.touchTarget,
+              borderRadius: vt.radius.composerButton,
+              backgroundColor: queueEnabled ? colors.sky : vt.extras.sendIdleBg,
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: queueEnabled ? 1 : 0.6,
+              transform: [{ scale: pressed ? 0.94 : 1 }],
+            })}
+          >
+            <ArrowUp
+              size={25}
+              strokeWidth={1.8}
+              color={queueEnabled ? colors.blueDark : vt.extras.sendIdleInk}
+            />
+          </Pressable>
+        )}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={stopping ? t("Stop reply") : t("Send message")}

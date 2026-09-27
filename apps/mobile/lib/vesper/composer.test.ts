@@ -4,7 +4,9 @@ import {
   composerActionEnabled,
   composerHasContent,
   composerPlaceholder,
+  composerQueueEnabled,
   composerReducer,
+  composerSecondaryAction,
   initialComposerState,
   shouldQueueSubmit,
   type VesperComposerEvent,
@@ -177,5 +179,51 @@ describe("placeholder", () => {
       "Conversation unavailable",
     );
     expect(composerPlaceholder({ ready: true, loading: false, error: false })).toBe("Message…");
+  });
+});
+
+describe("composerSecondaryAction", () => {
+  const live: VesperComposerState = { ...initialComposerState, ready: true, phase: "running" };
+
+  it("is nothing while idle, whatever is typed", () => {
+    expect(composerSecondaryAction({ ...initialComposerState, draft: "hello" })).toBe("none");
+  });
+
+  it("is nothing during a run with an empty draft: the stop square stands alone", () => {
+    expect(composerSecondaryAction(live)).toBe("none");
+    expect(composerSecondaryAction({ ...live, draft: "   " })).toBe("none");
+  });
+
+  it("offers the queue arrow during a run once something is typed", () => {
+    expect(composerSecondaryAction({ ...live, draft: "and also check Tuesday" })).toBe("queue");
+  });
+
+  it("does not offer to queue an attachment: followUp carries text only", () => {
+    expect(composerSecondaryAction({ ...live, attachmentIds: ["art_1"] })).toBe("none");
+    expect(composerSecondaryAction({ ...live, attachmentIds: ["art_1"], draft: "note" })).toBe(
+      "queue",
+    );
+  });
+
+  it("stays offered while a stop is in flight, so the draft is not stranded", () => {
+    expect(composerSecondaryAction({ ...live, phase: "stopping", draft: "one more" })).toBe(
+      "queue",
+    );
+  });
+});
+
+describe("composerQueueEnabled", () => {
+  const live: VesperComposerState = {
+    ...initialComposerState,
+    ready: true,
+    phase: "running",
+    draft: "later",
+  };
+
+  it("needs the transport up and no send already in flight", () => {
+    expect(composerQueueEnabled(live)).toBe(true);
+    expect(composerQueueEnabled({ ...live, ready: false })).toBe(false);
+    expect(composerQueueEnabled({ ...live, sending: true })).toBe(false);
+    expect(composerQueueEnabled({ ...live, phase: "idle" })).toBe(false);
   });
 });

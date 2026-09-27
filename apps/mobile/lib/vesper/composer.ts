@@ -120,6 +120,27 @@ export function shouldQueueSubmit(state: VesperComposerState): boolean {
   return state.phase !== "idle";
 }
 
+/**
+ * The second button, to the left of the stop square.
+ *
+ * While a run is live the primary slot is the stop square, which leaves nowhere
+ * to put a typed follow-up. So the send arrow comes back beside it, and means
+ * "send this when the run finishes". An empty draft gets the stop square alone,
+ * exactly as before — the arrow only appears when there is something to send.
+ *
+ * Text only, deliberately: `threads.followUp` takes a string and nothing else,
+ * so an attachment cannot be queued. It stays on the composer until the run ends
+ * and goes out with the next real turn, rather than being silently dropped.
+ */
+export function composerSecondaryAction(state: VesperComposerState): "queue" | "none" {
+  if (state.phase === "idle") return "none";
+  return state.draft.trim().length > 0 ? "queue" : "none";
+}
+
+export function composerQueueEnabled(state: VesperComposerState): boolean {
+  return composerSecondaryAction(state) === "queue" && state.ready && !state.sending;
+}
+
 export function composerPlaceholder(state: {
   ready: boolean;
   loading: boolean;
