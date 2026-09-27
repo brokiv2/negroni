@@ -1,4 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
+import { isToolCardBlock } from "./tool-blocks.js";
 
 /** A fenced block becomes a mention of itself, with its language if known. */
 function describeCodeBlock(fence: string): string {
@@ -212,6 +213,8 @@ export function speechFromBlocks(blocks: MessageBlock[]): string {
       if (block.kind === "card") {
         return block.lines.map((line) => `${line.k}: ${line.v}`).join(". ");
       }
+      // Cards are visual; their one-line summary is the spoken form.
+      if (isToolCardBlock(block)) return block.summary;
       return "";
     })
     .filter(Boolean)

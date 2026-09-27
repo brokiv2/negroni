@@ -6,6 +6,7 @@ import {
   isAttachmentImageMimeType,
   type MessageBlock,
 } from "@rakazo/contracts";
+import { isToolCardBlock } from "./tool-blocks.js";
 
 export class AttachmentValidationError extends Error {
   constructor(message: string) {
@@ -118,6 +119,9 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
       if (block.kind === "handoff") {
         return `[handoff ${block.fromBotId} -> ${block.toBotId}] ${block.text}`;
       }
+      // A tool card replaces what used to be opaque text. Without this line the
+      // bot loses its own browsing, reading and planning from its own history.
+      if (isToolCardBlock(block)) return `[${block.kind}: ${block.summary}]`;
       if ("text" in block && typeof block.text === "string") return block.text;
       return "";
     })

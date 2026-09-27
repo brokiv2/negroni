@@ -937,6 +937,9 @@ export function blockText(message: MobileMessage) {
           .map((step) => `${step.label}${step.count > 1 ? ` ×${step.count}` : ""}`)
           .join(" · ");
       }
+      // Tool cards render as their own components once the shell knows them.
+      // Until then their summary keeps the message from collapsing to nothing.
+      if ("summary" in block && typeof block.summary === "string") return block.summary;
       return ("text" in block ? block.text : "state" in block ? block.state : "") ?? "";
     })
     .filter(Boolean)

@@ -1916,6 +1916,23 @@ describe("mobile thread event reduction", () => {
     );
   });
 
+  it("falls back to a tool card's summary so the bubble is never empty", () => {
+    // Negroni's transcript has no browser-card renderer yet; without the
+    // summary the message would render as nothing at all.
+    expect(
+      blockText(
+        mobileMessage("card-1", [
+          {
+            kind: "browser",
+            summary: "Read example.com. Pricing",
+            url: "https://example.com/pricing",
+            status: "ready",
+          },
+        ]),
+      ),
+    ).toBe("Read example.com. Pricing");
+  });
+
   it("formats channel messages with their platform attribution", () => {
     expect(
       blockText(
