@@ -1,11 +1,15 @@
 import type { ComputerStatus, PersonalThread, RunActivityRow } from "@rakazo/contracts";
 import { useRouter } from "expo-router";
-import { Lightbulb, PanelsTopLeft, Shapes, SquareCheck } from "lucide-react-native";
+import { PanelsTopLeft } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { VesperAppsScreen } from "../../components/vesper/apps/apps-screen";
 import { VesperChatScreen } from "../../components/vesper/chat/chat-screen";
-import { Empty, LinkRow } from "../../components/vesper/kit";
+import { useAssistantName } from "../../components/vesper/context/assistant-scope";
+import { VesperGoalsScreen } from "../../components/vesper/goals/goals-screen";
+import { VesperIdeasScreen } from "../../components/vesper/ideas/ideas-screen";
+import { Empty } from "../../components/vesper/kit";
 import { VesperBottomNav, VesperToast } from "../../components/vesper/shell/bottom-nav";
 import { VesperHeader } from "../../components/vesper/shell/header";
 import { colors, s, vt } from "../../components/vesper/theme";
@@ -41,6 +45,7 @@ export default function VesperShell() {
   const [toast, setToast] = useState<string | null>(null);
 
   const botId = personal?.botId ?? null;
+  const assistantName = useAssistantName(botId, VESPER_NAME);
 
   const refreshRuns = useCallback(async () => {
     const result = await rpc<{ runs: RunActivityRow[] }>("runs/list", { filter: "active" }).catch(
@@ -82,7 +87,7 @@ export default function VesperShell() {
         style={{ flex: 1, width: "100%", maxWidth: vt.size.contentMaxWidth, alignSelf: "center" }}
       >
         <VesperHeader
-          name={VESPER_NAME}
+          name={assistantName}
           status={status}
           desktop={desktop}
           unread={unread}
@@ -116,6 +121,8 @@ export default function VesperShell() {
               )}
               <VesperSectionBody
                 section={section}
+                botId={botId}
+                onOpenChat={() => setSection("chat")}
                 onSwitchToNegroni={() => {
                   void setShellMode("negroni").then(() => router.replace("/"));
                 }}
@@ -143,14 +150,18 @@ export default function VesperShell() {
 }
 
 /**
- * Activity, Ideas and Goals are Phase 5 and Phase 6. They say so rather than
- * showing an empty list that looks broken.
+ * Activity is still Phase 5 and says so rather than showing an empty list that
+ * looks broken. Ideas, Goals and Apps are built.
  */
 function VesperSectionBody({
   section,
+  botId,
+  onOpenChat,
   onSwitchToNegroni,
 }: {
   section: VesperSection;
+  botId: string | null;
+  onOpenChat: () => void;
   onSwitchToNegroni: () => void;
 }) {
   switch (section) {
@@ -163,32 +174,11 @@ function VesperSectionBody({
         />
       );
     case "ideas":
-      return (
-        <Empty
-          icon={Lightbulb}
-          title={t("No ideas yet")}
-          detail={t("Useful next steps, grounded in your world.")}
-        />
-      );
+      return <VesperIdeasScreen botId={botId} onOpenChat={onOpenChat} />;
     case "goals":
-      return (
-        <Empty
-          icon={SquareCheck}
-          title={t("No goals yet")}
-          detail={t("Longer-term goals and things to keep an eye on.")}
-        />
-      );
+      return <VesperGoalsScreen botId={botId} onOpenChat={onOpenChat} />;
     case "apps":
-      return (
-        <View>
-          <LinkRow
-            icon={Shapes}
-            title={t("Switch to Negroni")}
-            detail={t("The full workspace: spaces, bots, groups and settings.")}
-            onPress={onSwitchToNegroni}
-          />
-        </View>
-      );
+      return <VesperAppsScreen onSwitchToNegroni={onSwitchToNegroni} />;
     case "chat":
       return null;
   }
