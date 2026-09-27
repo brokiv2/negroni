@@ -18,6 +18,7 @@ export default function VesperLayout() {
         }}
       >
         <Stack.Screen name="index" options={{ title: "Vesper" }} />
+        <Stack.Screen name="computer" options={{ title: "Computer" }} />
       </Stack>
     </>
   );
