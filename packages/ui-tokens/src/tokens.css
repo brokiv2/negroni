@@ -74,3 +74,40 @@
   --scrollbar-hover: #a8a8a4;
   --radius: 0.75rem;
 }
+
+[data-brand="vesper"] {
+  color-scheme: light;
+  --background: #fcfcfc;
+  --foreground: #11191c;
+  --card: #ffffff;
+  --card-foreground: #11191c;
+  --popover: #ffffff;
+  --popover-foreground: #11191c;
+  --primary: #c8e7ff;
+  --primary-foreground: #11191c;
+  --secondary: #f1f2f3;
+  --secondary-foreground: #11191c;
+  --chat-user: #c8e7ff;
+  --chat-user-foreground: #11191c;
+  --muted: #eeeef0;
+  --muted-foreground: #697176;
+  --accent: #edf7fd;
+  --accent-foreground: #1473c8;
+  --destructive: #aa4a45;
+  --destructive-foreground: #ffffff;
+  --border: #eeeef0;
+  --input: #eeeef0;
+  --ring: #1473c8;
+  --sidebar: #fcfcfc;
+  --sidebar-foreground: #11191c;
+  --sidebar-border: #eeeef0;
+  --sidebar-accent: #ffffff;
+  --sidebar-accent-foreground: #11191c;
+  --link: #1473c8;
+  --success: #e3f3e8;
+  --warning: #fdf0df;
+  --overlay: rgba(35, 48, 44, 0.25);
+  --scrollbar: #eeeef0;
+  --scrollbar-hover: #d8dbde;
+  --radius: 0.75rem;
+}
