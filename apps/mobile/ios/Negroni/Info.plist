@@ -65,6 +65,8 @@
 	</array>
 	<key>RCTMetroPort</key>
 	<string>$(RCT_METRO_PORT)</string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
 	<key>UIAppFonts</key>
 	<array>
 		<string>MaterialDesignIcons.ttf</string>
