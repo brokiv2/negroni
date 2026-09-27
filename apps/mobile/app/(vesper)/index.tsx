@@ -1,0 +1,194 @@
+import type { ComputerStatus, PersonalThread, RunActivityRow } from "@rakazo/contracts";
+import { useRouter } from "expo-router";
+import { Lightbulb, PanelsTopLeft, Shapes, SquareCheck } from "lucide-react-native";
+import { useCallback, useEffect, useState } from "react";
+import { AppState, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { VesperChatScreen } from "../../components/vesper/chat/chat-screen";
+import { Empty, LinkRow } from "../../components/vesper/kit";
+import { VesperBottomNav, VesperToast } from "../../components/vesper/shell/bottom-nav";
+import { VesperHeader } from "../../components/vesper/shell/header";
+import { colors, s, vt } from "../../components/vesper/theme";
+import { rpc } from "../../lib/api";
+import { t } from "../../lib/i18n";
+import { setShellMode } from "../../lib/shell-mode";
+import { type ComputerPillState, computerPillState } from "../../lib/vesper/computer-pill";
+import {
+  DEFAULT_VESPER_SECTION,
+  type VesperSection,
+  vesperSectionHeading,
+} from "../../lib/vesper/nav";
+import { hasStatusAttention, vesperStatusLine } from "../../lib/vesper/status-line";
+
+/** The product name. Not translated — it is a brand, not chrome. */
+const VESPER_NAME = "Vesper";
+
+/**
+ * The Vesper shell.
+ *
+ * Chat stays mounted behind `display: none` when another section is showing, so
+ * a draft and a queued follow-up survive a trip to Activity and back — the one
+ * behaviour a fresh mount would quietly break.
+ */
+export default function VesperShell() {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const desktop = width >= vt.size.desktopBreakpoint;
+  const [section, setSection] = useState<VesperSection>(DEFAULT_VESPER_SECTION);
+  const [personal, setPersonal] = useState<PersonalThread | null>(null);
+  const [runs, setRuns] = useState<RunActivityRow[]>([]);
+  const [computer, setComputer] = useState<ComputerStatus | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const botId = personal?.botId ?? null;
+
+  const refreshRuns = useCallback(async () => {
+    const result = await rpc<{ runs: RunActivityRow[] }>("runs/list", { filter: "active" }).catch(
+      () => null,
+    );
+    if (result) setRuns(result.runs);
+  }, []);
+
+  const refreshComputer = useCallback(async () => {
+    if (!botId) return;
+    const status = await rpc<ComputerStatus>("computer/status", { botId }).catch(() => null);
+    if (status) setComputer(status);
+  }, [botId]);
+
+  useEffect(() => {
+    void refreshRuns();
+    void refreshComputer();
+  }, [refreshComputer, refreshRuns]);
+
+  // Foreground reconciliation only. Everything live arrives on the thread's SSE
+  // stream; this is the one place a fetch is the right tool.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      void refreshRuns();
+      void refreshComputer();
+    });
+    return () => subscription.remove();
+  }, [refreshComputer, refreshRuns]);
+
+  const status = vesperStatusLine(runs);
+  const unread = hasStatusAttention(runs) ? runs.length : 0;
+  const pillState: ComputerPillState = computerPillState(computer);
+  const heading = vesperSectionHeading(section);
+
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.canvas }} edges={["top", "bottom"]}>
+      <View
+        style={{ flex: 1, width: "100%", maxWidth: vt.size.contentMaxWidth, alignSelf: "center" }}
+      >
+        <VesperHeader
+          name={VESPER_NAME}
+          status={status}
+          desktop={desktop}
+          unread={unread}
+          showComputerPill={section === "chat"}
+          computerState={pillState}
+          onOpenMenu={() => setToast(t("Conversations arrive in a later pass."))}
+          onOpenNotifications={() => setSection("activity")}
+          onOpenIdentity={() => setSection("activity")}
+          onOpenComputer={() => {
+            if (botId) router.push({ pathname: "/computer", params: { botId } });
+          }}
+        />
+        <View style={{ flex: 1, minHeight: 0 }}>
+          {section !== "chat" && (
+            <ScrollView
+              key={section}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingHorizontal: desktop
+                  ? vt.space.screenPaddingHorizontalDesktop
+                  : vt.space.screenPaddingHorizontal,
+                paddingBottom: 28,
+              }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {!!heading && (
+                <>
+                  <Text style={[s.sectionTitle, { marginBottom: 6 }]}>{heading.title}</Text>
+                  <Text style={[s.muted, { marginBottom: 22 }]}>{heading.subtitle}</Text>
+                </>
+              )}
+              <VesperSectionBody
+                section={section}
+                onSwitchToNegroni={() => {
+                  void setShellMode("negroni").then(() => router.replace("/"));
+                }}
+              />
+            </ScrollView>
+          )}
+          <View style={{ display: section === "chat" ? "flex" : "none", flex: 1 }}>
+            <VesperChatScreen
+              botId={botId}
+              desktop={desktop}
+              onBotResolved={setPersonal}
+              onRunsChanged={() => void refreshRuns()}
+              onOpenComputer={() => {
+                if (botId) router.push({ pathname: "/computer", params: { botId } });
+              }}
+            />
+          </View>
+        </View>
+        <VesperBottomNav section={section} desktop={desktop} onNavigate={setSection} />
+      </View>
+      {!!toast && <VesperToast message={toast} onDismiss={() => setToast(null)} />}
+    </SafeAreaView>
+  );
+}
+
+/**
+ * Activity, Ideas and Goals are Phase 5 and Phase 6. They say so rather than
+ * showing an empty list that looks broken.
+ */
+function VesperSectionBody({
+  section,
+  onSwitchToNegroni,
+}: {
+  section: VesperSection;
+  onSwitchToNegroni: () => void;
+}) {
+  switch (section) {
+    case "activity":
+      return (
+        <Empty
+          icon={PanelsTopLeft}
+          title={t("Nothing running")}
+          detail={t("Plans, progress and results will land here.")}
+        />
+      );
+    case "ideas":
+      return (
+        <Empty
+          icon={Lightbulb}
+          title={t("No ideas yet")}
+          detail={t("Useful next steps, grounded in your world.")}
+        />
+      );
+    case "goals":
+      return (
+        <Empty
+          icon={SquareCheck}
+          title={t("No goals yet")}
+          detail={t("Longer-term goals and things to keep an eye on.")}
+        />
+      );
+    case "apps":
+      return (
+        <View>
+          <LinkRow
+            icon={Shapes}
+            title={t("Switch to Negroni")}
+            detail={t("The full workspace: spaces, bots, groups and settings.")}
+            onPress={onSwitchToNegroni}
+          />
+        </View>
+      );
+    case "chat":
+      return null;
+  }
+}

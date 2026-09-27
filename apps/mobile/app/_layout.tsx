@@ -17,6 +17,7 @@ import {
 } from "../lib/live-notifications";
 import { native, useResolvedAppearance } from "../lib/native";
 import { loadResponseStreamingPreference } from "../lib/response-streaming";
+import { loadShellMode } from "../lib/shell-mode";
 
 configureForegroundNotifications();
 
@@ -49,7 +50,12 @@ export default function Layout() {
 
   useEffect(() => {
     void Promise.all([
-      Promise.all([loadApiBase(), loadAppearancePreference(), loadResponseStreamingPreference()])
+      Promise.all([
+        loadApiBase(),
+        loadAppearancePreference(),
+        loadResponseStreamingPreference(),
+        loadShellMode(),
+      ])
         .then(async () =>
           resumeLiveNotifications(
             currentApiBase(),
@@ -80,6 +86,8 @@ export default function Layout() {
                   }}
                 >
                   <Stack.Screen name="index" options={{ headerShown: false, title: "Negroni" }} />
+                  {/* The Vesper shell. One binary, two shells; see lib/shell-mode.ts. */}
+                  <Stack.Screen name="(vesper)" options={{ headerShown: false }} />
                   <Stack.Screen name="sign-in" options={{ headerShown: false }} />
                   <Stack.Screen
                     name="integration-setup"

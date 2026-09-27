@@ -68,6 +68,7 @@ import { previewSnippet } from "../lib/preview";
 import { registerPushToken } from "../lib/push";
 import { querySpaceSearch } from "../lib/search";
 import { mobileSearchDestination } from "../lib/search-destination";
+import { useShellMode } from "../lib/shell-mode";
 
 const FALLBACK_COLOR = botColors[3];
 
@@ -107,6 +108,7 @@ export default function Home() {
   const [activityMode, setActivityMode] = useState(false);
   const [chatView, setChatView] = useState<ChatView>("team");
   const [viewReady, setViewReady] = useState(false);
+  const shellMode = useShellMode();
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [activity, setActivity] = useState<{ active: RunActivityRow[]; recent: RunActivityRow[] }>({
@@ -485,6 +487,9 @@ export default function Home() {
     );
   }
   if (!hasSession) return <Redirect href="/sign-in" />;
+  // The top-level switch between the two shells. One binary, one bundle id; the
+  // Vesper route group owns its own chrome from here down.
+  if (shellMode === "vesper") return <Redirect href="/(vesper)" />;
 
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 20) }]}>
