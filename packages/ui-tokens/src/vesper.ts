@@ -205,10 +205,13 @@ export type VesperSizeTokens = {
   sheetCompactBreakpoint: number;
 };
 
+/** Narrow enough to drop straight into a React Native `TextStyle`. */
+export type VesperFontWeight = "300" | "400" | "500" | "600" | "700";
+
 export type VesperTypeStyle = {
   fontSize: number;
   lineHeight?: number;
-  fontWeight?: string;
+  fontWeight?: VesperFontWeight;
   letterSpacing?: number;
   textTransform?: "uppercase";
 };

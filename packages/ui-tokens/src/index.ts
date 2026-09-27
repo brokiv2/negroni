@@ -8,6 +8,7 @@ export {
   type ThemeTokens,
   type VesperExtras,
   type VesperFinanceTokens,
+  type VesperFontWeight,
   type VesperRadiusTokens,
   type VesperShadow,
   type VesperShadowTokens,
