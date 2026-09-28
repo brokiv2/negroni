@@ -11,9 +11,7 @@ export function TabletShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { view } = useGlobalSearchParams<{ view?: string }>();
   const wide =
-    width >= 768 &&
-    view !== "assistant" &&
-    !["/", "/sign-in", "/call", "/assistant-hub"].includes(pathname);
+    width >= 768 && view !== "assistant" && !["/", "/sign-in", "/call"].includes(pathname);
   return (
     <View style={{ flex: 1, flexDirection: "row" }}>
       {wide ? <TabletSidebar /> : null}

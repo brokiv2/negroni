@@ -110,7 +110,6 @@ export default function Layout() {
                     name="call"
                     options={{ title: t("Voice call"), presentation: "fullScreenModal" }}
                   />
-                  <Stack.Screen name="assistant-hub" options={{ headerShown: false }} />
                   <Stack.Screen name="integrations" options={{ title: t("Integrations") }} />
                   <Stack.Screen
                     name="new"

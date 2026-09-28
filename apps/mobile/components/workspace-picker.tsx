@@ -18,41 +18,19 @@ import { NativeSymbol } from "./native-symbol";
 export function WorkspacePicker({
   visible,
   selected,
-  assistantAvailable,
-  assistantId,
-  assistantName = "Negroni",
   onClose,
   onSelect,
-  onOpenPersonalSection,
-  onOpenConversation,
 }: {
   visible: boolean;
   selected: ChatView;
-  assistantAvailable: boolean;
-  assistantId?: string;
-  assistantName?: string;
   onClose: () => void;
   onSelect: (view: ChatView) => void;
-  onOpenPersonalSection?: (section: "today" | "goals" | "ideas" | "activity" | "memory") => void;
-  onOpenConversation?: () => void;
 }) {
   const appearance = useResolvedAppearance();
   const theme = mobileTokens();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const router = useRouter();
-  const openPersonal = (section: "today" | "goals" | "ideas" | "activity" | "memory") => {
-    if (!assistantId) return;
-    onClose();
-    if (onOpenPersonalSection) {
-      onOpenPersonalSection(section);
-      return;
-    }
-    router.push({
-      pathname: "/assistant-hub",
-      params: { botId: assistantId, name: assistantName, section },
-    });
-  };
   return (
     <Modal
       transparent
@@ -97,12 +75,11 @@ export function WorkspacePicker({
           </View>
           <ScrollView contentContainerStyle={{ gap: 4 }}>
             <SheetRow
-              label="Personal"
+              label="Vesper"
               detail="Your everyday assistant"
               ios="sparkles"
               android="sparkles-outline"
               selected={selected === "assistant"}
-              disabled={!assistantAvailable}
               onPress={() => {
                 onClose();
                 onSelect("assistant");
@@ -119,61 +96,6 @@ export function WorkspacePicker({
                 onSelect("team");
               }}
             />
-            {selected === "assistant" && assistantId ? (
-              <View style={{ marginTop: 26 }}>
-                <SheetRow
-                  label="Conversation"
-                  ios="bubble.left"
-                  android="chatbubble-outline"
-                  onPress={() => {
-                    onClose();
-                    onOpenConversation?.();
-                  }}
-                />
-                <SheetRow
-                  label="For you"
-                  ios="square.grid.2x2"
-                  android="grid-outline"
-                  onPress={() => openPersonal("today")}
-                />
-                <SheetRow
-                  label="Goals"
-                  ios="scope"
-                  android="flag-outline"
-                  onPress={() => openPersonal("goals")}
-                />
-                <SheetRow
-                  label="Ideas"
-                  ios="lightbulb"
-                  android="bulb-outline"
-                  onPress={() => openPersonal("ideas")}
-                />
-                <SheetRow
-                  label="Activity"
-                  ios="waveform.path"
-                  android="pulse-outline"
-                  onPress={() => openPersonal("activity")}
-                />
-                <SheetRow
-                  label="Memory"
-                  ios="brain"
-                  android="albums-outline"
-                  onPress={() => openPersonal("memory")}
-                />
-                <SheetRow
-                  label="Voice"
-                  ios="waveform"
-                  android="mic-outline"
-                  onPress={() => {
-                    onClose();
-                    router.push({
-                      pathname: "/bot-settings",
-                      params: { botId: assistantId, section: "voice" },
-                    });
-                  }}
-                />
-              </View>
-            ) : null}
           </ScrollView>
           <View
             style={{

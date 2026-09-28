@@ -51,7 +51,7 @@
     "ios": {
       "bundleIdentifier": "com.artempaskov.aisy",
       "usesAppleSignIn": true,
-      "buildNumber": "27",
+      "buildNumber": "28",
       "supportsTablet": true,
       "icon": "./assets/icon.png",
       "config": {

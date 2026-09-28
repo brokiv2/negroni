@@ -5,7 +5,6 @@ import {
   type SpaceBot,
   type SpaceGroup,
 } from "@rakazo/contracts";
-import { mainAssistantBot } from "@rakazo/core";
 import { botColors } from "@rakazo/ui-tokens";
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,7 +48,6 @@ import {
   selectSpace,
 } from "../lib/api";
 import { mobileTokens, resolveMobileAppearance } from "../lib/appearance";
-import { type ChatView, loadChatView, saveChatView } from "../lib/chat-view";
 import { allowFocusPrompt, scheduleFocusPrompt } from "../lib/focus-prompt";
 import { t, useI18n } from "../lib/i18n";
 import { botTag, filterBots, formatThreadTime } from "../lib/inbox";
@@ -69,6 +67,7 @@ import { registerPushToken } from "../lib/push";
 import { querySpaceSearch } from "../lib/search";
 import { mobileSearchDestination } from "../lib/search-destination";
 import { useShellMode } from "../lib/shell-mode";
+import { clearLegacyAssistantChatView, enterVesperShell } from "../lib/vesper-entry";
 
 const FALLBACK_COLOR = botColors[3];
 
@@ -106,8 +105,6 @@ export default function Home() {
     id: string;
   } | null>(null);
   const [activityMode, setActivityMode] = useState(false);
-  const [chatView, setChatView] = useState<ChatView>("team");
-  const [viewReady, setViewReady] = useState(false);
   const shellMode = useShellMode();
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -136,10 +133,7 @@ export default function Home() {
 
   useEffect(() => {
     void loadActivityMode().then(setActivityMode);
-    void loadChatView().then((view) => {
-      setChatView(view);
-      setViewReady(true);
-    });
+    void clearLegacyAssistantChatView();
   }, []);
 
   const toggleActivityMode = useCallback(() => {
@@ -337,7 +331,6 @@ export default function Home() {
     visible,
     visibleGroups,
   ]);
-  const assistant = mainAssistantBot(bots);
   const organizeChat = organizeTarget
     ? organizeTarget.kind === "bot"
       ? bots.find((bot) => bot.id === organizeTarget.id)
@@ -345,15 +338,6 @@ export default function Home() {
     : null;
   const insets = useSafeAreaInsets();
   const router = useRouter();
-
-  // The saved view is the entry point: Personal opens the assistant hub instead of the roster.
-  useEffect(() => {
-    if (!viewReady || chatView !== "assistant" || !assistant || searching) return;
-    router.replace({
-      pathname: "/assistant-hub",
-      params: { botId: assistant.id, name: assistant.name },
-    });
-  }, [assistant?.id, assistant?.name, chatView, router, searching, viewReady]);
 
   async function chooseInboxSpace(spaceId: string) {
     if (spaceActionRef.current.busy) return;
@@ -714,18 +698,10 @@ export default function Home() {
       <WorkspacePicker
         visible={workspacePickerOpen}
         selected="team"
-        assistantAvailable={Boolean(assistant)}
-        assistantId={assistant?.id}
-        assistantName={assistant?.name}
         onClose={() => setWorkspacePickerOpen(false)}
         onSelect={(view) => {
-          if (view === "team" || !assistant) return;
-          setChatView(view);
-          void saveChatView(view);
-          router.replace({
-            pathname: "/assistant-hub",
-            params: { botId: assistant.id, name: assistant.name },
-          });
+          if (view === "team") return;
+          void enterVesperShell((route) => router.replace(route));
         }}
       />
       <ActionSheet
