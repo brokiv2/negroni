@@ -62,20 +62,33 @@ export async function aiConsentStatus(
             })
         : [],
       uses.includes("memory")
-        ? deps.prisma.spaceMemoryConfig.findUnique({ where: { spaceId: actor.spaceId } })
+        ? deps.prisma.spaceMemoryConfig.findUnique({
+            where: { spaceId: actor.spaceId },
+          })
         : null,
       modelsEnabled
         ? deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } })
         : null,
       deps.prisma.aiDataConsent.findMany({
-        where: { userId: actor.userId, spaceId: actor.spaceId, version: AI_DISCLOSURE_VERSION },
+        where: {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          version: AI_DISCLOSURE_VERSION,
+        },
       }),
     ]);
   const allowed = new Set(consents.map((row) => row.recipientKey));
   const recipients = new Map<string, AiRecipient>();
-  const add = (recipient: ReturnType<typeof aiRecipient>) => {
+  const add = (recipient: ReturnType<typeof aiRecipient>, userConfigured = false) => {
     if (recipient)
-      recipients.set(recipient.key, { ...recipient, allowed: allowed.has(recipient.key) });
+      recipients.set(recipient.key, {
+        ...recipient,
+        allowed:
+          !allowed.has(`revoked:${recipient.key}`) &&
+          (allowed.has(recipient.key) ||
+            userConfigured ||
+            recipients.get(recipient.key)?.allowed === true),
+      });
   };
   if (modelsEnabled) {
     const deployment = deps.env.deploymentModelKey
@@ -156,6 +169,7 @@ export async function aiConsentStatus(
           baseUrl: model.credential ? baseUrls.get(model.credential.secretId) : undefined,
           use: "model",
         }),
+        Boolean(model.credential),
       );
     }
   }
@@ -175,7 +189,12 @@ export async function aiConsentStatus(
     cloudAgentsEnabled(deps.cloudAgent, actor.spaceId) &&
     !deps.cloudAgent.provider.describe().capabilities.offline
   ) {
-    add(aiRecipient({ provider: deps.cloudAgent.provider.describe().id, use: "model" }));
+    add(
+      aiRecipient({
+        provider: deps.cloudAgent.provider.describe().id,
+        use: "model",
+      }),
+    );
   }
   return {
     scope: createHash("sha256")
@@ -199,10 +218,19 @@ export async function allowAiConsent(
     input.version !== current.version ||
     input.keys.some((key) => !known.has(key))
   ) {
-    throw new ORPCError("CONFLICT", { message: "AI data sharing changed. Review it again." });
+    throw new ORPCError("CONFLICT", {
+      message: "AI data sharing changed. Review it again.",
+    });
   }
-  await deps.prisma.$transaction(
-    input.keys.map((recipientKey) =>
+  await deps.prisma.$transaction([
+    deps.prisma.aiDataConsent.deleteMany({
+      where: {
+        userId: actor.userId,
+        spaceId: actor.spaceId,
+        recipientKey: { in: input.keys.map((key) => `revoked:${key}`) },
+      },
+    }),
+    ...input.keys.map((recipientKey) =>
       deps.prisma.aiDataConsent.upsert({
         where: {
           userId_spaceId_recipientKey: {
@@ -220,11 +248,43 @@ export async function allowAiConsent(
         update: { version: current.version, grantedAt: new Date() },
       }),
     ),
-  );
+  ]);
   return {
     ...current,
     recipients: current.recipients.map((recipient) =>
       input.keys.includes(recipient.key) ? { ...recipient, allowed: true } : recipient,
     ),
   };
+}
+
+// A denial is durable even for a provider explicitly connected with the user's key.
+export async function revokeAiConsent(deps: RouterDeps, actor: Actor, key?: string) {
+  const current = await aiConsentStatus(deps, actor);
+  const keys = current.recipients
+    .filter((recipient) => !key || recipient.key === key)
+    .map((recipient) => recipient.key);
+  await deps.prisma.$transaction(
+    keys.flatMap((recipientKey) => [
+      deps.prisma.aiDataConsent.deleteMany({
+        where: { userId: actor.userId, spaceId: actor.spaceId, recipientKey },
+      }),
+      deps.prisma.aiDataConsent.upsert({
+        where: {
+          userId_spaceId_recipientKey: {
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+            recipientKey: `revoked:${recipientKey}`,
+          },
+        },
+        create: {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          recipientKey: `revoked:${recipientKey}`,
+          version: current.version,
+        },
+        update: { version: current.version, grantedAt: new Date() },
+      }),
+    ]),
+  );
+  return aiConsentStatus(deps, actor);
 }

@@ -25,7 +25,7 @@ import type {
 } from "@rakazo/contracts";
 import {
   ATTACHMENT_ALLOWED_MIME_TYPES,
-  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_FILE_MAX_BYTES,
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
   MESSAGE_REACTIONS,
@@ -190,7 +190,7 @@ import {
 import { markAfterPaint, markOnce } from "../lib/performance";
 import { quoteDraftForSelection } from "../lib/quote-selection";
 import { getResponseStreamingEnabled, subscribeResponseStreaming } from "../lib/response-streaming";
-import { clearSpaceSelection, rpc, selectedSpaceId, selectSpace } from "../lib/rpc";
+import { clearSpaceSelection, rpc, selectedSpaceId, selectSpace, uploadArtifact } from "../lib/rpc";
 import { readSeenRunErrorIds, rememberSeenRunErrorId } from "../lib/run-error-storage";
 import { sharedInflight } from "../lib/shared-inflight";
 import {
@@ -2093,8 +2093,8 @@ export function ShellPage() {
           skipped.push(t`${file.name} (max ${ATTACHMENT_MAX_COUNT} attachments)`);
           continue;
         }
-        if (file.size > ATTACHMENT_MAX_BYTES) {
-          skipped.push(t`${file.name} (over 10 MiB)`);
+        if (file.size > ATTACHMENT_FILE_MAX_BYTES) {
+          skipped.push(t`${file.name} (over 512 MiB)`);
           continue;
         }
         const mimeType = inferAttachmentMimeType(file.name, file.type);
@@ -2190,11 +2190,10 @@ export function ShellPage() {
           if (!mimeType) {
             throw new Error(t`Unsupported file type: ${pending.file.name}`);
           }
-          const contentBase64 = await readFileAsBase64(pending.file);
-          const artifact = await rpc.artifacts.create(
-            groupTarget
-              ? { groupId: groupTarget, name: pending.file.name, mimeType, contentBase64 }
-              : { botId: botTarget!, name: pending.file.name, mimeType, contentBase64 },
+          const artifact = await uploadArtifact(
+            pending.file,
+            mimeType,
+            groupTarget ? { groupId: groupTarget } : { botId: botTarget! },
           );
           artifactIds.push(artifact.id);
         }
@@ -6753,17 +6752,4 @@ function computerLabel(mode: ComputerStatus["mode"] | undefined, botName: string
 
 function newClientNonce(): string {
   return newClientId();
-}
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const base64 = result.includes(",") ? (result.split(",")[1] ?? "") : result;
-      resolve(base64);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
-    reader.readAsDataURL(file);
-  });
 }

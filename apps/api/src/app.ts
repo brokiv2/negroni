@@ -22,6 +22,7 @@ import {
   applyMessagingOutboundStatus,
   ChatSdkMessagingSurface,
   ComposioConnector,
+  createAgentRuntime,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
@@ -49,7 +50,6 @@ import {
   McpConnector,
   McpOAuthBroker,
   messagingPlatformsFromEnv,
-  createAgentRuntime,
   PiOAuthLogins,
   PipedreamConnector,
   PostgresRealtimeFanout,
@@ -87,6 +87,7 @@ import { requestLogging } from "@rakazo/logging/hono";
 import { MarkdownMemoryStore } from "@rakazo/memory";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { mountArtifactHttpRoutes } from "./artifact-http.js";
 import {
   CONNECTION_CALLBACK_PATH,
   mountConnectionCallbackRoute,
@@ -546,6 +547,17 @@ export async function createApp(
     });
     if (matched) return c.newResponse(response.body, response);
     await next();
+  });
+  mountArtifactHttpRoutes(app, { prisma, artifacts }, async (c) => {
+    const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
+    if (!session?.user) return null;
+    const actor = await requireMembership(
+      prisma,
+      session.user.id,
+      c.req.header("x-rakazo-space-id"),
+    ).catch(() => null);
+    if (actor) enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
+    return actor;
   });
   mountVoiceHttpRoutes(app, { prisma, secrets }, async (c) => {
     const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });

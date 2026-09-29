@@ -130,6 +130,11 @@ const threadTarget = z
     }
   });
 
+export const ArtifactUploadInput = threadTarget.safeExtend({
+  name: z.string().min(1).max(ARTIFACT_NAME_MAX_LENGTH),
+  mimeType: z.string().min(1).max(255),
+});
+
 const structuredMentionTarget = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("bot"), id: Id }),
   z.object({ kind: z.literal("group"), id: Id }),
@@ -261,7 +266,12 @@ export const appContract = {
       )
       .output(ModelOAuthBeginSchema),
     submitOAuthCode: oc
-      .input(z.object({ loginId: z.string(), code: z.string().trim().min(1).max(8_192) }))
+      .input(
+        z.object({
+          loginId: z.string(),
+          code: z.string().trim().min(1).max(8_192),
+        }),
+      )
       .output(z.object({ ok: z.literal(true) })),
     completeOAuth: oc
       .input(z.object({ loginId: z.string() }))
@@ -414,11 +424,15 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
-    files: oc
-      .input(z.object({ botId: Id, path: z.string().default("/") }))
-      .output(
-        z.array(z.object({ path: z.string(), kind: z.enum(["file", "dir"]), size: z.number() })),
+    files: oc.input(z.object({ botId: Id, path: z.string().default("/") })).output(
+      z.array(
+        z.object({
+          path: z.string(),
+          kind: z.enum(["file", "dir"]),
+          size: z.number(),
+        }),
       ),
+    ),
     readFile: oc
       .input(z.object({ botId: Id, path: z.string() }))
       .output(z.object({ path: z.string(), content: z.string() })),
@@ -427,7 +441,12 @@ export const appContract = {
   },
   memory: {
     list: oc
-      .input(z.object({ botId: Id.optional(), scope: z.enum(["bot", "user"]).optional() }))
+      .input(
+        z.object({
+          botId: Id.optional(),
+          scope: z.enum(["bot", "user"]).optional(),
+        }),
+      )
       .output(z.array(MemoryDocumentSchema)),
     update: oc
       .input(z.object({ documentId: Id, content: z.string() }))
@@ -507,11 +526,22 @@ export const appContract = {
     configure: oc.input(FeedProfilePatch).output(FeedProfileSchema),
     interest: oc.input(FeedInterestUpdate).output(FeedProfileSchema),
     list: oc
-      .input(z.object({ saved: z.boolean().optional(), hidden: z.boolean().optional() }))
+      .input(
+        z.object({
+          saved: z.boolean().optional(),
+          hidden: z.boolean().optional(),
+        }),
+      )
       .output(z.array(FeedItemSchema)),
     create: oc.input(FeedItemInput).output(FeedItemSchema),
     update: oc
-      .input(z.object({ id: Id, saved: z.boolean().optional(), hidden: z.boolean().optional() }))
+      .input(
+        z.object({
+          id: Id,
+          saved: z.boolean().optional(),
+          hidden: z.boolean().optional(),
+        }),
+      )
       .output(FeedItemSchema),
   },
   personal: {
@@ -575,7 +605,10 @@ export const appContract = {
     get: oc
       .input(
         z
-          .object({ skillId: Id.optional(), name: z.string().min(1).max(80).optional() })
+          .object({
+            skillId: Id.optional(),
+            name: z.string().min(1).max(80).optional(),
+          })
           .superRefine((input, ctx) => {
             if (!input.skillId && !input.name?.trim()) {
               ctx.addIssue({
@@ -666,7 +699,13 @@ export const appContract = {
         ]),
       ),
       complete: oc
-        .input(z.object({ sessionId: Id, code: z.string().min(1), state: z.string().min(1) }))
+        .input(
+          z.object({
+            sessionId: Id,
+            code: z.string().min(1),
+            state: z.string().min(1),
+          }),
+        )
         .output(z.object({ ok: z.literal(true) })),
       disconnect: oc.input(z.object({ serverId: Id })).output(z.object({ ok: z.literal(true) })),
     },
@@ -685,7 +724,11 @@ export const appContract = {
     /** Flip an app_connect card to connected after authorization completes. */
     appConnected: oc
       .input(
-        z.object({ botId: Id, provider: z.string(), connectorId: z.string().default("composio") }),
+        z.object({
+          botId: Id,
+          provider: z.string(),
+          connectorId: z.string().default("composio"),
+        }),
       )
       .output(z.object({ ok: z.literal(true) })),
   },
@@ -695,7 +738,12 @@ export const appContract = {
   },
   connections: {
     catalog: oc
-      .input(z.object({ query: z.string().optional(), connectorId: z.string().optional() }))
+      .input(
+        z.object({
+          query: z.string().optional(),
+          connectorId: z.string().optional(),
+        }),
+      )
       .output(z.array(ConnectionCatalogItemSchema)),
     list: oc.output(z.array(ConnectionSchema)),
     begin: oc
@@ -711,7 +759,12 @@ export const appContract = {
       .input(z.object({ connectionId: Id, code: z.string().optional() }))
       .output(ConnectionSchema),
     rename: oc
-      .input(z.object({ connectionId: Id, displayName: z.string().trim().min(1).max(80) }))
+      .input(
+        z.object({
+          connectionId: Id,
+          displayName: z.string().trim().min(1).max(80),
+        }),
+      )
       .output(ConnectionSchema),
     revoke: oc.input(z.object({ connectionId: Id })).output(z.object({ ok: z.literal(true) })),
     /** Tools the connected provider exposes. Read-only; no per-tool allowlist yet. */
@@ -873,7 +926,12 @@ export const appContract = {
       .input(z.object({ provider: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
     setVoice: oc
-      .input(z.object({ voiceId: z.string().min(1).max(120), provider: z.string().optional() }))
+      .input(
+        z.object({
+          voiceId: z.string().min(1).max(120),
+          provider: z.string().optional(),
+        }),
+      )
       .output(VoiceStatusSchema),
     voices: oc
       .input(z.object({ provider: z.string().optional() }))

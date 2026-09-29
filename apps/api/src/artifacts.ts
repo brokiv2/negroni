@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ArtifactStore } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
-import { ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
+import { ATTACHMENT_FILE_MAX_BYTES, ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import {
   AttachmentValidationError,
   decodeAttachmentBase64,
@@ -12,7 +12,7 @@ import {
 import type { PrismaClient } from "@rakazo/db";
 import { IsolationError, Prisma, withResolvedArtifactVersion } from "@rakazo/db";
 
-function adapterContext(actor: Actor, botId: string, operationId: string) {
+export function adapterContext(actor: Actor, botId: string, operationId: string) {
   return {
     operationId,
     traceId: operationId,
@@ -35,17 +35,36 @@ export async function createOwnedArtifact(
     name: string;
     description?: string;
     mimeType: string;
-    contentBase64: string;
+    contentBase64?: string;
+    contentStream?: AsyncIterable<Uint8Array>;
+    signal?: AbortSignal;
   },
 ) {
   validateAttachmentMimeType(input.mimeType);
-  const bytes = decodeAttachmentBase64(input.contentBase64);
   const context = adapterContext(actor, input.botId, `artifact-create:${input.botId}`);
-  const stored = await deps.artifacts.put(
-    { name: input.name, mimeType: input.mimeType, bytes },
-    context,
-  );
-  const hash = createHash("sha256").update(bytes).digest("hex");
+  if (input.signal) context.signal = input.signal;
+  const stored = input.contentStream
+    ? await deps.artifacts.putStream!(
+        {
+          name: input.name,
+          mimeType: input.mimeType,
+          stream: input.contentStream,
+          maxBytes: ATTACHMENT_FILE_MAX_BYTES,
+        },
+        context,
+      )
+    : await (async () => {
+        const bytes = decodeAttachmentBase64(input.contentBase64 ?? "");
+        const blob = await deps.artifacts.put(
+          { name: input.name, mimeType: input.mimeType, bytes },
+          context,
+        );
+        return {
+          ...blob,
+          size: bytes.byteLength,
+          hash: createHash("sha256").update(bytes).digest("hex"),
+        };
+      })();
   const row = await withResolvedArtifactVersion(
     deps.prisma,
     {
@@ -65,8 +84,8 @@ export async function createOwnedArtifact(
           name: input.name,
           description: input.description?.trim() || null,
           mimeType: input.mimeType,
-          size: bytes.byteLength,
-          hash,
+          size: stored.size,
+          hash: stored.hash,
           storageKey: stored.id,
           rootArtifactId,
           version,
@@ -252,7 +271,12 @@ function decodeArtifactListCursor(value: string): ArtifactListCursor {
   if (Number.isNaN(createdAt.getTime()) || Number.isNaN(asOf.getTime())) {
     throw new ArtifactListCursorError();
   }
-  return { createdAt: createdAt.toISOString(), id: record.id, botId, asOf: asOf.toISOString() };
+  return {
+    createdAt: createdAt.toISOString(),
+    id: record.id,
+    botId,
+    asOf: asOf.toISOString(),
+  };
 }
 
 function cursorBotId(value: unknown): string | null {

@@ -230,12 +230,20 @@ export interface SemanticMemoryProvider {
   forget?(
     request: SemanticMemoryForgetRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse<{ id: string; expired: boolean; reason: string | null }>>;
+  ): Promise<
+    SemanticMemoryResponse<{
+      id: string;
+      expired: boolean;
+      reason: string | null;
+    }>
+  >;
 }
 
 export interface AgentRuntime {
   /** Select the model before the executor validates credentials and tool capabilities. */
-  modelForWorkload?(workload: "conversation" | "task"): Promise<{ provider: string; id: string } | undefined>;
+  modelForWorkload?(
+    workload: "conversation" | "task",
+  ): Promise<{ provider: string; id: string } | undefined>;
   describe(): AdapterDescriptor<AgentRuntimeCapabilities>;
   run(
     request: AgentRunRequest,
@@ -281,6 +289,16 @@ export interface AgentHomeStore {
 }
 
 export interface ArtifactStore {
+  putStream?(
+    input: {
+      name: string;
+      mimeType: string;
+      stream: AsyncIterable<Uint8Array>;
+      maxBytes: number;
+    },
+    context: AdapterContext,
+  ): Promise<{ id: string; hash: string; size: number }>;
+  getStream?(id: string, context: AdapterContext): Promise<ReadableStream<Uint8Array>>;
   describe(): AdapterDescriptor<{ stream: boolean }>;
   put(artifact: ArtifactPut, context: AdapterContext): Promise<{ id: string; hash: string }>;
   get(id: string, context: AdapterContext): Promise<Uint8Array>;
@@ -316,7 +334,11 @@ export interface TransactionalEmailProvider {
 }
 
 export interface ExecutionRunner {
-  describe(): AdapterDescriptor<{ cloud: boolean; selfHosted: boolean; desktop: boolean }>;
+  describe(): AdapterDescriptor<{
+    cloud: boolean;
+    selfHosted: boolean;
+    desktop: boolean;
+  }>;
   dispatch(runId: string, target: "cloud" | "self-hosted" | "desktop"): Promise<void>;
 }
 

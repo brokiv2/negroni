@@ -135,6 +135,14 @@ const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
   ".png": "image/png",
   ".webp": "image/webp",
   ".gif": "image/gif",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".doc": "application/msword",
+  ".xls": "application/vnd.ms-excel",
+  ".rtf": "application/rtf",
+  ".zip": "application/zip",
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".md": "text/markdown",
@@ -150,6 +158,14 @@ const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
   "image/png": ".png",
   "image/webp": ".webp",
   "image/gif": ".gif",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.ms-powerpoint": ".ppt",
+  "application/msword": ".doc",
+  "application/vnd.ms-excel": ".xls",
+  "application/rtf": ".rtf",
+  "application/zip": ".zip",
   "application/pdf": ".pdf",
   "text/plain": ".txt",
   "text/markdown": ".md",
@@ -193,7 +209,12 @@ export function attachmentsForBot<T extends { botId: string }>(
 }
 
 export function userTurnMessageForRun<
-  T extends { id?: string; role: string; runId?: string | null; blocks: MessageBlock[] },
+  T extends {
+    id?: string;
+    role: string;
+    runId?: string | null;
+    blocks: MessageBlock[];
+  },
 >(trigger: string, runId: string, messages: T[], sourceMessageId?: string | null): T | undefined {
   if (trigger !== "user") return undefined;
   return messages.find(

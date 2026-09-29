@@ -10,7 +10,7 @@ import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
   ARTIFACT_NAME_MAX_LENGTH,
-  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_FILE_MAX_BYTES,
 } from "@rakazo/contracts";
 import {
   attachmentExtensionForMimeType,
@@ -46,7 +46,10 @@ export async function attachWorkspaceFileToThread(
     name?: string;
     description?: string;
   },
-): Promise<{ artifactId: string; block: Extract<MessageBlock, { kind: "image" | "file" }> }> {
+): Promise<{
+  artifactId: string;
+  block: Extract<MessageBlock, { kind: "image" | "file" }>;
+}> {
   const fileName = path.basename(input.filePath) || input.filePath;
   const mimeType = inferAttachmentMimeType(fileName);
   if (!mimeType) {
@@ -54,8 +57,8 @@ export async function attachWorkspaceFileToThread(
   }
   const name = (input.name?.trim() || fileName).slice(0, ARTIFACT_NAME_MAX_LENGTH);
   validateAttachmentMimeType(mimeType);
-  if (input.bytes.byteLength > ATTACHMENT_MAX_BYTES) {
-    throw new Error("file exceeds the 10 MiB attachment limit");
+  if (input.bytes.byteLength > ATTACHMENT_FILE_MAX_BYTES) {
+    throw new Error("file exceeds the 512 MiB attachment limit");
   }
 
   const context = {
@@ -149,8 +152,8 @@ export async function materializeCurrentTurnFiles(
     const row = byId.get(block.artifactId);
     if (!row) throw new Error(`Attached file is unavailable: ${block.name}`);
     const bytes = await deps.artifacts.get(row.storageKey, input.context);
-    if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
-      throw new Error(`Attached file exceeds the 10 MiB limit: ${row.name}`);
+    if (bytes.byteLength > ATTACHMENT_FILE_MAX_BYTES) {
+      throw new Error(`Attached file exceeds the 512 MiB limit: ${row.name}`);
     }
     const relativePath = `attachments/${row.id}${attachmentExtensionForMimeType(row.mimeType)}`;
     input.markWorkspaceDirty?.();

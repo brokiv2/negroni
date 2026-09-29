@@ -77,3 +77,20 @@ const link = new RPCLink<RpcClientContext>({
 });
 
 export const rpc: ContractRouterClient<AppContract, RpcClientContext> = createORPCClient(link);
+
+export async function uploadArtifact(
+  file: File,
+  mimeType: string,
+  target: { botId: string } | { groupId: string },
+) {
+  const query = new URLSearchParams({ ...target, name: file.name, mimeType });
+  const response = await fetch(`/api/artifacts/upload?${query}`, {
+    method: "POST",
+    body: file,
+    credentials: "include",
+    headers: withSpaceHeaders({ "content-type": "application/octet-stream" }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Upload failed. Try again.");
+  return result as Awaited<ReturnType<typeof rpc.artifacts.create>>;
+}

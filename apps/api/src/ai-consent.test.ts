@@ -14,16 +14,26 @@ function setup() {
   const deps = {
     env: { agentRuntime: "scripted" },
     prisma: {
-      spaceModelPreference: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
+      spaceModelPreference: {
+        findMany: vi.fn(async () => []),
+        findFirst: vi.fn(async () => null),
+      },
       secret: { findMany: vi.fn(async () => []) },
       bot: { findMany: vi.fn(async () => []) },
       spaceVoicePreference: {
-        findFirst: vi.fn(async () => ({ credential: { provider: "openai" }, voiceId: "alloy" })),
+        findFirst: vi.fn(async () => ({
+          credential: { provider: "openai" },
+          voiceId: "alloy",
+        })),
         findMany: vi.fn(async () => [{ credential: { provider: "openai" } }]),
       },
       spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
-      aiDataConsent: { findMany: vi.fn(async () => []), upsert },
+      aiDataConsent: {
+        findMany: vi.fn(async () => []),
+        deleteMany: vi.fn(async () => ({})),
+        upsert,
+      },
       $transaction: vi.fn(async (queries) => Promise.all(queries)),
     },
   } as unknown as RouterDeps;
@@ -36,7 +46,9 @@ describe("consent grants", () => {
     deps.cloudAgent = {
       key: "test",
       spaceId: actor.spaceId,
-      provider: { describe: () => ({ id: "cursor", capabilities: { offline: false } }) },
+      provider: {
+        describe: () => ({ id: "cursor", capabilities: { offline: false } }),
+      },
     } as RouterDeps["cloudAgent"];
     vi.mocked(deps.prisma.spaceModelPreference.findMany).mockResolvedValue([
       {
@@ -45,13 +57,29 @@ describe("consent grants", () => {
         credential: { provider: "anthropic", secretId: "test-secret" },
       },
     ] as never);
-    const status = await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] });
+    const status = await aiConsentStatus(deps, actor, {
+      botId: "bot",
+      uses: ["model"],
+    });
     expect(status.recipients.map((recipient) => recipient.name)).toEqual(
       expect.arrayContaining(["Anthropic", "Cursor"]),
     );
+    expect(status.recipients.find((r) => r.name === "Anthropic")?.allowed).toBe(true);
+    expect(status.recipients.find((r) => r.name === "Cursor")?.allowed).toBe(false);
+    const ownKey = status.recipients.find((r) => r.name === "Anthropic")!.key;
+    vi.mocked(deps.prisma.aiDataConsent.findMany).mockResolvedValue([
+      { recipientKey: `revoked:${ownKey}` },
+    ] as never);
+    expect(
+      (await aiConsentStatus(deps, actor, { botId: "bot", uses: ["model"] })).recipients.find(
+        (r) => r.key === ownKey,
+      )?.allowed,
+    ).toBe(false);
     expect(deps.prisma.spaceVoicePreference.findMany).not.toHaveBeenCalled();
     expect(deps.prisma.bot.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ id: { in: ["bot"] } }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ["bot"] } }),
+      }),
     );
   });
   it("discloses only the selected voice provider before a voice action", async () => {

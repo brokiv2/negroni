@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
@@ -42,6 +42,55 @@ export class LocalArtifactStore implements ArtifactStore {
     return { id, hash: String(artifact.bytes.byteLength) };
   }
 
+  async putStream(
+    input: {
+      name: string;
+      mimeType: string;
+      stream: AsyncIterable<Uint8Array>;
+      maxBytes: number;
+    },
+    context: AdapterContext,
+  ) {
+    const id = randomUUID();
+    const dir = path.join(this.root, "artifacts", context.spaceId);
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, id);
+    const handle = await open(
+      file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW,
+      0o600,
+    );
+    const hash = createHash("sha256");
+    let size = 0;
+    try {
+      for await (const chunk of input.stream) {
+        context.signal.throwIfAborted();
+        size += chunk.byteLength;
+        if (size > input.maxBytes) throw new Error("Attachment exceeds the file size limit");
+        hash.update(chunk);
+        await handle.writeFile(chunk);
+      }
+      if (!size) throw new Error("Attachment content is empty");
+      return { id, size, hash: hash.digest("hex") };
+    } catch (error) {
+      await rm(file, { force: true });
+      throw error;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async getStream(id: string, context: AdapterContext): Promise<ReadableStream<Uint8Array>> {
+    const handle = await open(
+      path.join(this.root, "artifacts", context.spaceId, id),
+      constants.O_RDONLY | O_NOFOLLOW,
+    );
+    // FileHandle's web stream owns the handle and closes on completion/cancellation.
+    return handle.readableWebStream({
+      autoClose: true,
+    }) as ReadableStream<Uint8Array>;
+  }
+
   async get(id: string, context: AdapterContext) {
     const handle = await open(
       path.join(this.root, "artifacts", context.spaceId, id),
@@ -55,7 +104,9 @@ export class LocalArtifactStore implements ArtifactStore {
   }
 
   async remove(id: string, context: AdapterContext) {
-    await rm(path.join(this.root, "artifacts", context.spaceId, id), { force: true });
+    await rm(path.join(this.root, "artifacts", context.spaceId, id), {
+      force: true,
+    });
   }
 }
 
