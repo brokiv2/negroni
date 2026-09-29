@@ -4,6 +4,7 @@ import { xPostId } from "@rakazo/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { AskCard } from "./AskCard";
+import { FeedSettings } from "./FeedSettings";
 
 type ChatTarget = { botId: string; groupId?: string; draft?: string; team?: boolean };
 type Tab = "feed" | "saved" | "automations" | "hidden";
@@ -24,6 +25,7 @@ export function PersonalWorkspace({
   const [tab, setTab] = useState<Tab>("feed");
   const [items, setItems] = useState<FeedItem[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState<FeedItem | null>(null);
   const [topic, setTopic] = useState("");
   const [error, setError] = useState("");
@@ -81,11 +83,8 @@ export function PersonalWorkspace({
             <button
               type="button"
               className={button}
-              onClick={() =>
-                ask(
-                  "Let's configure my feed: topics, sources and how often to collect them. Do not start an automation until we agree on it.",
-                )
-              }
+              onClick={() => setSettingsOpen((v) => !v)}
+              aria-expanded={settingsOpen}
             >
               Customize feed
             </button>
@@ -94,6 +93,7 @@ export function PersonalWorkspace({
             </button>
           </div>
         </header>
+        {settingsOpen && <FeedSettings />}
         <nav className="flex flex-wrap gap-2" aria-label="For you sections">
           {(["feed", "saved", "automations", "hidden"] as const).map((value) => (
             <button
@@ -163,8 +163,8 @@ export function PersonalWorkspace({
               </p>
             )}
             {routines.map((routine) => (
-              <article key={routine.id} className="space-y-3 rounded-2xl border border-border p-5">
-                <h2 className="font-medium">{routine.name}</h2>
+              <details key={routine.id} className="space-y-3 rounded-2xl border border-border p-5">
+                <summary className="cursor-pointer font-medium">{routine.name}</summary>
                 <p className="whitespace-pre-wrap text-sm text-muted-foreground">
                   {routine.prompt}
                 </p>
@@ -207,8 +207,28 @@ export function PersonalWorkspace({
                   >
                     Edit in chat
                   </button>
+                  <button
+                    type="button"
+                    className={button + " text-destructive"}
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete “${routine.name}”? This removes its schedule.`))
+                        return;
+                      setBusy(true);
+                      try {
+                        await rpc.routines.remove({ routineId: routine.id });
+                        setRevision((v) => v + 1);
+                      } catch {
+                        setError("Could not delete automation.");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
                 </div>
-              </article>
+              </details>
             ))}
           </>
         ) : (

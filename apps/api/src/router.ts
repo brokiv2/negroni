@@ -50,6 +50,7 @@ import {
   displayBotWorkspacePath,
   enqueueTakeoverContinuation,
   expireComputerControl,
+  getFeedProfile,
   hasActiveComputerControl,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
@@ -63,6 +64,7 @@ import {
   mapScratchpadItem,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
+  mutateFeedProfile,
   pickReusableConnection,
   planLiveConnectionSync,
   prepareApiInstall,
@@ -90,6 +92,7 @@ import {
   toComputerRef,
   touchRunningComputer,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
+  updateFeedInterest,
   validateModelAuthAvailability,
   validateStoredModelAuth,
   verifyMcpInstall,
@@ -2770,9 +2773,13 @@ export function createRouter(deps: RouterDeps) {
       }),
       remove: authed.routines.remove.handler(async ({ context, input }) => {
         const existing = await deps.prisma.routine.findFirst({
-          where: { id: input.routineId, spaceId: context.actor.spaceId },
+          where: {
+            id: input.routineId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+          },
         });
-        if (!existing) throw new IsolationError();
+        if (!existing) throw new ORPCError("NOT_FOUND");
         await deps.prisma.routine.delete({ where: { id: existing.id } });
         await deps.jobs.cancel(routineJobKey(existing.id));
         return { ok: true as const };
@@ -2854,6 +2861,17 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     feed: {
+      profile: authed.feed.profile.handler(({ context }) =>
+        getFeedProfile(deps.prisma, context.actor),
+      ),
+      configure: authed.feed.configure.handler(({ context, input }) =>
+        mutateFeedProfile(deps.prisma, context.actor, (p) => ({ ...p, ...input })),
+      ),
+      interest: authed.feed.interest.handler(({ context, input }) =>
+        mutateFeedProfile(deps.prisma, context.actor, (p) =>
+          updateFeedInterest(p, input.topic, input.action),
+        ),
+      ),
       list: authed.feed.list.handler(async ({ context, input }) => {
         const rows = await deps.prisma.feedItem.findMany({
           where: {

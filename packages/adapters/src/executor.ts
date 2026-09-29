@@ -214,6 +214,7 @@ import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
+import { feedProfileInstruction, getFeedProfile, learnFeedInterest } from "./feed-profile.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
   COMPACTION_BATCH_SIZE,
@@ -2770,6 +2771,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ),
             );
           }
+          if (name === "learn_feed_interest") {
+            if (
+              !currentTurnMessage ||
+              messagingChannelRun ||
+              run.trigger === "routine" ||
+              run.trigger === "bot_message"
+            )
+              return finish({ ignored: true });
+            const text = (currentTurnMessage.blocks ?? [])
+              .filter((b) => b.kind === "text")
+              .map((b) => ("text" in b ? b.text : ""))
+              .join("\n");
+            await learnFeedInterest(
+              deps.prisma,
+              { spaceId: run.spaceId, userId: run.userId },
+              args,
+              { id: currentTurnMessage.id, text },
+            );
+            return finish({ ok: true });
+          }
           if (name === "publish_feed") {
             return finish(
               await publishFeed(
@@ -2777,6 +2798,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 { spaceId: run.spaceId, userId: run.userId },
                 bot.id,
                 args,
+                { automated: run.trigger === "routine" },
               ),
             );
           }
@@ -3878,6 +3900,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { spaceId: run.spaceId, userId: run.userId },
           thread.id,
         );
+        const feedProfile = !messagingChannelRun
+          ? await getFeedProfile(deps.prisma, { spaceId: run.spaceId, userId: run.userId })
+          : null;
         const personalRun = run.interactionMode === "personal" || thread.kind === "personal";
         const coordinationInstruction = coordinationInstructionFor({
           interactionMode: personalRun ? "personal" : run.interactionMode,
@@ -3958,7 +3983,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   pluginLine,
                   agentSkillsLine,
                   taughtSkillsLine,
-                  replyGuidance: [runReplyGuidance(run.trigger), feedContext]
+                  replyGuidance: [
+                    runReplyGuidance(run.trigger),
+                    feedContext,
+                    feedProfile
+                      ? feedProfileInstruction(
+                          feedProfile,
+                          !!currentTurnMessage &&
+                            run.trigger !== "routine" &&
+                            run.trigger !== "bot_message",
+                        )
+                      : undefined,
+                  ]
                     .filter(Boolean)
                     .join("\n"),
                 })
@@ -4849,6 +4885,7 @@ export function selectBuiltinToolsForRun(options: {
         "remember",
         "read_memory",
         "publish_feed",
+        "learn_feed_interest",
         "save_memory",
         "recall_memory",
         "forget_memory",

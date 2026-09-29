@@ -89,7 +89,13 @@ import {
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
 import { ModelRoutingSchema } from "./model-routing.js";
-import { FeedItemInput, FeedItemSchema } from "./personal-feed.js";
+import {
+  FeedInterestUpdate,
+  FeedItemInput,
+  FeedItemSchema,
+  FeedProfilePatch,
+  FeedProfileSchema,
+} from "./personal-feed.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { EFFECTS_LIST_MAX_LIMIT, EffectsListOutputSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -496,6 +502,9 @@ export const appContract = {
       .output(z.object({ runId: Id })),
   },
   feed: {
+    profile: oc.output(FeedProfileSchema),
+    configure: oc.input(FeedProfilePatch).output(FeedProfileSchema),
+    interest: oc.input(FeedInterestUpdate).output(FeedProfileSchema),
     list: oc
       .input(z.object({ saved: z.boolean().optional(), hidden: z.boolean().optional() }))
       .output(z.array(FeedItemSchema)),

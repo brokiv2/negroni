@@ -123,5 +123,6 @@ export * from "./web-ssrf.js";
 export * from "./web-tools.js";
 
 export * from "./personal-feed.js";
+export * from "./feed-profile.js";
 export * from "./agent-runtime.js";
 export * from "./codex-runtime.js";

@@ -55,6 +55,7 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export function VesperChatScreen({
+  draftRequest,
   botId,
   onBotResolved,
   onRunsChanged,
@@ -64,6 +65,7 @@ export function VesperChatScreen({
   computerReachable,
   desktop,
 }: {
+  draftRequest?: { text: string; nonce: number };
   /** The main assistant's bot id, once `personal.thread` has resolved it. */
   botId: string | null;
   onBotResolved: (thread: PersonalThread) => void;
@@ -81,6 +83,9 @@ export function VesperChatScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [composer, dispatch] = useReducer(composerReducer, initialComposerState);
+  useEffect(() => {
+    if (draftRequest) dispatch({ kind: "draft", text: draftRequest.text });
+  }, [draftRequest]);
   const composerRef = useRef(composer);
   composerRef.current = composer;
   const queue = useMemo(() => new VesperFollowUpQueue(), []);

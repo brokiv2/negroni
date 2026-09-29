@@ -57,3 +57,44 @@ export function xPostId(url: string | null): string | null {
     return null;
   }
 }
+
+export const FeedInterestSchema = z.object({
+  topic: z.string().min(1).max(100),
+  reason: z.string().max(300),
+  origin: z.enum(["conversation", "explicit"]),
+  evidenceIds: z.array(z.string()).max(5),
+  updatedAt: z.string().datetime(),
+});
+export const FeedProfileSchema = z.object({
+  learningEnabled: z.boolean().default(false),
+  interests: z.array(FeedInterestSchema).max(40).default([]),
+  excludedTopics: z.array(z.string().min(1).max(100)).max(40).default([]),
+  sourceDomains: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .regex(/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i),
+    )
+    .max(30)
+    .default([]),
+  maxItems: z.number().int().min(1).max(10).default(5),
+});
+export type FeedProfile = z.infer<typeof FeedProfileSchema>;
+export const FeedProfilePatch = FeedProfileSchema.pick({
+  learningEnabled: true,
+  sourceDomains: true,
+  maxItems: true,
+}).partial();
+export const FeedInterestUpdate = z.object({
+  topic: z.string().trim().min(1).max(100),
+  action: z.enum(["follow", "exclude", "forget"]),
+});
+export const FeedObservation = z.object({
+  topic: z.string().trim().min(1).max(100),
+  reason: z.string().max(300),
+  evidence: z.string().min(8).max(500),
+  confidence: z.number().min(0.85).max(1),
+});

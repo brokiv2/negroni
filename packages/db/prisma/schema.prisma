@@ -22,6 +22,7 @@ model AiDataConsent {
 }
 
 model User {
+  feedProfiles FeedProfile[]
   feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
@@ -163,6 +164,7 @@ model Member {
 }
 
 model Space {
+  feedProfiles FeedProfile[]
   feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
@@ -1372,4 +1374,15 @@ model FeedItem {
   @@unique([spaceId, userId, dedupKey])
   @@index([spaceId, userId, createdAt])
   @@map("feed_items")
+}
+
+model FeedProfile {
+  spaceId String
+  userId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  data Json
+  updatedAt DateTime @updatedAt
+  @@id([spaceId, userId])
+  @@map("feed_profiles")
 }

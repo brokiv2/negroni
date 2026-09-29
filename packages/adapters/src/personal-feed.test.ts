@@ -69,6 +69,7 @@ describe("personal feed", () => {
     };
     const transaction = vi.fn();
     const prisma = {
+      feedProfile: { findUnique: vi.fn(async () => null) },
       bot: { findMany: vi.fn(async () => []) },
       feedItem: { findUnique: vi.fn(async () => row) },
       $transaction: transaction,
@@ -82,5 +83,25 @@ describe("personal feed", () => {
     expect(result.hidden).toBe(true);
     expect(result.saved).toBe(true);
     expect(transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("feed curation boundaries", () => {
+  const raw = {kind:"article",title:"Source",summary:"Verified summary",url:"https://example.com/post",topic:"AI"};
+  it("enforces excluded topics and selected domains outside the prompt", async()=>{
+    for(const data of [{excludedTopics:["ai"]},{sourceDomains:["allowed.example"]}]){
+      const prisma={feedProfile:{findUnique:vi.fn(async()=>({data}))}} as unknown as PrismaClient;
+      await expect(publishFeed(prisma,scope,"root",raw)).rejects.toThrow();
+    }
+  });
+  it("stops automated publication when the daily limit is reached", async()=>{
+    const create=vi.fn();
+    const prisma={
+      feedProfile:{findUnique:vi.fn(async()=>({data:{maxItems:3}}))},
+      bot:{findMany:vi.fn(async()=>[])},feedItem:{findUnique:vi.fn(async()=>null)},
+      $transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn({$executeRaw:vi.fn(),feedItem:{count:vi.fn(async()=>3),create}}),
+    } as unknown as PrismaClient;
+    await expect(publishFeed(prisma,scope,"root",raw,{automated:true})).rejects.toThrow("Daily feed limit");
+    expect(create).not.toHaveBeenCalled();
   });
 });

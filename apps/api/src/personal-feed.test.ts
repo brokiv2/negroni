@@ -61,3 +61,12 @@ describe("feed ownership", () => {
     });
   });
 });
+
+it("scopes automation deletion to the requesting owner", async()=>{
+  const findFirst=vi.fn(async()=>null), remove=vi.fn();
+  const handler=new RPCHandler(createRouter({prisma:{routine:{findFirst,delete:remove}},env:{defaultProvider:"fake",defaultModel:"fake"}} as unknown as RouterDeps));
+  const result=await handler.handle(new Request("http://fixture.test/rpc/routines/remove",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({json:{routineId:"foreign"}})}),{prefix:"/rpc",context:{actor}});
+  expect(result.response?.status).toBe(404);
+  expect(findFirst).toHaveBeenCalledWith({where:{id:"foreign",spaceId:actor.spaceId,userId:actor.userId}});
+  expect(remove).not.toHaveBeenCalled();
+});

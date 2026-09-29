@@ -3,6 +3,8 @@ import { FeedItemInput, FeedItemSchema } from "@rakazo/contracts";
 import { mainAssistantBot } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 
+import { getFeedProfile, topicKey } from "./feed-profile.js";
+
 type Scope = { spaceId: string; userId: string };
 export function feedDedupKey(input: { url?: string; title: string; content: string }) {
   let key = `${input.title}\n${input.content}`;
@@ -24,8 +26,26 @@ export function mapFeedItem(
     publishedAt: row.publishedAt?.toISOString() ?? null,
   });
 }
-export async function publishFeed(prisma: PrismaClient, scope: Scope, botId: string, raw: unknown) {
+export async function publishFeed(
+  prisma: PrismaClient,
+  scope: Scope,
+  botId: string,
+  raw: unknown,
+  options: { automated?: boolean } = {},
+) {
   const input = FeedItemInput.parse(raw);
+  const profile = await getFeedProfile(prisma, scope);
+  if (profile.excludedTopics.some((t) => topicKey(t) === topicKey(input.topic)))
+    throw new Error("This feed topic is excluded");
+  if (input.url && profile.sourceDomains.length) {
+    const host = new URL(input.url).hostname.toLowerCase();
+    if (
+      !profile.sourceDomains.some(
+        (d) => host === d.toLowerCase() || host.endsWith("." + d.toLowerCase()),
+      )
+    )
+      throw new Error("Source is outside the selected feed sources");
+  }
   const bots = await prisma.bot.findMany({
     where: { ...scope, archivedAt: null },
     select: { id: true, parentBotId: true, pinned: true, createdAt: true },
@@ -39,6 +59,14 @@ export async function publishFeed(prisma: PrismaClient, scope: Scope, botId: str
   if (existing) return mapFeedItem(existing);
   try {
     return await prisma.$transaction(async (tx) => {
+      if (options.automated) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scope.spaceId}), hashtext(${scope.userId}))`;
+        const count = await tx.feedItem.count({
+          where: { ...scope, createdAt: { gte: new Date(Date.now() - 86400000) } },
+        });
+        if (count >= profile.maxItems)
+          throw new Error("Daily feed limit reached; stop this collection silently");
+      }
       const bot = await tx.bot.findFirst({ where: { id: botId, ...scope, archivedAt: null } });
       if (!bot) throw new Error("Assistant unavailable");
       const row = await tx.feedItem.create({

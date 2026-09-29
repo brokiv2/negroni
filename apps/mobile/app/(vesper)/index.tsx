@@ -37,6 +37,11 @@ export default function VesperShell() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const desktop = width >= vt.size.desktopBreakpoint;
+  const [chatDraft, setChatDraft] = useState<{ text: string; nonce: number } | undefined>();
+  const askInChat = (text: string) => {
+    setChatDraft({ text, nonce: Date.now() });
+    setSection("chat");
+  };
   const [section, setSection] = useState<VesperSection>(DEFAULT_VESPER_SECTION);
   const [personal, setPersonal] = useState<PersonalThread | null>(null);
   const [runs, setRuns] = useState<RunActivityRow[]>([]);
@@ -116,7 +121,8 @@ export default function VesperShell() {
           }}
         />
         <View style={{ flex: 1, minHeight: 0 }}>
-          {section !== "chat" && (
+          {section === "feed" && <PersonalFeedScreen botId={botId} onAsk={askInChat} />}
+          {section !== "chat" && section !== "feed" && (
             <ScrollView
               key={section}
               showsVerticalScrollIndicator={false}
@@ -146,6 +152,7 @@ export default function VesperShell() {
           )}
           <View style={{ display: section === "chat" ? "flex" : "none", flex: 1 }}>
             <VesperChatScreen
+              draftRequest={chatDraft}
               botId={botId}
               desktop={desktop}
               onBotResolved={setPersonal}
@@ -182,7 +189,7 @@ function VesperSectionBody({
 }) {
   switch (section) {
     case "feed":
-      return <PersonalFeedScreen botId={botId} />;
+      return null;
     case "team":
       return <AssistantTeamScreen botId={botId} refreshToken={activityToken} />;
     case "apps":

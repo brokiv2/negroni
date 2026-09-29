@@ -1,0 +1,6 @@
+CREATE TABLE "feed_profiles" (
+ "spaceId" TEXT NOT NULL, "userId" TEXT NOT NULL, "data" JSONB NOT NULL, "updatedAt" TIMESTAMP(3) NOT NULL,
+ PRIMARY KEY ("spaceId", "userId"),
+ FOREIGN KEY ("spaceId") REFERENCES "spaces"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+ FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
