@@ -533,6 +533,13 @@ export async function createApp(
   });
   mountLocalSettings(app, { token: env.desktopStackToken, prisma, rpc });
   app.use("/rpc/*", async (c, next) => {
+    // Diagnose native delivery without logging prompts, bodies or credentials.
+    const nativeBuild = /^Negroni\/(\d+)\b/.exec(c.req.header("user-agent") ?? "")?.[1];
+    const procedure = c.req.path.slice("/rpc/".length);
+    if (/^[a-zA-Z]+\/[a-zA-Z]+$/.test(procedure)) {
+      enrichLogContext({ "rpc.procedure": procedure });
+    }
+    if (nativeBuild) enrichLogContext({ "client.native_build": nativeBuild });
     const session = await auth.api.getSession({ headers: sessionHeaders(c.req.raw) });
     const requestedSpaceId = c.req.header("x-rakazo-space-id");
     const actor = session?.user
