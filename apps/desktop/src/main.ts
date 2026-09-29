@@ -116,6 +116,14 @@ markOnce("rk:main:module-evaluated");
 if (PERFORMANCE_USER_DATA) {
   app.setPath("userData", PERFORMANCE_USER_DATA);
   app.setPath("sessionData", path.join(PERFORMANCE_USER_DATA, "session"));
+} else {
+  // Negroni keeps the profile where the pre-0.1.6 builds wrote it. The top-level
+  // productName would otherwise move userData to "Application Support/Negroni",
+  // which is the local stack's operations folder (runtime mirror, secrets, backups),
+  // and would drop the signed-in session and setup.json along the way.
+  const legacyUserData = path.join(app.getPath("appData"), "@rakazo", "desktop");
+  app.setPath("userData", legacyUserData);
+  app.setPath("sessionData", legacyUserData);
 }
 app.once("will-finish-launching", () => markOnce("rk:main:will-finish-launching"));
 app.once("ready", () => markOnce("rk:main:ready"));
