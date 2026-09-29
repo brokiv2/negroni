@@ -30,8 +30,14 @@ apps/ios/Scripts/testflight_release.sh upload
 
 Use `BUILD_NUMBER` and a fresh `OUTPUT_DIR` for subsequent releases. Before upload, the script checks the version, production HTTPS gateway, icon, store provisioning, APNs and Apple sign-in entitlements, encryption declaration, original mascot and absence of cross-platform runtimes. Apple processing and beta availability must be verified separately after delivery.
 
+## Chat and documents
+
+SSE frames are decoded from raw bytes: Foundation's `AsyncBytes.lines` strips the blank delimiters. The visible chat reconciles after foreground pushes, on reconnect and periodically while a run is active. Assistant identity is refreshed independently of computer health when returning to chat.
+
+Document uploads and downloads use authenticated binary endpoints and file-backed URLSession transfers. The client reads the server's file budget (currently 512 MiB); Office, Keynote, ODP, PDFs and supported text/archive formats share the backend MIME registry. The legacy JSON transport has its own smaller budget and does not determine native upload capacity. Connecting a personal model key authorizes that provider; explicit revocations remain effective.
+
 ## Verification boundaries
 
-Offline tests cover RPC values, endpoint validation, streaming frame parsing, message reconciliation and dictation draft preservation. Simulator review covers readable selectable messages, model menus, feed images, original team avatars, and the recording/edit flow. The isolated dictation test server returns a fixture transcript; this does not verify an external transcription provider.
+Offline tests cover RPC values, endpoint validation, raw streaming frame parsing, message reconciliation and dictation draft preservation. A live isolated-server check reproduces the old missing-delimiter failure and verifies decoded events, completed scripted replies in the open simulator chat, and refreshed assistant identity. A 27 MB PPTX upload/download round trip verifies matching hashes and agent workspace materialization; authorization and interrupted-stream cleanup are tested separately. Simulator review covers readable selectable messages, model menus, feed images, original team avatars, and the recording/edit flow. The isolated dictation test server returns a fixture transcript; this does not verify an external transcription provider.
 
 Physical-device microphone quality, keyboard gestures, APNs delivery, subscription-provider OAuth and remote screen sharing require separate live checks. Computer status reports server availability; it does not claim screen-control capability. There is no native remote-desktop viewer in this client yet.
