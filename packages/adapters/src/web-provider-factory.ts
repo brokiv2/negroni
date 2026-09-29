@@ -1,5 +1,7 @@
 import type { WebProvider } from "@rakazo/adapter-kit";
 import { FakeWebProvider } from "./fake-web.js";
+import type { SearchUsageRecorder } from "./gateway-web.js";
+import { GatewayWebProvider } from "./gateway-web.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 
 /**
@@ -31,4 +33,20 @@ export function createWebProvider(
     default:
       throw new Error(`Unknown web provider "${kind}"`);
   }
+}
+
+/** Reuse the selected connection; never route its credential to another host. */
+export function webProviderForModel(
+  fallback: WebProvider,
+  model: { provider: string; id: string; apiKey?: string; baseUrl?: string },
+  onUsage?: SearchUsageRecorder,
+): WebProvider {
+  if (
+    fallback.describe().id === "keyless-http" &&
+    model.provider === "vercel-ai-gateway" &&
+    model.apiKey &&
+    (!model.baseUrl || /^https:\/\/ai-gateway\.vercel\.sh(?:\/v1)?\/?$/.test(model.baseUrl))
+  )
+    return new GatewayWebProvider(fallback, { apiKey: model.apiKey, modelId: model.id, onUsage });
+  return fallback;
 }

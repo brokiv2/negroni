@@ -158,3 +158,15 @@ describe("source preview images", () => {
     ).toBeUndefined();
   });
 });
+
+describe("unavailable HTML search", () => {
+  it.each([
+    '<form id="challenge-form" action="/anomaly.js">Verify you are human</form>',
+    "<html><title>Temporary failure</title></html>",
+  ])("does not mistake a challenge or unknown response for no matches", (html) => {
+    expect(() => parseDuckDuckGoResults(html, 3)).toThrow();
+  });
+  it("accepts a recognized empty result page", () => {
+    expect(parseDuckDuckGoResults('<div class="no-results">No results found</div>', 3)).toEqual([]);
+  });
+});

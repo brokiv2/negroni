@@ -9,6 +9,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { FeedItemInput } from "@rakazo/contracts";
 import { JSDOM } from "jsdom";
+import { WebSearchUnavailableError } from "./web-errors.js";
 import { clampMaxChars, clampMaxResults } from "./web-limits.js";
 import { fetchSafeWebText, type ResolveHostname } from "./web-ssrf.js";
 
@@ -134,6 +135,12 @@ export function parseDuckDuckGoResults(html: string, maxResults: number): WebSea
   const dom = new JSDOM(html, { url: DEFAULT_SEARCH_ENDPOINT });
   const document = dom.window.document;
   const results: WebSearchHit[] = [];
+  if (document.querySelector('#challenge-form, .anomaly-modal, form[action*="anomaly"]')) {
+    dom.window.close();
+    throw new WebSearchUnavailableError(
+      "Web search requires human verification. Try again later or use a connected search provider.",
+    );
+  }
 
   for (const node of Array.from(document.querySelectorAll(".result"))) {
     const link = node.querySelector("a.result__a");
@@ -152,6 +159,12 @@ export function parseDuckDuckGoResults(html: string, maxResults: number): WebSea
     if (title && url) results.push({ title, url, snippet });
     if (results.length >= maxResults) break;
   }
+  const empty = document.querySelector(".no-results, .result--no-result");
+  dom.window.close();
+  if (!results.length && !empty)
+    throw new WebSearchUnavailableError(
+      "Web search returned an unrecognized response. Try again later.",
+    );
   return results;
 }
 

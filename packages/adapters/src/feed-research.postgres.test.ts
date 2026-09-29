@@ -11,6 +11,7 @@ import {
   reconcileFeedResearch,
 } from "./feed-research.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
+import { WebSearchUnavailableError } from "./web-errors.js";
 
 const suite =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
@@ -206,6 +207,86 @@ suite("bounded public research (PostgreSQL, no external services)", () => {
       expect(await prisma.feedItem.count({ where: h.owner })).toBe(0);
     },
   );
+  it("fails unavailable search rather than recording a successful empty check", async () => {
+    const f = await setup();
+    await f.reconcile();
+    f.web.searchError = new WebSearchUnavailableError("Search unavailable");
+    await expect(f.execute()).rejects.toThrow("Search unavailable");
+    expect(await prisma.feedFinding.count({ where: { researchId: (await f.active()).id } })).toBe(
+      0,
+    );
+  });
+
+  it.each(["unavailable", "budget"])(
+    "fails a real-runtime loop even when it swallows the %s tool error",
+    async (reason) => {
+      const f = await setup();
+      await f.reconcile();
+      const cycle = await f.active();
+      const run = cycle.run!;
+      if (reason === "unavailable")
+        f.web.searchError = new WebSearchUnavailableError("Search unavailable");
+      const search = vi.spyOn(f.web, "search");
+      const runtime = new ScriptedAgentRuntime();
+      const description = runtime.describe();
+      runtime.describe = () => ({
+        ...description,
+        capabilities: { ...description.capabilities, scripted: false },
+      });
+      let aborted = false;
+      runtime.run = async function* (request, context) {
+        for (let i = 0; i < 14; i++) {
+          try {
+            await request.executeTool!("web_search", { query: "space" }, `search-${i}`);
+          } catch {
+            /* runtime reports tool errors to its model */
+          }
+        }
+        aborted = context?.signal?.aborted ?? false;
+        yield { type: "done", text: "No results" };
+      };
+      await expect(
+        executeFeedResearch({
+          prisma,
+          runtime,
+          web: f.web,
+          researchId: cycle.id,
+          request: {
+            botId: f.bot.id,
+            threadId: run.threadId,
+            runId: run.id,
+            workload: "conversation",
+            model: { provider: "scripted", id: "scripted" },
+          },
+          context: {
+            ...f.owner,
+            botId: f.bot.id,
+            operationId: run.id,
+            traceId: run.id,
+            signal: new AbortController().signal,
+          },
+        }),
+      ).rejects.toThrow(reason === "unavailable" ? "Search unavailable" : "allowance reached");
+      expect(aborted).toBe(true);
+      expect(search).toHaveBeenCalledTimes(reason === "unavailable" ? 1 : 12);
+    },
+  );
+
+  it("skips low-confidence candidates without prompting the model to raise its score", async () => {
+    const f = await setup();
+    await f.reconcile();
+    const submission = f.events[2]!;
+    if (submission.type !== "tool") throw new Error("Expected fixture tool");
+    await f.execute([
+      ...f.events.slice(0, 2),
+      { ...submission, args: { ...submission.args, confidence: 0.7 } },
+      f.events[3]!,
+    ]);
+    await f.settle();
+    await f.reconcile();
+    expect(await prisma.feedItem.count({ where: f.owner })).toBe(0);
+  });
+
   it("rejects invented evidence and an unread source", async () => {
     const h = await setup();
     await h.reconcile();

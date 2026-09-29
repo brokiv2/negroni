@@ -346,7 +346,7 @@ import {
   isUserProgressClientNonce,
   userProgressClientNonce,
 } from "./user-progress.js";
-import { createWebProvider } from "./web-provider-factory.js";
+import { createWebProvider, webProviderForModel } from "./web-provider-factory.js";
 import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
 
 const modelCredentialLocks = new Map<string, Promise<void>>();
@@ -1610,6 +1610,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
           data: { modelProvider: runModelProvider, modelId: runModelId },
         });
+        const runWeb = webProviderForModel(
+          web,
+          {
+            provider: runModelProvider,
+            id: runModelId,
+            apiKey: resolved.oauth ? undefined : resolved.apiKey,
+            baseUrl: resolved.baseUrl,
+          },
+          async (usage) => {
+            await deps.prisma.usageRecord.create({
+              data: {
+                spaceId: run.spaceId,
+                userId: run.userId,
+                botId: bot.id,
+                runId,
+                provider: runModelProvider,
+                model: runModelId,
+                ...usage,
+              },
+            });
+          },
+        );
         if (run.trigger === "research") {
           let researchError: string | undefined;
           try {
@@ -1618,7 +1640,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await executeFeedResearch({
               prisma: deps.prisma,
               runtime: deps.runtime,
-              web: createWebProvider(),
+              web: runWeb,
               researchId: run.researchId,
               context,
               request: {
@@ -2929,10 +2951,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish({ ok: true });
           }
           if (name === "web_search") {
-            return finish(await webSearchFromTool(web, context, args));
+            return finish(await webSearchFromTool(runWeb, context, args));
           }
           if (name === "web_fetch") {
-            return finish(await webFetchFromTool(web, context, args));
+            return finish(await webFetchFromTool(runWeb, context, args));
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {

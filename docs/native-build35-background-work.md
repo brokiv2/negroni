@@ -28,3 +28,15 @@ Build 35 is `VALID` in App Store Connect and `IN_BETA_TESTING` for internal test
 Tests use fake model and web services; they establish the lifecycle and enforcement behavior, not the relevance of real model-selected articles. Interactive native QA was attempted, but the native UI automation tool could not access the simulator. Physical-device touch behavior remains unverified.
 
 This public discovery mode does not read signed-in account sources. Existing authorized tools remain available to explicitly assigned ongoing work. Event-driven wakeups, semantic clustering across different URLs and a single stop-all-background-work action are not part of this build.
+
+## Live discovery follow-up
+
+A bounded run with the connected DeepSeek model exposed gaps that scripted services did not: the keyless search page was a human-verification challenge, and exhaustion of the tool allowance could be swallowed by the runtime and reported as a successful empty check. A repeat of the concurrent-claim regression also exposed a race during first creation of the internal research thread.
+
+The backend now recognizes unavailable HTML search, aborts a research turn on terminal capability/budget/search errors, and distinguishes unreadable sources from a successful empty collection. The internal thread is created under the profile lock. Low-confidence candidates are declined without a validation error encouraging the model to increase its score; date-validation errors are concise and the tool instructions specify UTC timestamps.
+
+For the selected Vercel Gateway connection, search uses the official provider-executed Perplexity tool through the existing key and model. The adapter accepts correlated tool-result data only, never model-written links. Reading still uses the restricted public HTTP adapter. Search inference tokens are recorded on the run; provider search charges remain visible in Gateway. Fake/custom web adapters and non-Gateway model connections retain their configured web provider. This is also used by explicit chat search. The SDK reference is [Gateway web search](https://vercel.com/docs/ai-gateway/models-and-providers/web-search).
+
+The corrected live scenario searched swift.org, read original pages and published one source-backed card into a disposable test profile, with zero chat messages. The exact-quote gate first rejected an assembled quotation, then accepted a verbatim source excerpt. All fixture data was removed; production interests and conversations were unchanged. The OpenAI-domain scenario could search successfully but direct page reads received HTTP 403, so no card was published. This remains a source-access limitation, not evidence that those sources were read.
+
+Validation for this follow-up: 163 checks across seven affected suites pass, covering real PostgreSQL concurrency, actual executor dispatch, swallowed errors, provider-result provenance, cancellation, HTTP source boundaries and neighboring execution/recovery paths. Native build 35 remains the released client; the follow-up requires only the Mac backend update.
