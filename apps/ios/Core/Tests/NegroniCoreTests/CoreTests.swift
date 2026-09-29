@@ -3,6 +3,22 @@ import XCTest
 @testable import NegroniCore
 
 final class CoreTests: XCTestCase {
+  func testNotificationsStaySilentOnlyForTheVisibleConversation() {
+    func suppress(_ thread: String?, _ space: String?, visible: String? = "chat-1",
+                  foreground: Bool = true) -> Bool {
+      ChatNotificationPolicy.suppress(
+        threadID: thread, spaceID: space, visibleThreadID: visible,
+        visibleSpaceID: "space-1", foreground: foreground)
+    }
+    XCTAssertTrue(suppress("chat-1", "space-1"))
+    XCTAssertFalse(suppress("chat-2", "space-1"))
+    XCTAssertFalse(suppress("chat-1", "space-2"))
+    XCTAssertFalse(suppress("chat-1", "space-1", visible: nil))
+    XCTAssertFalse(suppress("chat-1", "space-1", foreground: false))
+    XCTAssertFalse(suppress(nil, "space-1"))
+    XCTAssertFalse(suppress("chat-1", nil))
+    XCTAssertFalse(suppress("", "space-1", visible: ""))
+  }
   func testRPCValuesRoundTrip() throws {
     let value: JSON = [
       "json": ["text": "Привет", "enabled": true, "cursor": -1, "items": ["one", .null]]

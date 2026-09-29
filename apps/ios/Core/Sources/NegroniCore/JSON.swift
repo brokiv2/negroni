@@ -155,6 +155,18 @@ public struct SSEDecoder: Sendable {
   }
 }
 
+public enum ChatNotificationPolicy {
+  public static func suppress(
+    threadID: String?, spaceID: String?, visibleThreadID: String?, visibleSpaceID: String?,
+    foreground: Bool
+  ) -> Bool {
+    guard foreground, let threadID, !threadID.isEmpty, let spaceID, !spaceID.isEmpty else {
+      return false
+    }
+    return threadID == visibleThreadID && spaceID == visibleSpaceID
+  }
+}
+
 public enum ThreadLogic {
   public static func plainText(_ message: JSON) -> String {
     message["blocks"].array.compactMap { block in

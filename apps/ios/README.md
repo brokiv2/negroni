@@ -34,6 +34,8 @@ Use `BUILD_NUMBER` and a fresh `OUTPUT_DIR` for subsequent releases. Before uplo
 
 SSE frames are decoded from raw bytes: Foundation's `AsyncBytes.lines` strips the blank delimiters. The visible chat reconciles after foreground pushes, on reconnect and periodically while a run is active. Assistant identity is refreshed independently of computer health when returning to chat.
 
+Foreground notifications still trigger reconciliation, but show no banner or notification-list entry when their thread and space match the chat in the active scene. The visible controller is resolved through native navigation, including presented sheets; other conversations and background delivery retain normal notifications. Offline notification tests cover matching and different threads/spaces, background state, an absent chat and incomplete payloads.
+
 Document uploads and downloads use authenticated binary endpoints and file-backed URLSession transfers. The client reads the server's file budget (currently 512 MiB); Office, Keynote, ODP, PDFs and supported text/archive formats share the backend MIME registry. The legacy JSON transport has its own smaller budget and does not determine native upload capacity. Connecting a personal model key authorizes that provider; explicit revocations remain effective.
 
 ## Verification boundaries

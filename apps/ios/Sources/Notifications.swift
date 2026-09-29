@@ -40,8 +40,23 @@ import UserNotifications
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification
   ) async -> UNNotificationPresentationOptions {
-    await MainActor.run { NotificationCenter.default.post(name: Self.threadUpdated, object: nil) }
-    return [.banner, .list]
+    let info = notification.request.content.userInfo
+    let threadID = info["threadId"] as? String
+    let spaceID = info["spaceId"] as? String
+    return await MainActor.run {
+      // Reconcile the conversation even when its notification stays silent.
+      NotificationCenter.default.post(name: Self.threadUpdated, object: nil)
+      let visibleChats = UIApplication.shared.connectedScenes
+        .filter { $0.activationState == .foregroundActive }
+        .compactMap { ($0.delegate as? SceneDelegate)?.topController as? ChatController }
+      let alreadyVisible = visibleChats.contains { chat in
+        ChatNotificationPolicy.suppress(
+          threadID: threadID, spaceID: spaceID, visibleThreadID: chat.notificationThreadID,
+          visibleSpaceID: API.shared.spaceID,
+          foreground: UIApplication.shared.applicationState == .active)
+      }
+      return alreadyVisible ? [] : [.banner, .list]
+    }
   }
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse

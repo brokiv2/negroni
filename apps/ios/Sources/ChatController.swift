@@ -22,6 +22,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private let connection = UIButton(type: .system)
   private let identity = UIButton(type: .system)
   private var active = false
+  var notificationThreadID: String { snapshot["threadId"].string }
   init(target: JSON, title: String? = nil) {
     self.target = target
     super.init(nibName: nil, bundle: nil)
