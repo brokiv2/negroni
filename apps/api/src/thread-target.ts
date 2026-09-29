@@ -295,7 +295,12 @@ export async function resolveThreadTarget(
     });
     if (!item) throw new IsolationError();
     const bot = await repos.getBot(actor, item.botId);
-    return { kind: "bot", botId: bot.id, threadId: item.threadId, threadKind: "personal", bot };
+    const thread = await prisma.thread.upsert({
+      where: { feedItemId: item.id },
+      create: { spaceId: actor.spaceId, userId: actor.userId, kind: "personal", feedItemId: item.id },
+      update: {},
+    });
+    return { kind: "bot", botId: bot.id, threadId: thread.id, threadKind: "personal", bot };
   }
   const groupRepos = createGroupRepos(prisma);
   if (input.botId) {

@@ -42,7 +42,7 @@ describe("personal feed", () => {
     }));
     const prisma = { feedItem: { findFirst } } as unknown as PrismaClient;
     const prompt = await feedDiscussionContext(prisma, scope, "article-thread");
-    expect(findFirst).toHaveBeenCalledWith({ where: { ...scope, threadId: "article-thread" } });
+    expect(findFirst).toHaveBeenCalledWith({ where: { ...scope, thread: { id: "article-thread" } } });
     expect(prompt).toContain("untrusted source data");
     expect(prompt).toContain("Do not claim to have read text not provided");
   });

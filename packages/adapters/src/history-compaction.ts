@@ -220,7 +220,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   const thread = await deps.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
   const feedItem = !thread.botId
     ? await deps.prisma.feedItem.findFirst({
-        where: { threadId, spaceId: thread.spaceId, userId: thread.userId },
+        where: { thread: { id: threadId }, spaceId: thread.spaceId, userId: thread.userId },
         select: { botId: true },
       })
     : null;

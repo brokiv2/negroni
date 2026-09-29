@@ -466,7 +466,8 @@ model ChatGroupMember {
 }
 
 model Thread {
-  feedItems FeedItem[]
+  feedItemId String? @unique
+  feedItem FeedItem? @relation(fields: [feedItemId], references: [id], onDelete: Cascade)
   id                          String     @id @default(cuid())
   spaceId                     String
   space                       Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1354,8 +1355,7 @@ model FeedItem {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   botId String
   bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
-  threadId String @unique
-  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread Thread?
   dedupKey String
   kind String
   title String
