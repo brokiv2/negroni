@@ -7,6 +7,7 @@ import { VesperActivityScreen } from "../../components/vesper/activity/activity-
 import { VesperAppsScreen } from "../../components/vesper/apps/apps-screen";
 import { VesperChatScreen } from "../../components/vesper/chat/chat-screen";
 import { useAssistantName } from "../../components/vesper/context/assistant-scope";
+import { AssistantTeamScreen } from "../../components/vesper/team-screen";
 import { VesperGoalsScreen } from "../../components/vesper/goals/goals-screen";
 import { VesperIdeasScreen } from "../../components/vesper/ideas/ideas-screen";
 import { VesperBottomNav, VesperToast } from "../../components/vesper/shell/bottom-nav";
@@ -25,7 +26,7 @@ import {
 import { hasStatusAttention, vesperStatusLine } from "../../lib/vesper/status-line";
 
 /** The product name. Not translated — it is a brand, not chrome. */
-const VESPER_NAME = "Vesper";
+const VESPER_NAME = "Negroni";
 
 /**
  * The Vesper shell.
@@ -189,6 +190,8 @@ function VesperSectionBody({
       return (
         <VesperActivityScreen botId={botId} refreshToken={activityToken} onOpenChat={onOpenChat} />
       );
+    case "team":
+      return <AssistantTeamScreen botId={botId} refreshToken={activityToken} />;
     case "ideas":
       return <VesperIdeasScreen botId={botId} onOpenChat={onOpenChat} />;
     case "goals":

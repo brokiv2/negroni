@@ -223,6 +223,7 @@ model SpaceMember {
   member           Member                 @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Cascade)
   role             String                 @default("member")
   createdAt        DateTime
+  modelRouting     Json?
   modelPreferences SpaceModelPreference[]
   voicePreferences SpaceVoicePreference[]
   aiDataConsents AiDataConsent[]

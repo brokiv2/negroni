@@ -6,6 +6,8 @@ export const LOCAL_SETTINGS_TOKEN_HEADER = "x-rakazo-local-settings-token";
 const procedures = new Set([
   "me",
   "models/list",
+  "models/routing",
+  "models/saveRouting",
   "models/credentials",
   "models/connect",
   "models/probeOpenAiCompatible",

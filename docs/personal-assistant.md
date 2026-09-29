@@ -1,6 +1,6 @@
 # Personal assistant: target architecture
 
-Status: spec, 2026-09-24. Implemented iteratively; each iteration lists what landed.
+Status: historical design, 2026-09-24. The unified conversation and Codex execution update is documented in [codex-assistant.md](codex-assistant.md). The limitations below describe the earlier iteration.
 
 ## Why
 

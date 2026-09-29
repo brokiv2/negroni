@@ -40,6 +40,7 @@ import { localizedProviderHint } from "../lib/localized-provider-hint";
 import type { ModelCatalogEntry, ModelCredential } from "../lib/model-auth";
 import { rpc } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
+import { ModelRoutingPanel } from "./ModelRoutingPanel";
 
 function connectionMaxTokensField(providerId: string, stored: number | undefined): string {
   if (providerId === OPENAI_COMPATIBLE_PROVIDER_ID) {
@@ -428,7 +429,7 @@ export function ModelSettingsOverlay({
   ) : localOwner ? (
     <Trans>Models for the server owner’s default space.</Trans>
   ) : (
-    <Trans>Choose which connected model Rakazo uses.</Trans>
+    <Trans>Connect providers and choose models.</Trans>
   );
 
   const body = (
@@ -457,7 +458,7 @@ export function ModelSettingsOverlay({
         className={`mx-6 rounded-xl border border-border px-4 py-3 sm:mx-8 ${embedded ? "mt-4" : "mt-5"}`}
       >
         <div className="text-[12.5px] uppercase tracking-[0.08em] text-muted-foreground/80">
-          <Trans>Active model</Trans>
+          <Trans>Workspace default</Trans>
         </div>
         <div className="mt-1 text-[16px] text-foreground">
           {currentEntry?.label ?? me?.defaultModel ?? t`Deployment default`}
@@ -467,6 +468,18 @@ export function ModelSettingsOverlay({
             <Trans>Configured by deployment</Trans>
           )}
         </div>
+      </div>
+
+      <div className="mx-6 mt-4 sm:mx-8">
+        <ModelRoutingPanel
+          catalog={catalog}
+          connectedProviders={credentials.map((c) => c.provider)}
+          selected={
+            selected && (isOpenAiCompatible ? modelId.trim() : selected.id)
+              ? { provider, modelId: isOpenAiCompatible ? modelId.trim() : selected.id }
+              : undefined
+          }
+        />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden px-6 py-6 sm:px-8 md:flex-row">

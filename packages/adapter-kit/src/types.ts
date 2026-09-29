@@ -375,6 +375,10 @@ export interface AgentRunModel {
 }
 
 export interface AgentRunRequest {
+  /** Select a connected model profile without changing the durable bot identity. */
+  workload?: "conversation" | "task";
+  /** The executor already applied model routing before validating capabilities. */
+  modelRoutingApplied?: boolean;
   botId: string;
   threadId: string;
   runId: string;
@@ -393,6 +397,8 @@ export interface AgentRunRequest {
   model: AgentRunModel;
   /** Resolve an explicitly requested helper model within the active user and space scope. */
   resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
+  /** Connected task profile, resolved lazily when a temporary helper is needed. */
+  resolveTaskModel?: () => Promise<AgentRunModel>;
   resumeFromCheckpoint?: string;
   script?: ScriptedTurn[];
   /**
@@ -547,6 +553,8 @@ export interface ArtifactPut {
 }
 
 export interface NotificationMessage {
+  spaceId?: string;
+  threadKind?: "team" | "personal";
   kind: "completion" | "failure" | "help" | "takeover";
   title: string;
   body: string;

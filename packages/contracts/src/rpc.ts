@@ -88,6 +88,7 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
+import { ModelRoutingSchema } from "./model-routing.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { EFFECTS_LIST_MAX_LIMIT, EffectsListOutputSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -211,6 +212,8 @@ export const appContract = {
     apply: oc.input(ServerUpdateRequestSchema).output(ServerUpdateRunSchema),
   },
   models: {
+    routing: oc.output(ModelRoutingSchema),
+    saveRouting: oc.input(ModelRoutingSchema).output(ModelRoutingSchema),
     list: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),

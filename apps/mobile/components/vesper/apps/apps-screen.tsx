@@ -11,7 +11,7 @@ import {
   UserRound,
 } from "lucide-react-native";
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 import { t } from "../../../lib/i18n";
 import {
   filterAppRows,
@@ -21,7 +21,6 @@ import {
   vesperAppRowCopy,
 } from "../../../lib/vesper/apps";
 import { Empty, Field, LinkRow } from "../kit";
-import { s } from "../theme";
 
 const ICONS: Record<VesperAppRow, LucideIcon> = {
   context: BrainCircuit,
@@ -82,9 +81,7 @@ export function VesperAppsScreen({ onSwitchToNegroni }: { onSwitchToNegroni: () 
           detail={t("Spaces, bots, groups and the operator settings live in Negroni.")}
         />
       )}
-      <Text style={s.small}>
-        {t("Vesper shows what one person needs. The rest of the workspace is in Negroni.")}
-      </Text>
+
     </View>
   );
 }

@@ -1,7 +1,7 @@
 import { t } from "../i18n";
 
 /** The five destinations in the floating bottom nav, in order. */
-export const VESPER_SECTIONS = ["chat", "activity", "ideas", "goals", "apps"] as const;
+export const VESPER_SECTIONS = ["chat", "team", "activity", "ideas", "goals", "apps"] as const;
 
 export type VesperSection = (typeof VESPER_SECTIONS)[number];
 
@@ -20,6 +20,8 @@ export function vesperSectionLabel(section: VesperSection): string {
   switch (section) {
     case "chat":
       return t("Chat");
+    case "team":
+      return t("Team");
     case "activity":
       return t("Activity");
     case "ideas":
@@ -38,6 +40,8 @@ export function vesperSectionHeading(section: VesperSection): VesperSectionHeadi
   switch (section) {
     case "chat":
       return null;
+    case "team":
+      return { title: t("Team"), subtitle: "" };
     case "activity":
       return {
         title: t("Activity"),

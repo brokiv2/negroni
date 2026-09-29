@@ -96,7 +96,9 @@ import type { Auth } from "@rakazo/auth";
 import type { Actor, Bot, ComputerStatus, McpServer, Me, SpaceNavigation } from "@rakazo/contracts";
 import {
   appContract,
+  emptyModelRouting,
   IntegrationProviderIdSchema,
+  ModelRoutingSchema,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   usableModelId,
 } from "@rakazo/contracts";
@@ -868,6 +870,49 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     models: {
+      routing: authed.models.routing.handler(async ({ context }) => {
+        const member = await deps.prisma.spaceMember.findUnique({
+          where: {
+            spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+          },
+          select: { modelRouting: true },
+        });
+        return member?.modelRouting
+          ? ModelRoutingSchema.parse(member.modelRouting)
+          : emptyModelRouting();
+      }),
+      saveRouting: authed.models.saveRouting.handler(async ({ context, input }) => {
+        // Resolve each pair exactly as execution does. Keys never leave the secret store.
+        for (const route of input.enabled) {
+          const credential = await findModelCredential(
+            deps.prisma,
+            context.actor,
+            route.provider,
+            route.modelId,
+          );
+          if (!credential)
+            throw new ORPCError("BAD_REQUEST", { message: `Connect ${route.provider} first.` });
+          const auth = await readStoredModelAuth(
+            deps.prisma,
+            deps.secrets,
+            context.actor.userId,
+            credential.secretId,
+            route.provider,
+            route.modelId,
+          );
+          if (auth.status !== "ready")
+            throw new ORPCError("BAD_REQUEST", {
+              message: "This model is unavailable through the selected connection.",
+            });
+        }
+        await deps.prisma.spaceMember.update({
+          where: {
+            spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+          },
+          data: { modelRouting: input },
+        });
+        return input;
+      }),
       list: authed.models.list.handler(async ({ context }) => {
         const auth = await modelCredentialAuthKindsForSpace(
           deps.prisma,

@@ -75,7 +75,7 @@ export function WorkspacePicker({
           </View>
           <ScrollView contentContainerStyle={{ gap: 4 }}>
             <SheetRow
-              label="Vesper"
+              label="Negroni"
               detail="Your everyday assistant"
               ios="sparkles"
               android="sparkles-outline"

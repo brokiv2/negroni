@@ -23,6 +23,7 @@ import {
   shouldQueueSubmit,
 } from "../../../lib/vesper/composer";
 import { VesperFollowUpQueue, type VesperQueueSnapshot } from "../../../lib/vesper/follow-up-queue";
+import { MobileChatModelPicker } from "../../model-routing";
 import { Button, ErrorNotice } from "../kit";
 import { colors, s, vt } from "../theme";
 import { MessageBubble, TypingDots } from "./bubble";
@@ -407,6 +408,7 @@ export function VesperChatScreen({
           }}
           onRetry={(id) => queue.retry(id)}
         />
+        {botId ? <MobileChatModelPicker key={botId} botId={botId} disabled={running} /> : null}
         <VesperComposer
           state={composer}
           loading={loading}

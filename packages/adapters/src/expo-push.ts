@@ -280,7 +280,7 @@ export class ExpoPushProvider implements NotificationProvider {
           body: message.body,
           collapseId: message.threadId,
           tag: message.threadId,
-          data: { kind: message.kind, botId: message.botId, threadId: message.threadId },
+          data: { kind: message.kind, botId: message.botId, threadId: message.threadId, spaceId: message.spaceId, threadKind: message.threadKind },
         }),
         signal,
       });

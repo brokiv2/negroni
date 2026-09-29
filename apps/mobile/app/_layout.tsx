@@ -1,4 +1,5 @@
-import { DarkTheme, type ErrorBoundaryProps, Stack, ThemeProvider } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { DarkTheme, type ErrorBoundaryProps, Stack, ThemeProvider, useRouter } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
@@ -8,7 +9,13 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { AvatarStyleProvider } from "../components/avatar-style";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { TabletShell } from "../components/tablet-shell";
-import { currentApiBase, loadApiBase, loadSessionToken, selectedSpaceId } from "../lib/api";
+import {
+  currentApiBase,
+  loadApiBase,
+  loadSessionToken,
+  selectedSpaceId,
+  selectSpace,
+} from "../lib/api";
 import { loadAppearancePreference, mobileTokens } from "../lib/appearance";
 import { bootstrapI18n, useI18n } from "../lib/i18n";
 import {
@@ -16,6 +23,7 @@ import {
   resumeLiveNotifications,
 } from "../lib/live-notifications";
 import { native, useResolvedAppearance } from "../lib/native";
+import { notificationDestination } from "../lib/notification-destination";
 import { loadResponseStreamingPreference } from "../lib/response-streaming";
 import { loadShellMode } from "../lib/shell-mode";
 
@@ -30,6 +38,34 @@ export default function Layout() {
   }, []);
   const { t } = useI18n();
   const [ready, setReady] = useState(false);
+  const router = useRouter();
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    const handled = new Set<string>();
+    const open = async (response: Notifications.NotificationResponse) => {
+      const request = response.notification.request;
+      if (handled.has(request.identifier)) return;
+      handled.add(request.identifier);
+      const data = request.content.data ?? {};
+      const destination = notificationDestination(data);
+      if (!destination || !(await loadSessionToken())) return;
+      if (typeof data.spaceId === "string" && !(await selectSpace(data.spaceId))) return;
+      if (!active) return;
+      router.push(destination);
+      await Notifications.clearLastNotificationResponseAsync();
+    };
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      void open(response).catch(() => undefined);
+    });
+    void Notifications.getLastNotificationResponseAsync()
+      .then((response) => response && open(response))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [ready, router]);
   const resolved = useResolvedAppearance();
   const navigationTheme = useMemo(() => {
     const tokens = mobileTokens();

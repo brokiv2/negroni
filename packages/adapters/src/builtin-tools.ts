@@ -841,7 +841,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "spawn_bot",
     description:
-      "Create a full, regular bot — the same kind the user creates from the + button. It gets its own thread, computer, and memory, and appears as a peer in the bot list. Do not also call run_subagent. Creating the bot is the whole action. Only set prompt if the user asked that new bot to start work immediately.",
+      "Create a lasting specialist for recurring or long-term project work, with its own instructions, thread, computer and memory. Reuse an existing relevant specialist first. Set prompt to start an authorized first task and return its result to this conversation. Use run_subagent for a one-off task.",
     inputSchema: {
       type: "object",
       properties: {

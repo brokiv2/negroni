@@ -11,7 +11,7 @@ export type ShellMode = Brand;
 
 export const SHELL_MODE_KEY = "rakazo.shell_mode";
 
-export const DEFAULT_SHELL_MODE: ShellMode = "negroni";
+export const DEFAULT_SHELL_MODE: ShellMode = "vesper";
 
 export function normalizeShellMode(raw: string | null | undefined): ShellMode {
   return isBrand(raw) ? raw : DEFAULT_SHELL_MODE;

@@ -19,10 +19,10 @@ describe("shell mode", () => {
     vi.restoreAllMocks();
   });
 
-  it("defaults to Negroni for anything unrecognized", async () => {
+  it("defaults to the personal shell for anything unrecognized", async () => {
     const { normalizeShellMode } = await import("./shell-mode");
-    expect(normalizeShellMode(null)).toBe("negroni");
-    expect(normalizeShellMode("muse")).toBe("negroni");
+    expect(normalizeShellMode(null)).toBe("vesper");
+    expect(normalizeShellMode("muse")).toBe("vesper");
     expect(normalizeShellMode("vesper")).toBe("vesper");
     expect(normalizeShellMode("negroni")).toBe("negroni");
   });
@@ -33,19 +33,19 @@ describe("shell mode", () => {
     const { getCachedShellMode, isShellModeLoaded, loadShellMode } = await import("./shell-mode");
 
     expect(isShellModeLoaded()).toBe(false);
-    expect(getCachedShellMode()).toBe("negroni");
+    expect(getCachedShellMode()).toBe("vesper");
     await expect(loadShellMode()).resolves.toBe("vesper");
     expect(isShellModeLoaded()).toBe(true);
     expect(getCachedShellMode()).toBe("vesper");
   });
 
-  it("falls back to Negroni when SecureStore throws", async () => {
+  it("falls back to the personal shell when SecureStore throws", async () => {
     const { getItemAsync } = await import("expo-secure-store");
     vi.mocked(getItemAsync).mockRejectedValue(new Error("no keychain"));
     const { getCachedShellMode, loadShellMode } = await import("./shell-mode");
 
-    await expect(loadShellMode()).resolves.toBe("negroni");
-    expect(getCachedShellMode()).toBe("negroni");
+    await expect(loadShellMode()).resolves.toBe("vesper");
+    expect(getCachedShellMode()).toBe("vesper");
   });
 
   it("persists Vesper and clears the key when switching back", async () => {
@@ -53,10 +53,10 @@ describe("shell mode", () => {
     const { SHELL_MODE_KEY, setShellMode } = await import("./shell-mode");
 
     await setShellMode("vesper");
-    expect(setItemAsync).toHaveBeenCalledWith(SHELL_MODE_KEY, "vesper");
+    expect(deleteItemAsync).toHaveBeenCalledWith(SHELL_MODE_KEY);
 
     await setShellMode("negroni");
-    expect(deleteItemAsync).toHaveBeenCalledWith(SHELL_MODE_KEY);
+    expect(setItemAsync).toHaveBeenCalledWith(SHELL_MODE_KEY, "negroni");
   });
 
   it("keeps the in-memory choice when the write fails", async () => {

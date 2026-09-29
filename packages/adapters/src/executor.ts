@@ -27,7 +27,7 @@ import {
   routineWakeupJob,
   runContinueJob,
 } from "@rakazo/adapter-kit";
-import type { MessageBlock, RunStatus } from "@rakazo/contracts";
+import type { MessageBlock, ModelRouting, RunStatus } from "@rakazo/contracts";
 import {
   ATTACHMENT_MAX_BYTES,
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -36,6 +36,8 @@ import {
   BotSecretName,
   botSecretSubmissionSchema,
   isAttachmentImageMimeType,
+  ModelRoutingSchema,
+  modelRouteKey,
   OPENAI_COMPATIBLE_PROVIDER_ID,
 } from "@rakazo/contracts";
 import {
@@ -238,6 +240,7 @@ import {
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { selectMemoryTools } from "./memory-tools.js";
+import { routeModel } from "./model-router.js";
 import {
   isCatalogModelChoice,
   selectConfiguredModel,
@@ -1456,9 +1459,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           settings,
           deployment: runDeployment,
         });
-        const { credential, thinkingLevel } = selected;
-        const runModelProvider = selected.provider ?? runtimeFallback?.provider;
-        const runModelId = selected.id ?? runtimeFallback?.id;
+        let { credential } = selected;
+        const { thinkingLevel } = selected;
+        let runModelProvider = selected.provider ?? runtimeFallback?.provider;
+        let runModelId = selected.id ?? runtimeFallback?.id;
+        const workload = thread.kind === "personal" && !bot.parentBotId ? "conversation" : "task";
         const failRunBeforeModel = async (message: string) => {
           const failed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
@@ -1497,6 +1502,65 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
         };
+        let routing: ModelRouting | null = null;
+        try {
+          const member = await deps.prisma.spaceMember.findUnique({
+            where: { spaceId_userId: { spaceId: run.spaceId, userId: run.userId } },
+            select: { modelRouting: true },
+          });
+          routing = member?.modelRouting ? ModelRoutingSchema.parse(member.modelRouting) : null;
+          // Explicit chat/bot selection always wins over Auto and deployment profiles.
+          const explicit = Boolean(bot.modelProvider && bot.modelId);
+          const picked =
+            !explicit && routing
+              ? await routeModel({
+                  routing,
+                  workload,
+                  prompt: redactSecrets(task.prompt, runSecrets),
+                  history,
+                  runtime: deps.runtime,
+                  runId,
+                  botId: bot.id,
+                  threadId: thread.id,
+                  context,
+                  resolve: (route) =>
+                    resolveConnectedModel(run, route.provider, route.modelId, (values) =>
+                      runSecrets.push(...values),
+                    ),
+                  onUsage: async (event) => {
+                    await deps.prisma.usageRecord.create({
+                      data: {
+                        spaceId: run.spaceId,
+                        botId: bot.id,
+                        userId: run.userId,
+                        runId,
+                        provider: event.provider,
+                        model: event.model,
+                        inputTokens: event.inputTokens,
+                        outputTokens: event.outputTokens,
+                        cacheReadTokens: event.cacheReadTokens,
+                        cacheWriteTokens: event.cacheWriteTokens,
+                      },
+                    });
+                  },
+                })
+              : null;
+          const legacy =
+            !explicit && !routing ? await deps.runtime.modelForWorkload?.(workload) : undefined;
+          const route = picked ? { provider: picked.provider, id: picked.modelId } : legacy;
+          if (route) {
+            credential = await findModelCredential(deps.prisma, run, route.provider, route.id);
+            if (!credential)
+              throw new Error("Connect the model selected in the agent routing profile.");
+            runModelProvider = route.provider;
+            runModelId = route.id;
+          }
+        } catch {
+          await failRunBeforeModel(
+            "Auto could not select a connected model. Select a model in chat or check Models settings.",
+          );
+          return;
+        }
         if (!runModelProvider || !runModelId) {
           await failRunBeforeModel(MISSING_MODEL_MESSAGE);
           return;
@@ -3417,10 +3481,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               name: String(args.name ?? ""),
               title: args.title ? String(args.title) : undefined,
               instructions: args.instructions ? String(args.instructions) : undefined,
-              prompt: args.prompt ? String(args.prompt) : undefined,
               computerMode,
             });
             if ("error" in spawned) return finish(spawned);
+            if (args.prompt && String(args.prompt).trim()) {
+              const delivery = await messageBot(deps, run, bot, {
+                bot_id: spawned.botId,
+                message: String(args.prompt),
+                intent: "request",
+                deliveryKey: `spawn-task:${executionId}`,
+              });
+              if (!delivery.ok) return finish({ ...spawned, error: delivery.error });
+            }
             if (!(await persistEffectResult(spawned))) return uncertainEffectResult(name);
             try {
               await publishMessage(deps, run, "bot", [
@@ -3858,36 +3930,42 @@ export function createRunExecutor(deps: ExecutorDeps) {
               threadId: thread.id,
               runId,
               sourceMessageId: run.sourceMessageId,
+              workload,
+              modelRoutingApplied: true,
               prompt,
-              instructions: userTurnInstructions({
-                botInstructions: runIdentityInstruction(bot, run.trigger),
-                voiceInstruction:
-                  run.interactionMode === "voice"
-                    ? "This is a live spoken conversation. Reply promptly in the user's language, usually in one or two short sentences. Use natural speech without Markdown or reading code aloud. Do not perform extra research or delegate unless the request requires it. Keep all existing tool authorization and approval rules."
+              instructions:
+                (routing
+                  ? `Enabled models for delegation: ${JSON.stringify(routing.enabled)}. Use only these provider/modelId pairs when choosing helper models. Complex work profile: ${JSON.stringify(routing.task)}.\n`
+                  : "") +
+                userTurnInstructions({
+                  botInstructions: runIdentityInstruction(bot, run.trigger),
+                  voiceInstruction:
+                    run.interactionMode === "voice"
+                      ? "This is a live spoken conversation. Reply promptly in the user's language, usually in one or two short sentences. Use natural speech without Markdown or reading code aloud. Do not perform extra research or delegate unless the request requires it. Keep all existing tool authorization and approval rules."
+                      : undefined,
+                  groupContext,
+                  messagingContext,
+                  redactedMemoryContext: memoryContext
+                    ? redactSecrets(memoryContext, runSecrets)
                     : undefined,
-                groupContext,
-                messagingContext,
-                redactedMemoryContext: memoryContext
-                  ? redactSecrets(memoryContext, runSecrets)
-                  : undefined,
-                redactedScratchpadContext: scratchpadContext
-                  ? redactSecrets(scratchpadContext, runSecrets)
-                  : undefined,
-                hasHistoricalContext: historicalContext.length > 0,
-                computerInstruction,
-                pageBrowserAllowed,
-                taskCatalogInstruction,
-                workspaceInstruction,
-                agentEnvironmentInstruction,
-                botDirectory,
-                coordinationInstruction,
-                pluginLine,
-                agentSkillsLine,
-                taughtSkillsLine,
-                replyGuidance: runReplyGuidance(run.trigger),
-              })
-                .filter((instruction): instruction is string => Boolean(instruction))
-                .join("\n\n"),
+                  redactedScratchpadContext: scratchpadContext
+                    ? redactSecrets(scratchpadContext, runSecrets)
+                    : undefined,
+                  hasHistoricalContext: historicalContext.length > 0,
+                  computerInstruction,
+                  pageBrowserAllowed,
+                  taskCatalogInstruction,
+                  workspaceInstruction,
+                  agentEnvironmentInstruction,
+                  botDirectory,
+                  coordinationInstruction,
+                  pluginLine,
+                  agentSkillsLine,
+                  taughtSkillsLine,
+                  replyGuidance: runReplyGuidance(run.trigger),
+                })
+                  .filter((instruction): instruction is string => Boolean(instruction))
+                  .join("\n\n"),
               history: runtimeHistory,
               currentTurnImages,
               tools,
@@ -3912,12 +3990,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
               allowSilentEmpty: allowSilentEmptyRun,
               emptyResponseText,
               executeTool: scripted ? undefined : applyTool,
+              resolveTaskModel: routing?.task
+                ? () =>
+                    resolveConnectedModel(
+                      run,
+                      routing!.task!.provider,
+                      routing!.task!.modelId,
+                      (values) => runSecrets.push(...values),
+                    )
+                : undefined,
               resolveModel: scripted
                 ? undefined
-                : (provider, modelId) =>
-                    resolveConnectedModel(run, provider, modelId, (values) =>
+                : (provider, modelId) => {
+                    if (
+                      routing &&
+                      !routing.enabled.some(
+                        (route) => modelRouteKey(route) === modelRouteKey({ provider, modelId }),
+                      )
+                    )
+                      throw new Error("Enable this model in Models before delegating to it.");
+                    return resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
-                    ),
+                    );
+                  },
               onToolCompleted: (completion) =>
                 appendToolCompletionAudit(
                   deps,
@@ -4686,15 +4781,22 @@ async function notifyRun(
     return false;
   });
   if (!enabled) return;
+  const target = await deps.prisma.thread.findFirst({
+    where: { id: run.threadId, spaceId: run.spaceId },
+    select: { kind: true },
+  });
   await deps.notifications
-    .send(message, {
-      operationId: "notify",
-      traceId: run.botId,
-      spaceId: run.spaceId,
-      userId: run.userId,
-      botId: run.botId,
-      signal: new AbortController().signal,
-    })
+    .send(
+      { ...message, spaceId: run.spaceId, threadKind: target?.kind ?? "team" },
+      {
+        operationId: "notify",
+        traceId: run.botId,
+        spaceId: run.spaceId,
+        userId: run.userId,
+        botId: run.botId,
+        signal: new AbortController().signal,
+      },
+    )
     .catch((error) => {
       getLogger().error("run notification", error);
     });
@@ -4805,7 +4907,7 @@ export function userTurnInstructions(parts: {
     parts.agentEnvironmentInstruction,
     "A bot and a subagent are different. Never use both for the same request.",
     "create_space proposes a new privacy boundary inside the current organization. Use it when the user asks to create a space or separate data between teams or projects. It always pauses for explicit user approval; never claim the space exists before the tool succeeds.",
-    "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
+    "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. Reuse an existing specialist first. Create one for recurring project work, give it durable instructions, and set prompt when it should start an authorized task. Its result returns to this conversation.",
     "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
     "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
     parts.botDirectory,

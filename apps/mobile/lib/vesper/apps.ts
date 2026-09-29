@@ -78,27 +78,30 @@ export function vesperAppRowCopy(row: VesperAppRow): VesperAppRowCopy {
     case "context":
       return {
         title: t("Personality and memory"),
-        detail: t("Name, tone, avatar, and everything Vesper remembers."),
+        detail: t("Name, tone, avatar, and everything your assistant remembers."),
       };
     case "connectors":
       return {
         title: t("Connections"),
-        detail: t("The apps and accounts Vesper is allowed to reach."),
+        detail: t("The apps and accounts your assistant is allowed to reach."),
       };
     case "models":
       return { title: t("Models"), detail: t("Which model answers, and the keys behind it.") };
     case "voice":
-      return { title: t("Voice"), detail: t("How Vesper sounds, and whether it speaks first.") };
+      return {
+        title: t("Voice"),
+        detail: t("How your assistant sounds, and whether it speaks first."),
+      };
     case "approvals":
       return {
         title: t("Approval rules"),
-        detail: t("What Vesper may do on its own, and what it must ask about."),
+        detail: t("What your assistant may do on its own, and what it must ask about."),
       };
     case "account":
       return { title: t("Account"), detail: t("Sign-in, password and this device.") };
     case "negroni":
       return {
-        title: t("Switch to Negroni"),
+        title: t("Team workspace"),
         detail: t("The full workspace: spaces, bots, groups and settings."),
       };
   }

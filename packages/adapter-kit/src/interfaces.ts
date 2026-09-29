@@ -234,6 +234,8 @@ export interface SemanticMemoryProvider {
 }
 
 export interface AgentRuntime {
+  /** Select the model before the executor validates credentials and tool capabilities. */
+  modelForWorkload?(workload: "conversation" | "task"): Promise<{ provider: string; id: string } | undefined>;
   describe(): AdapterDescriptor<AgentRuntimeCapabilities>;
   run(
     request: AgentRunRequest,

@@ -49,7 +49,7 @@ import {
   McpConnector,
   McpOAuthBroker,
   messagingPlatformsFromEnv,
-  PiAgentRuntime,
+  createAgentRuntime,
   PiOAuthLogins,
   PipedreamConnector,
   PostgresRealtimeFanout,
@@ -59,7 +59,6 @@ import {
   reconcileCloudAgents,
   reconcileComputerUpdates,
   removePiUserSessions,
-  ScriptedAgentRuntime,
   SmtpEmailProvider,
   SpaceMemoryProviderResolver,
   sandboxProviderOptionsFromEnv,
@@ -315,12 +314,11 @@ export async function createApp(
   const connector = stack.destination;
   await connector.start();
   integrationSettings.warmDirectories();
-  const runtime =
-    env.agentRuntime === "scripted"
-      ? new ScriptedAgentRuntime()
-      : new PiAgentRuntime({
-          sessionRoot: env.piSessionRecording ? piSessionsRoot(env.dataDir) : undefined,
-        });
+  const runtime = createAgentRuntime({
+    kind: env.agentRuntime,
+    dataDir: env.dataDir,
+    sessionRoot: env.piSessionRecording ? piSessionsRoot(env.dataDir) : undefined,
+  });
   const notifications = new ExpoPushProvider(env.dataDir, {
     apns: apnsConfigFromEnv(process.env),
   });

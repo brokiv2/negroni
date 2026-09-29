@@ -1,5 +1,6 @@
 import {
   Check,
+  Users,
   Lightbulb,
   type LucideIcon,
   MessageCircle,
@@ -15,6 +16,7 @@ import { colors, s, shadow, vt } from "../theme";
 
 const ICONS: Record<VesperSection, LucideIcon> = {
   chat: MessageCircle,
+  team: Users,
   activity: PanelsTopLeft,
   ideas: Lightbulb,
   goals: SquareCheck,

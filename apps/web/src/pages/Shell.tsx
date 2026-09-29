@@ -232,6 +232,7 @@ import type { SettingsSection } from "./SettingsOverlay";
 import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
 import { BotCreatePicker } from "./shell/bot-picker";
+import { ChatModelPicker } from "./shell/chat-model-picker";
 import { CommandPalette, isCommandPaletteHotkey } from "./shell/command-palette";
 import {
   ClearConversationDialog,
@@ -510,43 +511,8 @@ export function ShellPage() {
   const [dismissedRunErrorIds, setDismissedRunErrorIds] =
     useState<ReadonlySet<string>>(readSeenRunErrorIds);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
-  useEffect(() => {
-    if (!workspaceMenuOpen) return;
-    const dismiss = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.closest(".rk-workspace-menu, .rk-workspace-trigger")
-      ) {
-        setWorkspaceMenuOpen(false);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setWorkspaceMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [workspaceMenuOpen]);
-  const [personalOpen, setPersonalOpen] = useState(() => {
-    try {
-      return window.localStorage.getItem("negroni:chat-view") === "assistant";
-    } catch {
-      return false;
-    }
-  });
-  const [chatView, setChatView] = useState<"assistant" | "team">(() => {
-    try {
-      return window.localStorage.getItem("negroni:chat-view") === "assistant"
-        ? "assistant"
-        : "team";
-    } catch {
-      return "team";
-    }
-  });
+  const [personalOpen, setPersonalOpen] = useState(false);
+  const [chatView, setChatView] = useState<"assistant" | "team">("assistant");
   const [composerPrefill, setComposerPrefill] = useState<{
     nonce: number;
     targetKey: string;
@@ -774,7 +740,7 @@ export function ShellPage() {
   const switchChatView = useCallback(
     (next: "assistant" | "team") => {
       setChatView(next);
-      setPersonalOpen(next === "assistant");
+      setPersonalOpen(false);
       setPanel(null);
       try {
         window.localStorage.setItem("negroni:chat-view", next);
@@ -3439,6 +3405,7 @@ export function ShellPage() {
       <button
         type="button"
         data-testid="bots-sidebar-edge"
+        style={{ display: chatView === "assistant" ? "none" : undefined }}
         aria-label={botsSidebarCollapsed ? t`Show bots` : t`Hide bots`}
         aria-pressed={!botsSidebarCollapsed}
         className={`absolute inset-y-0 z-50 hidden w-2 cursor-ew-resize touch-none border-0 bg-transparent p-0 md:block ${
@@ -3487,56 +3454,9 @@ export function ShellPage() {
         <div className="rk-thread-toolbar app-drag flex items-center justify-between border-b border-sidebar-border px-3 py-[17px] md:px-[22px]">
           <div className="flex min-w-0 items-center gap-2">
             {/* Collapsed bots sidebar: this header is the leading edge for window chrome. */}
-            {botsSidebarCollapsed && desktopBridge() ? <WindowChrome /> : null}
-            <div className="app-no-drag relative">
-              <button
-                type="button"
-                aria-label={t`Choose workspace`}
-                aria-expanded={workspaceMenuOpen}
-                onClick={() => setWorkspaceMenuOpen((open) => !open)}
-                className="rk-workspace-trigger"
-              >
-                {chatView === "assistant" ? t`Personal` : t`Team`}
-                <ChevronDown size={14} strokeWidth={1.7} />
-              </button>
-              {workspaceMenuOpen ? (
-                <div className="rk-workspace-menu" role="menu" aria-label={t`Workspace`}>
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={chatView === "assistant"}
-                    disabled={!assistant}
-                    onClick={() => {
-                      switchChatView("assistant");
-                      setWorkspaceMenuOpen(false);
-                    }}
-                  >
-                    <span>
-                      <Trans>Personal assistant</Trans>
-                    </span>
-                    <small>
-                      <Trans>One ongoing conversation</Trans>
-                    </small>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={chatView === "team"}
-                    onClick={() => {
-                      switchChatView("team");
-                      setWorkspaceMenuOpen(false);
-                    }}
-                  >
-                    <span>
-                      <Trans>Team chats</Trans>
-                    </span>
-                    <small>
-                      <Trans>Separate agents and conversations</Trans>
-                    </small>
-                  </button>
-                </div>
-              ) : null}
-            </div>
+            {(botsSidebarCollapsed || chatView === "assistant") && desktopBridge() ? (
+              <WindowChrome />
+            ) : null}
             <button
               type="button"
               aria-label={t`Open navigation`}
@@ -3546,30 +3466,7 @@ export function ShellPage() {
             >
               <Menu size={19} strokeWidth={1.7} />
             </button>
-            {chatView === "assistant" && assistant ? (
-              <div className="app-no-drag flex items-center gap-1 rounded-full border border-border bg-card p-1">
-                <button
-                  type="button"
-                  aria-current={personalOpen ? "page" : undefined}
-                  onClick={() => {
-                    setPersonalOpen(true);
-                    setPanel(null);
-                  }}
-                  className={`rounded-full px-3.5 py-1.5 text-[13px] font-medium ${personalOpen ? "bg-primary text-primary-foreground" : "text-foreground/75 hover:text-foreground"}`}
-                >
-                  <Trans>For you</Trans>
-                </button>
-                <button
-                  type="button"
-                  aria-current={!personalOpen ? "page" : undefined}
-                  onClick={() => openPersonalChat()}
-                  className={`rounded-full px-3.5 py-1.5 text-[13px] font-medium ${!personalOpen ? "bg-primary text-primary-foreground" : "text-foreground/75 hover:text-foreground"}`}
-                >
-                  <Trans>Conversation</Trans>
-                </button>
-              </div>
-            ) : null}
-            {botsSidebarCollapsed ? (
+            {botsSidebarCollapsed && chatView === "team" ? (
               <button
                 type="button"
                 data-testid="restore-bots-sidebar"
@@ -3610,6 +3507,14 @@ export function ShellPage() {
             </button>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label={t`Settings`}
+              onClick={() => openSettings("general")}
+              className="app-no-drag rounded-full p-2 hover:bg-accent"
+            >
+              <Settings size={18} />
+            </button>
             {!inGroup && active ? (
               <button
                 type="button"
@@ -3631,7 +3536,7 @@ export function ShellPage() {
           </div>
         </div>
         <div
-          className="flex min-h-0 flex-1 flex-col"
+          className={`flex min-h-0 flex-1 flex-col ${chatView === "assistant" ? "mx-auto w-full max-w-3xl" : ""}`}
           style={{ display: personalView ? "none" : "flex" }}
           aria-hidden={personalView ? true : undefined}
           inert={personalView}
@@ -3687,6 +3592,16 @@ export function ShellPage() {
           {recordingSkill ? (
             <div className="px-6 pb-2 text-center text-[13px] text-destructive">
               <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
+            </div>
+          ) : null}
+          {active && !inGroup ? (
+            <div className="mx-auto w-full max-w-3xl px-6 pb-2">
+              <ChatModelPicker
+                key={active.id}
+                botId={active.id}
+                disabled={sending || composerRunning}
+                onSettings={() => openSettings("models")}
+              />
             </div>
           ) : null}
           {active || activeGroup ? (
@@ -3769,6 +3684,42 @@ export function ShellPage() {
             />
           </div>
         ) : null}
+        <nav
+          aria-label={t`Workspace`}
+          className="app-no-drag mx-auto mb-4 flex shrink-0 items-center gap-1 rounded-full border border-border bg-card p-1"
+        >
+          <button
+            type="button"
+            aria-current={chatView === "assistant" && !personalOpen ? "page" : undefined}
+            onClick={() => {
+              switchChatView("assistant");
+              openPersonalChat();
+            }}
+            className="rounded-full px-5 py-2 text-sm aria-[current=page]:bg-muted"
+          >
+            <Trans>Chat</Trans>
+          </button>
+          <button
+            type="button"
+            aria-current={personalOpen ? "page" : undefined}
+            onClick={() => {
+              switchChatView("assistant");
+              setPersonalOpen(true);
+              setPanel(null);
+            }}
+            className="rounded-full px-5 py-2 text-sm aria-[current=page]:bg-muted"
+          >
+            <Trans>For you</Trans>
+          </button>
+          <button
+            type="button"
+            aria-current={chatView === "team" ? "page" : undefined}
+            onClick={() => switchChatView("team")}
+            className="rounded-full px-5 py-2 text-sm aria-[current=page]:bg-muted"
+          >
+            <Trans>Team</Trans>
+          </button>
+        </nav>
       </main>
 
       <aside

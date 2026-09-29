@@ -473,7 +473,7 @@ export default function Home() {
   if (!hasSession) return <Redirect href="/sign-in" />;
   // The top-level switch between the two shells. One binary, one bundle id; the
   // Vesper route group owns its own chrome from here down.
-  if (shellMode === "vesper") return <Redirect href="/(vesper)" />;
+  if (shellMode === "vesper" && botsLoaded && bots.length > 0) return <Redirect href="/(vesper)" />;
 
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 20) }]}>

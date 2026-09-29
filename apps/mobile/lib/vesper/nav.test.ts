@@ -9,8 +9,8 @@ import {
 } from "./nav";
 
 describe("vesper navigation", () => {
-  it("has the five destinations in order, chat first", () => {
-    expect([...VESPER_SECTIONS]).toEqual(["chat", "activity", "ideas", "goals", "apps"]);
+  it("has the destinations in order, chat first", () => {
+    expect([...VESPER_SECTIONS]).toEqual(["chat", "team", "activity", "ideas", "goals", "apps"]);
     expect(DEFAULT_VESPER_SECTION).toBe("chat");
   });
 
@@ -34,7 +34,7 @@ describe("vesper navigation", () => {
     for (const section of VESPER_SECTIONS.filter((item) => item !== "chat")) {
       const heading = vesperSectionHeading(section);
       expect(heading?.title, section).toBeTruthy();
-      expect(heading?.subtitle, section).toBeTruthy();
+      if (section !== "team") expect(heading?.subtitle, section).toBeTruthy();
     }
     expect(vesperSectionHeading("activity")?.title).toBe("Activity");
   });

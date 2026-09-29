@@ -943,7 +943,7 @@ describe("userTurnInstructions", () => {
   const stableMiddle = [
     "A bot and a subagent are different. Never use both for the same request.",
     "create_space proposes a new privacy boundary inside the current organization. Use it when the user asks to create a space or separate data between teams or projects. It always pauses for explicit user approval; never claim the space exists before the tool succeeds.",
-    "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
+    "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. Reuse an existing specialist first. Create one for recurring project work, give it durable instructions, and set prompt when it should start an authorized task. Its result returns to this conversation.",
     "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
     "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
   ];
@@ -1836,6 +1836,7 @@ description: Prepare standup notes
       connection: { findMany: vi.fn(async () => []) },
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       taughtSkill: { findMany: vi.fn(async () => []) },
       agentSecret: { findMany: vi.fn(async () => []) },
@@ -1899,6 +1900,7 @@ description: Prepare standup notes
       },
       spaceModelPreference: { findFirst },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: { findFirst: vi.fn(async () => null), findUnique: vi.fn(async () => null) },
     } as unknown as PrismaClient;
@@ -2035,6 +2037,7 @@ description: Prepare standup notes
         ),
       },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-codex", ciphertext: plaintext })),
@@ -2076,6 +2079,7 @@ description: Prepare standup notes
       },
       spaceModelPreference: { findFirst },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({ id: "secret-scripted", ciphertext: plaintext })),
@@ -2128,6 +2132,7 @@ description: Prepare standup notes
       bot: { findFirst: vi.fn(async () => bot) },
       spaceModelPreference: { findFirst },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: {
         findFirst: vi.fn(async () => ({
@@ -2188,6 +2193,7 @@ description: Prepare standup notes
       },
       spaceModelPreference: { findFirst },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: { findFirst: vi.fn(async () => null), findUnique: vi.fn(async () => null) },
     } as unknown as PrismaClient;
@@ -2267,6 +2273,7 @@ description: Prepare standup notes
       },
       spaceModelPreference: { findFirst },
       userModelCredential: { findFirst: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
       secret: { findFirst: vi.fn(async () => null), findUnique: vi.fn(async () => null) },
     } as unknown as PrismaClient;

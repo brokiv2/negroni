@@ -26,6 +26,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { MobileModelRouting } from "../components/model-routing";
 import { type MobileMe, type MobileModel, type MobileModelCredential, rpc } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
 import { useI18n } from "../lib/i18n";
@@ -488,7 +489,7 @@ export default function Models() {
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.activeCard}>
-          <Text style={styles.eyebrow}>{t("Active model")}</Text>
+          <Text style={styles.eyebrow}>{t("Workspace default")}</Text>
           <Text style={styles.activeModel}>
             {currentEntry?.label ?? me?.defaultModel ?? t("Deployment default")}
           </Text>
@@ -500,6 +501,11 @@ export default function Models() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
+        <MobileModelRouting
+          catalog={catalog}
+          connected={Boolean(credential)}
+          selected={selected && modelId.trim() ? { provider, modelId: modelId.trim() } : undefined}
+        />
         <Text style={styles.sectionTitle}>{t("Providers")}</Text>
         <View style={styles.card}>
           {visibleGroups.map((group) => {

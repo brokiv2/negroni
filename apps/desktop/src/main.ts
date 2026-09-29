@@ -22,6 +22,7 @@ import {
 } from "./auto-update.js";
 import { openBrowserAuth } from "./browser-auth.js";
 import { DOCKER_INSTALL_LINKS, isDesktopSetupLink, runDocker } from "./docker-cli.js";
+import { NEGRONI_LOCAL_URL, startInstalledBackend } from "./local-backend.js";
 import { requestLocalSettings } from "./local-settings.js";
 import {
   LocalStackController,
@@ -1039,7 +1040,7 @@ app.whenReady().then(async () => {
     },
   });
   currentSetup = await readSetup(userDataDir);
-  const target = resolveStartupTarget({
+  let target = resolveStartupTarget({
     envUrl: process.env.RAKAZO_WEB_URL,
     saved: currentSetup,
     forceSetup: process.env.RAKAZO_FORCE_SETUP === "1",
@@ -1318,6 +1319,22 @@ app.whenReady().then(async () => {
       });
   });
 
+  // Existing local installations open directly, with setup reserved for recovery.
+  if (
+    target.kind === "setup" &&
+    process.env.RAKAZO_FORCE_SETUP !== "1" &&
+    (await startInstalledBackend(NEGRONI_LOCAL_URL))
+  ) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((await probeServer(NEGRONI_LOCAL_URL)).ok) {
+        currentSetup = { mode: "existing", serverUrl: NEGRONI_LOCAL_URL };
+        await writeSetup(userDataDir, currentSetup);
+        target = { kind: "app", source: "saved", url: NEGRONI_LOCAL_URL };
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
   if (target.kind === "setup") {
     showSetupWindow();
   } else if (target.source === "saved") {
@@ -1337,7 +1354,13 @@ app.whenReady().then(async () => {
         showSetupWindow();
       }
     } else {
-      const reachability = await probeServer(target.url);
+      let reachability = await probeServer(target.url);
+      if (!reachability.ok && (await startInstalledBackend(target.url))) {
+        for (let attempt = 0; attempt < 20 && !reachability.ok; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          reachability = await probeServer(target.url);
+        }
+      }
       if (reachability.ok) {
         if (await openApp(target.url)) {
           commitPendingAppSwitch();

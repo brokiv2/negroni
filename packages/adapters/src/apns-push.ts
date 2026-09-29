@@ -71,6 +71,8 @@ export function apnsPayload(message: NotificationMessage) {
       sound: "default",
       "thread-id": message.threadId,
     },
+    ...(message.spaceId ? { spaceId: message.spaceId } : {}),
+    ...(message.threadKind ? { threadKind: message.threadKind } : {}),
     kind: message.kind,
     botId: message.botId,
     threadId: message.threadId,

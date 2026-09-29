@@ -17,7 +17,7 @@ export default function VesperLayout() {
           contentStyle: { backgroundColor: vesperLight.background },
         }}
       >
-        <Stack.Screen name="index" options={{ title: "Vesper" }} />
+        <Stack.Screen name="index" options={{ title: "Negroni" }} />
         <Stack.Screen name="computer" options={{ title: "Computer" }} />
       </Stack>
     </>
