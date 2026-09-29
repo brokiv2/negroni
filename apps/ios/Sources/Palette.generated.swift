@@ -7,4 +7,5 @@ enum Palette {
     static let mutedForeground = "#6C6C70"
     static let chatUser = "#E2E2DC"
     static let border = "#F0F0ED"
+    static let destructive = "#DC2626"
 }

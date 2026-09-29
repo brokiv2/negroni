@@ -172,6 +172,28 @@ public enum ThreadLogic {
     let runs = snapshot["activeRuns"].array + (snapshot["run"].isNull ? [] : [snapshot["run"]])
     return runs.contains { ["queued", "leased", "running"].contains($0["status"].string) }
   }
+  /// Live tool rows use event sequence numbers, which are not message sequence numbers.
+  public static func lastUserSequence(_ messages: [JSON]) -> Int {
+    messages.filter { $0["role"].string == "user" }.map { $0["seq"].int }.max() ?? -1
+  }
+  public static func visibleBlocks(_ message: JSON) -> [JSON] {
+    message["blocks"].array.filter { block in
+      switch block["kind"].string {
+      case "steps", "bot_message_received": return false
+      case "text", "channel_message":
+        return !block["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      case "progress":
+        return !block["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          && block["pendingToolNames"].array.isEmpty && !block["text"].string.hasPrefix("Using ")
+      case "ask", "choice", "file", "image": return true
+      case "subagent", "child_bot", "cloud_agent":
+        return ["name", "title", "result", "progress", "status"].contains {
+          !block[$0].string.isEmpty
+        }
+      default: return !block["summary"].string.isEmpty
+      }
+    }
+  }
   public static func unconfirmed(_ outgoing: [JSON], in messages: [JSON]) -> [JSON] {
     var used = Set<String>()
     return outgoing.filter { pending in

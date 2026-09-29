@@ -97,7 +97,12 @@ import {
   FeedProfileSchema,
 } from "./personal-feed.js";
 import { MessageReactionSchema } from "./reactions.js";
-import { EFFECTS_LIST_MAX_LIMIT, EffectsListOutputSchema, RunsListOutputSchema } from "./runs.js";
+import {
+  EFFECTS_LIST_MAX_LIMIT,
+  EffectsListOutputSchema,
+  RunsListOutputSchema,
+  ToolActivitySchema,
+} from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
 
 const botId = z.object({ botId: Id });
@@ -334,6 +339,9 @@ export const appContract = {
       .output(BotSectionSchema),
   },
   threads: {
+    activity: oc
+      .input(threadTarget.safeExtend({ runId: Id.optional() }))
+      .output(z.array(ToolActivitySchema)),
     head: oc.input(threadTarget).output(
       z.object({
         threadId: Id,

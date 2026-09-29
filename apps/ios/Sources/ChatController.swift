@@ -21,6 +21,11 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     "chat-model:\(API.shared.base.absoluteString):\(API.shared.spaceID):\(target["groupId"].string):\(target["feedItemId"].string)"
   }
   private let workingIndicator = ChatWorkingView()
+  private let toolActivity = ToolActivityView()
+  private let activityFooter = UIStackView()
+  private var activities: [JSON] = []
+  private var activityTask: Task<Void, Never>?
+
   private var cursor = -1
   private var lastReadCursor = -2
   private var earlierMessages: [JSON] = []
@@ -71,6 +76,13 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     composer.onVoiceSettings = { [weak self] in
       self?.navigationController?.pushViewController(VoiceSettingsController(), animated: true)
     }
+    activityFooter.axis = .vertical
+    let workingHeight = workingIndicator.heightAnchor.constraint(equalToConstant: 64)
+    workingHeight.priority = .init(999)
+    workingHeight.isActive = true
+    activityFooter.addArrangedSubview(toolActivity)
+    activityFooter.addArrangedSubview(workingIndicator)
+    toolActivity.onOpen = { [weak self] in self?.openActivity() }
     setupHeader()
     NotificationCenter.default.addObserver(
       self, selector: #selector(pushReceived), name: Notifications.threadUpdated, object: nil)
@@ -201,6 +213,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     refreshTask = nil
     statusTask?.cancel()
     statusTask = nil
+    activityTask?.cancel()
+    activityTask = nil
   }
   private func received(_ event: JSON) {
     cursor = max(cursor, event["seq"].int)
@@ -224,6 +238,16 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     try Task.checkCancellation()
     guard next["cursor"].int >= cursor else { return }
     render(next)
+    if activityTask == nil {
+      activityTask = Task { [weak self] in
+        guard let self else { return }
+        defer { activityTask = nil }
+        if let result = try? await API.shared.rpc("threads/activity", target), !Task.isCancelled {
+          activities = result.array
+          render(snapshot)
+        }
+      }
+    }
     composer.ready = true
     cursor = max(cursor, next["cursor"].int)
     if lastReadCursor != cursor {
@@ -235,7 +259,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let nearBottom = table.contentSize.height - table.contentOffset.y - table.bounds.height < 120
     let first = messages.isEmpty
     snapshot = next
-    let latest = next["messages"].array.filter { !$0["blocks"].array.isEmpty }
+    let latest = next["messages"].array.filter { !ThreadLogic.visibleBlocks($0).isEmpty }
     let latestIDs = Set(latest.map { $0["id"].string })
     outgoing = ThreadLogic.unconfirmed(outgoing, in: latest)
     let rows = earlierMessages.filter { !latestIDs.contains($0["id"].string) } + latest + outgoing
@@ -245,9 +269,22 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     workingIndicator.configure(
       name: title ?? "Assistant", color: bot["color"].string,
       main: target["threadKind"].string == "personal")
-    if working != (table.tableFooterView != nil) {
-      workingIndicator.frame = CGRect(x: 0, y: 0, width: table.bounds.width, height: 64)
-      table.tableFooterView = working ? workingIndicator : nil
+    let currentRun = next["run"]["id"].string
+    let activityRun = currentRun.isEmpty ? activities.last?["runId"].string ?? "" : currentRun
+    let actions = activities.filter { $0["runId"].string == activityRun }
+    toolActivity.isHidden = actions.isEmpty || !outgoing.isEmpty
+    workingIndicator.isHidden = !working
+    toolActivity.configure(actions)
+    let footerHeight: CGFloat =
+      (toolActivity.isHidden ? 0 : toolActivity.measuredHeight(width: table.bounds.width))
+      + (working ? 64 : 0)
+    if footerHeight > 0 {
+      let needsLayout =
+        table.tableFooterView !== activityFooter || activityFooter.frame.height != footerHeight
+      activityFooter.frame = CGRect(x: 0, y: 0, width: table.bounds.width, height: footerHeight)
+      if needsLayout { table.tableFooterView = activityFooter }
+    } else {
+      table.tableFooterView = nil
     }
     if rows.isEmpty {
       let empty = UIView()
@@ -341,7 +378,9 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
         let page = try await API.shared.rpc(
           "threads/messages", target.merging(["before": olderCursor]))
         let existing = Set(messages.map { $0["id"].string })
-        let earlier = page["messages"].array.filter { !existing.contains($0["id"].string) }
+        let earlier = page["messages"].array.filter {
+          !existing.contains($0["id"].string) && !ThreadLogic.visibleBlocks($0).isEmpty
+        }
         let height = table.contentSize.height
         earlierMessages = earlier + earlierMessages
         messages = earlier + messages
@@ -469,8 +508,6 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     guard composer.ready, !composer.sending, !composer.uploading,
       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     else { return }
-    let followUp =
-      ThreadLogic.running(snapshot) && attachments.isEmpty && !target["botId"].string.isEmpty
     let nonce = UUID().uuidString
     let messageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let sentAttachments = attachments
@@ -484,7 +521,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       }
     outgoing.append([
       "id": .string(nonce), "role": "user", "blocks": .array(blocks),
-      "afterSeq": .number(Double(snapshot["messages"].array.map { $0["seq"].int }.max() ?? -1)),
+      "afterSeq": .number(Double(ThreadLogic.lastUserSequence(snapshot["messages"].array))),
     ])
     composer.sending = true
     composer.setDraft("")
@@ -495,18 +532,12 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     scrollToEnd(animated: false)
     Task {
       do {
-        let receipt: JSON
-        if followUp {
-          receipt = try await API.shared.rpc(
-            "threads/followUp", target.merging(["text": .string(text)]))
-        } else {
-          receipt = try await API.shared.rpc(
-            "threads/send",
-            target.merging([
-              "text": .string(text), "artifactIds": .array(sentAttachments.map { $0["id"] }),
-              "clientNonce": .string(nonce),
-            ]).merging(threadModel.map { ["model": $0] } ?? [:]))
-        }
+        let receipt = try await API.shared.rpc(
+          "threads/send",
+          target.merging([
+            "text": .string(text), "artifactIds": .array(sentAttachments.map { $0["id"] }),
+            "clientNonce": .string(nonce),
+          ]).merging(threadModel.map { ["model": $0] } ?? [:]))
         if let index = outgoing.firstIndex(where: { $0["id"].string == nonce }),
           !receipt["seq"].isNull
         {
@@ -539,6 +570,16 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
 
+  private func openActivity() {
+    let current = snapshot["run"]["id"].string
+    let runID = current.isEmpty ? activities.last?["runId"].string ?? "" : current
+    let body = runID.isEmpty ? target : target.merging(["runId": .string(runID)])
+    let nav = UINavigationController(rootViewController: ToolActivityController(target: body))
+    nav.modalPresentationStyle = .pageSheet
+    nav.sheetPresentationController?.detents = [.medium(), .large()]
+    nav.sheetPresentationController?.prefersGrabberVisible = true
+    present(nav, animated: true)
+  }
   private func stop() {
     Task {
       do {
@@ -751,7 +792,7 @@ final class MessageCell: UITableViewCell {
     bubble.backgroundColor = user ? Theme.userBubble : Theme.secondary
     leading.constant = user ? 48 : 16
     trailing.constant = user ? -16 : -32
-    for block in message["blocks"].array {
+    for block in ThreadLogic.visibleBlocks(message) {
       switch block["kind"].string {
       case "text", "progress", "ask", "channel_message":
         let text = UITextView()

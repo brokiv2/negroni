@@ -10,6 +10,7 @@ import type {
   AgentRuntimeEvent,
   AgentToolExecutionResult,
 } from "@rakazo/adapter-kit";
+import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 import { startCodexModelBridge } from "./codex-model-bridge.js";
@@ -489,7 +490,12 @@ export class CodexAgentRuntime implements AgentRuntime {
           });
         });
       }
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
+        (error) => {
+          // Cleanup must never turn a completed answer into a failed run.
+          getLogger().warn("Codex temporary directory cleanup failed", { code: error?.code });
+        },
+      );
     }
   }
 }

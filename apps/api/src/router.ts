@@ -116,6 +116,7 @@ import {
   hasMixedOneShotSchedule,
   isOneShotRoutineCrons,
   nextCronDateAcrossStrict,
+  projectToolTimeline,
 } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
@@ -1698,6 +1699,36 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     threads: {
+      activity: authed.threads.activity.handler(async ({ context, input }) => {
+        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        const runs = await deps.prisma.run.findMany({
+          where: {
+            threadId: target.threadId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            ...(input.runId ? { id: input.runId } : { trigger: { not: "bot_message" } }),
+          },
+          orderBy: { createdAt: "desc" },
+          take: input.runId ? 1 : 5,
+          select: { id: true, status: true },
+        });
+        if (!runs.length) return [];
+        const events = await deps.prisma.event.findMany({
+          where: {
+            threadId: target.threadId,
+            spaceId: context.actor.spaceId,
+            runId: { in: runs.map((run) => run.id) },
+            type: { in: ["agent.tool.called", "agent.tool.completed"] },
+          },
+          orderBy: { seq: "desc" },
+          take: 400,
+          select: { id: true, runId: true, type: true, payload: true, createdAt: true },
+        });
+        return projectToolTimeline(
+          events.reverse(),
+          new Map(runs.map((run) => [run.id, run.status])),
+        );
+      }),
       head: authed.threads.head.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         return threadHead(deps.prisma, target);

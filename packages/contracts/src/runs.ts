@@ -65,3 +65,13 @@ export const EffectsListOutputSchema = z.object({
 export type EffectsListOutput = z.infer<typeof EffectsListOutputSchema>;
 
 export const EFFECTS_LIST_MAX_LIMIT = 50;
+
+export const ToolActivitySchema = z.object({
+  id: Id,
+  runId: Id,
+  name: z.string(),
+  label: z.string(),
+  status: z.enum(["running", "succeeded", "error", "interrupted", "waiting"]),
+  startedAt: z.string(),
+  durationMs: z.number().nullable(),
+});

@@ -1,7 +1,7 @@
 import {readFileSync,writeFileSync} from 'node:fs';
 const source=readFileSync(new URL('../../../packages/ui-tokens/src/index.ts',import.meta.url),'utf8');
 const light=source.split('export const lightTokens = {')[1].split('} as const')[0];
-const keys=['background','card','foreground','secondary','mutedForeground','chatUser','border'];
+const keys=['background','card','foreground','secondary','mutedForeground','chatUser','border','destructive'];
 const values=keys.map(key=>{const value=light.match(new RegExp(`\\b${key}: "(#[A-Fa-f0-9]+)"`))?.[1];if(!value)throw new Error(`Missing token ${key}`);return `    static let ${key} = "${value}"`});
 writeFileSync(new URL('../Sources/Palette.generated.swift',import.meta.url),`// Generated from @rakazo/ui-tokens. Run Scripts/generate-theme.mjs.\nenum Palette {\n${values.join('\n')}\n}\n`);
 

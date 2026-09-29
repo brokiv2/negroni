@@ -51,3 +51,5 @@ export * from "./thread-message-updates.js";
 export * from "./thread-subscription.js";
 export * from "./tool-activity.js";
 export * from "./tool-blocks.js";
+
+export * from "./tool-timeline.js";

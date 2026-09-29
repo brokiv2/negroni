@@ -3,6 +3,26 @@ import XCTest
 @testable import NegroniCore
 
 final class CoreTests: XCTestCase {
+  func testLiveToolEventsNeverBecomeBlankBubblesOrInflateTheSendBaseline() {
+    let user: JSON = [
+      "id": "user", "role": "user", "seq": 36, "blocks": [["kind": "text", "text": "Any update?"]],
+    ]
+    let tool: JSON = [
+      "id": "steps:run", "role": "bot", "seq": 331, "blocks": [["kind": "steps", "steps": []]],
+    ]
+    XCTAssertEqual(ThreadLogic.lastUserSequence([user, tool]), 36)
+    XCTAssertTrue(ThreadLogic.visibleBlocks(tool).isEmpty)
+    XCTAssertTrue(
+      ThreadLogic.visibleBlocks(["blocks": [["kind": "text", "text": "  \n"]]]).isEmpty)
+    let reply: JSON = ["blocks": [["kind": "steps"], ["kind": "text", "text": "Finished"]]]
+    XCTAssertEqual(ThreadLogic.visibleBlocks(reply).count, 1)
+    let pending = user.merging([
+      "id": "local", "afterSeq": .number(Double(ThreadLogic.lastUserSequence([user, tool]))),
+    ])
+    XCTAssertTrue(
+      ThreadLogic.unconfirmed([pending], in: [user, tool, user.merging(["id": "new", "seq": 37])])
+        .isEmpty)
+  }
   func testOptimisticMessagesReconcileWithoutHidingEarlierIdenticalText() {
     let pending: JSON = [
       "id": "local", "role": "user", "afterSeq": 4, "blocks": [["kind": "text", "text": "Hello"]],
