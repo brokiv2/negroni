@@ -1,7 +1,7 @@
 import { t } from "../i18n";
 
 /** The five destinations in the floating bottom nav, in order. */
-export const VESPER_SECTIONS = ["chat", "team", "activity", "ideas", "goals", "apps"] as const;
+export const VESPER_SECTIONS = ["chat", "feed", "team", "apps"] as const;
 
 export type VesperSection = (typeof VESPER_SECTIONS)[number];
 
@@ -22,12 +22,8 @@ export function vesperSectionLabel(section: VesperSection): string {
       return t("Chat");
     case "team":
       return t("Team");
-    case "activity":
-      return t("Activity");
-    case "ideas":
-      return t("Ideas");
-    case "goals":
-      return t("Goals");
+    case "feed":
+      return t("For you");
     case "apps":
       return t("Apps");
   }
@@ -42,21 +38,8 @@ export function vesperSectionHeading(section: VesperSection): VesperSectionHeadi
       return null;
     case "team":
       return { title: t("Team"), subtitle: "" };
-    case "activity":
-      return {
-        title: t("Activity"),
-        subtitle: t("Plans, progress, decisions and results."),
-      };
-    case "ideas":
-      return {
-        title: t("Ideas"),
-        subtitle: t("Useful next steps, grounded in your world."),
-      };
-    case "goals":
-      return {
-        title: t("Goals"),
-        subtitle: t("Longer-term goals and things to keep an eye on."),
-      };
+    case "feed":
+      return { title: t("For you"), subtitle: "" };
     case "apps":
       return {
         title: t("Apps"),

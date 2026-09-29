@@ -1,12 +1,10 @@
 import {
   Check,
-  Users,
-  Lightbulb,
   type LucideIcon,
   MessageCircle,
   PanelsTopLeft,
   Shapes,
-  SquareCheck,
+  Users,
   X,
 } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
@@ -17,9 +15,7 @@ import { colors, s, shadow, vt } from "../theme";
 const ICONS: Record<VesperSection, LucideIcon> = {
   chat: MessageCircle,
   team: Users,
-  activity: PanelsTopLeft,
-  ideas: Lightbulb,
-  goals: SquareCheck,
+  feed: PanelsTopLeft,
   apps: Shapes,
 };
 

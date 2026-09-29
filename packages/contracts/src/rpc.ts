@@ -89,6 +89,7 @@ import {
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
 import { ModelRoutingSchema } from "./model-routing.js";
+import { FeedItemInput, FeedItemSchema } from "./personal-feed.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { EFFECTS_LIST_MAX_LIMIT, EffectsListOutputSchema, RunsListOutputSchema } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
@@ -100,16 +101,17 @@ const threadTarget = z
   .object({
     botId: Id.optional(),
     groupId: Id.optional(),
+    feedItemId: Id.optional(),
     /** Only with botId: "personal" addresses the main assistant's Personal thread. */
     threadKind: ThreadKindSchema.optional(),
   })
   .superRefine((input, ctx) => {
     const hasBot = Boolean(input.botId);
     const hasGroup = Boolean(input.groupId);
-    if (hasBot === hasGroup) {
+    if ([hasBot, hasGroup, Boolean(input.feedItemId)].filter(Boolean).length !== 1) {
       ctx.addIssue({
         code: "custom",
-        message: "Provide exactly one of botId or groupId",
+        message: "Provide exactly one of botId, groupId or feedItemId",
         path: ["botId"],
       });
     }
@@ -492,6 +494,15 @@ export const appContract = {
         }),
       )
       .output(z.object({ runId: Id })),
+  },
+  feed: {
+    list: oc
+      .input(z.object({ saved: z.boolean().optional(), hidden: z.boolean().optional() }))
+      .output(z.array(FeedItemSchema)),
+    create: oc.input(FeedItemInput).output(FeedItemSchema),
+    update: oc
+      .input(z.object({ id: Id, saved: z.boolean().optional(), hidden: z.boolean().optional() }))
+      .output(FeedItemSchema),
   },
   personal: {
     /** The main assistant's Personal thread, created on first use. */

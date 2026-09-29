@@ -22,6 +22,7 @@ model AiDataConsent {
 }
 
 model User {
+  feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   name                        String
@@ -162,6 +163,7 @@ model Member {
 }
 
 model Space {
+  feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
   organizationId              String
@@ -338,6 +340,7 @@ model SpaceVoicePreference {
 }
 
 model Bot {
+  feedItems FeedItem[]
   screenGeneration Int @default(0)
   id                String            @id @default(cuid())
   spaceId           String
@@ -463,6 +466,7 @@ model ChatGroupMember {
 }
 
 model Thread {
+  feedItems FeedItem[]
   id                          String     @id @default(cuid())
   spaceId                     String
   space                       Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1340,4 +1344,32 @@ model IntegrationProviderConfig {
   updatedAt  DateTime @updatedAt
 
   @@map("integration_provider_configs")
+}
+
+model FeedItem {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  botId String
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  threadId String @unique
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  dedupKey String
+  kind String
+  title String
+  summary String
+  content String @db.Text
+  url String?
+  imageUrl String?
+  reason String @default("")
+  topic String @default("")
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  saved Boolean @default(false)
+  hidden Boolean @default(false)
+  @@unique([spaceId, userId, dedupKey])
+  @@index([spaceId, userId, createdAt])
+  @@map("feed_items")
 }

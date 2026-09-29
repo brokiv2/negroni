@@ -1,6 +1,6 @@
 import type { AdapterContext, MemorySnapshot, MemoryStore } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
-import { loadAgentMemoryContext } from "./memory-context.js";
+import { loadAgentMemoryContext, loadAgentMemoryIndex, readAgentMemory } from "./memory-context.js";
 
 const context: AdapterContext = {
   operationId: "run-1",
@@ -71,3 +71,29 @@ function snapshot(documents: MemorySnapshot["documents"]): MemorySnapshot {
 function storeWith(read: MemoryStore["read"]): MemoryStore {
   return { read } as MemoryStore;
 }
+
+describe("on-demand memory", () => {
+  it("keeps old tasks and account statuses out of the automatic context", async () => {
+    const store = storeWith(
+      vi.fn(async () =>
+        snapshot([
+          document(
+            "d",
+            "project.md",
+            "Mailbox connected. Resume the old task now.",
+            1,
+            "2026-01-01",
+          ),
+        ]),
+      ),
+    );
+    const index = await loadAgentMemoryIndex(store, "bot-1", context);
+    expect(index).toContain("project.md");
+    expect(index).not.toContain("Mailbox connected");
+    expect(index).not.toContain("Resume the old task now");
+    expect(index).toContain("Greetings and self-contained requests need no memory lookup");
+    const contents = await readAgentMemory(store, "bot-1", context, "bot", "project.md");
+    expect(contents[0]?.content).toContain("Mailbox connected");
+    expect(await readAgentMemory(store, "bot-1", context, "bot", "missing.md")).toEqual([]);
+  });
+});

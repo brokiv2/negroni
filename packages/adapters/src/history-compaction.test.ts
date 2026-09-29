@@ -1173,6 +1173,15 @@ describe("compactHistory", () => {
     );
   });
 
+  it("compacts a feed discussion locally without putting article history into shared memory", async () => {
+    const harness = compactionHarness({ deploymentModelKey: "fixture-key" });
+    Object.assign(harness.thread, { botId: null });
+    Object.assign(harness.prisma, { feedItem: { findFirst: vi.fn(async () => ({ botId: "bot-1" })) } });
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.thread.historyCompactionSummary).toBe("Summary of 50 messages.");
+    expect(harness.saveMemory).not.toHaveBeenCalled();
+  });
+
   it("keeps local compaction when the optional provider save fails", async () => {
     const harness = compactionHarness({ deploymentModelKey: "openrouter-key" });
     harness.saveMemory.mockResolvedValueOnce({ ok: false, error: "network error" });

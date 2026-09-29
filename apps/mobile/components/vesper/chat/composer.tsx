@@ -1,4 +1,5 @@
 import { ArrowUp, Square, X } from "lucide-react-native";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { t } from "../../../lib/i18n";
@@ -20,6 +21,7 @@ import { colors, s, shadow, vt } from "../theme";
  * run — same slot, same size, so the thumb never has to move.
  */
 export function VesperComposer({
+  modelPicker,
   state,
   loading,
   error,
@@ -30,6 +32,7 @@ export function VesperComposer({
   onPickAttachment,
   onRemoveAttachment,
 }: {
+  modelPicker?: ReactNode;
   state: VesperComposerState;
   loading: boolean;
   error: boolean;
@@ -200,6 +203,7 @@ export function VesperComposer({
           )}
         </Pressable>
       </View>
+      {modelPicker}
     </View>
   );
 }

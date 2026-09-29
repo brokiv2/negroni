@@ -10,12 +10,12 @@ import {
 
 describe("vesper navigation", () => {
   it("has the destinations in order, chat first", () => {
-    expect([...VESPER_SECTIONS]).toEqual(["chat", "team", "activity", "ideas", "goals", "apps"]);
+    expect([...VESPER_SECTIONS]).toEqual(["chat", "feed", "team", "apps"]);
     expect(DEFAULT_VESPER_SECTION).toBe("chat");
   });
 
   it("recognizes only its own sections", () => {
-    expect(isVesperSection("goals")).toBe(true);
+    expect(isVesperSection("goals")).toBe(false);
     expect(isVesperSection("mail")).toBe(false);
     expect(isVesperSection(null)).toBe(false);
     expect(normalizeVesperSection("mail")).toBe("chat");
@@ -34,8 +34,8 @@ describe("vesper navigation", () => {
     for (const section of VESPER_SECTIONS.filter((item) => item !== "chat")) {
       const heading = vesperSectionHeading(section);
       expect(heading?.title, section).toBeTruthy();
-      if (section !== "team") expect(heading?.subtitle, section).toBeTruthy();
+      if (section === "apps") expect(heading?.subtitle, section).toBeTruthy();
     }
-    expect(vesperSectionHeading("activity")?.title).toBe("Activity");
+    expect(vesperSectionHeading("feed")?.title).toBe("For you");
   });
 });

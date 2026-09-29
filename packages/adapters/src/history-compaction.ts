@@ -218,7 +218,14 @@ export interface CompactHistoryDeps {
 
 export async function compactHistory(deps: CompactHistoryDeps, threadId: string): Promise<void> {
   const thread = await deps.prisma.thread.findUniqueOrThrow({ where: { id: threadId } });
-  if (!thread.botId) return;
+  const feedItem = !thread.botId
+    ? await deps.prisma.feedItem.findFirst({
+        where: { threadId, spaceId: thread.spaceId, userId: thread.userId },
+        select: { botId: true },
+      })
+    : null;
+  const botId = thread.botId ?? feedItem?.botId;
+  if (!botId) return;
   const previousCursor = thread.historyCompactedUpToSeq;
   const previousGeneration = thread.historyCompactionGeneration;
   const previousSummary = thread.historyCompactionSummary?.trim() || null;
@@ -331,7 +338,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     ? await deps.resolveModel({
         userId: thread.userId,
         spaceId: thread.spaceId,
-        botId: thread.botId,
+        botId,
       })
     : deps.deploymentModelKey
       ? {
@@ -359,7 +366,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   let runtimeReportedFailure = false;
   for await (const event of deps.runtime.run(
     {
-      botId: thread.botId,
+      botId,
       threadId,
       runId: `compact:${threadId}:${fromSeqExclusive}`,
       prompt,
@@ -420,7 +427,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   // Saving only after the compare-and-set also prevents losing workers from creating duplicates.
   let semanticMemory: ConfiguredMemoryProvider | null = null;
   try {
-    semanticMemory = await deps.memoryProviders.resolve(thread.spaceId);
+    semanticMemory = feedItem ? null : await deps.memoryProviders.resolve(thread.spaceId);
   } catch (error) {
     getLogger().error("Failed to load semantic memory provider for history compaction", error);
   }
@@ -430,7 +437,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     traceId: `history-compact:${threadId}`,
     spaceId: thread.spaceId,
     userId: thread.userId,
-    botId: thread.botId,
+    botId,
     signal: new AbortController().signal,
   };
   if (semanticMemory) {
@@ -440,7 +447,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
         {
           content: summary,
           scope: "isolated",
-          botId: thread.botId,
+          botId,
           source: { kind: "history", generation: previousGeneration },
         },
         memoryContext,
@@ -471,7 +478,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   ) {
     try {
       const removed = await semanticMemory.provider.purgeHistory(
-        { botId: thread.botId, generations: [previousGeneration] },
+        { botId, generations: [previousGeneration] },
         memoryContext,
       );
       if (!removed.ok) {

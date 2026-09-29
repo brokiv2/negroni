@@ -11,6 +11,7 @@ export * from "./local-settings.js";
 export * from "./markdown-text.js";
 export * from "./mcp.js";
 export * from "./model-routing.js";
+export * from "./personal-feed.js";
 export * from "./openai-compatible-ui.js";
 export * from "./reactions.js";
 export * from "./rpc.js";

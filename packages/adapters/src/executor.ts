@@ -218,7 +218,6 @@ import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
   COMPACTION_BATCH_SIZE,
   formatCompactedSummary,
-  formatRecalledMemory,
   HISTORY_WINDOW_SIZE,
   historyWindowSize,
   LEGACY_HISTORY_WINDOW_SIZE,
@@ -237,7 +236,7 @@ import {
   needsOAuthProbe,
   parseMcpServerToolArgs,
 } from "./mcp-server-tool.js";
-import { loadAgentMemoryContext } from "./memory-context.js";
+import { loadAgentMemoryIndex, readAgentMemory } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { selectMemoryTools } from "./memory-tools.js";
 import { routeModel } from "./model-router.js";
@@ -255,6 +254,7 @@ import {
   modelAcceptsImageInput,
   modelIdSupportsImages,
 } from "./model-vision.js";
+import { feedDiscussionContext, publishFeed } from "./personal-feed.js";
 import { toOAuthCredential } from "./pi-credentials.js";
 import {
   parseModelSecret,
@@ -293,7 +293,7 @@ import {
   filterBuiltinToolsForThread,
   listSchedulesFromTool,
 } from "./schedule-tools.js";
-import { loadAgentScratchpadContext } from "./scratchpad-context.js";
+
 import {
   addScratchpadItemFromTool,
   completeScratchpadItemFromTool,
@@ -350,6 +350,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "run_subagent",
   "task_catalog",
   "recall_memory",
+  "read_memory",
   "schedule_list",
   "scratchpad_list",
   "skill_read",
@@ -1399,48 +1400,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? `Update from ${peerMessage.fromBotName}: ${peerMessage.text}`
             : "The delegated bot completed its turn without a written summary."
           : undefined;
-        const recallPromise =
-          threadContext.includeSemanticRecall &&
-          semanticMemory &&
-          memoryScope &&
-          thread.historyCompactedUpToSeq != null
-            ? semanticMemory.recall(
-                {
-                  query: task.prompt,
-                  scope: memoryScope,
-                  botId: bot.id,
-                  historyGeneration: thread.historyCompactionGeneration,
-                  limit: MAX_RECALLED_MEMORIES,
-                },
-                context,
-              )
-            : Promise.resolve(null);
-        const [discovered, currentTurnImages, memoryContext, scratchpadContext, recalled] =
-          await Promise.all([
-            discoveredPromise,
-            loadCurrentTurnImages(deps, turnBlocks, context),
-            messagingChannelRun
-              ? Promise.resolve("")
-              : loadAgentMemoryContext(deps.memory, bot.id, context),
-            messagingChannelRun
-              ? Promise.resolve("")
-              : loadAgentScratchpadContext(deps, {
-                  spaceId: run.spaceId,
-                  botId: bot.id,
-                }),
-            recallPromise,
-          ]);
+        const [discovered, currentTurnImages, memoryContext] = await Promise.all([
+          discoveredPromise,
+          loadCurrentTurnImages(deps, turnBlocks, context),
+          messagingChannelRun
+            ? Promise.resolve("")
+            : loadAgentMemoryIndex(deps.memory, bot.id, context),
+        ]);
+        const scratchpadContext = undefined;
         const semanticMemoryEnabled = Boolean(semanticMemory) && !messagingChannelRun;
-        let recalledMemory = "";
-        let recallSucceeded = false;
-        if (recalled) {
-          if (recalled.ok && recalled.value.length > 0) {
-            recallSucceeded = true;
-            recalledMemory = formatRecalledMemory(recalled.value);
-          } else if (!recalled.ok) {
-            getLogger().error("semantic memory recall failed", recalled.error);
-          }
-        }
+        const recalledMemory = "";
+        const recallSucceeded = false;
         if (!compactedHistory.usedLocalSummary) {
           history = history.slice(
             -historyWindowSize({
@@ -2789,6 +2759,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : { ok: true };
             }, finish);
           }
+          if (name === "read_memory") {
+            return finish(
+              await readAgentMemory(
+                deps.memory,
+                bot.id,
+                context,
+                args.scope === "user" ? "user" : "bot",
+                typeof args.path === "string" ? args.path : undefined,
+              ),
+            );
+          }
+          if (name === "publish_feed") {
+            return finish(
+              await publishFeed(
+                deps.prisma,
+                { spaceId: run.spaceId, userId: run.userId },
+                bot.id,
+                args,
+              ),
+            );
+          }
           if (name === "remember") {
             await deps.memory.commit(
               {
@@ -3882,6 +3873,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ])?.id;
         // Runs in the Personal thread take the owner role even when they were
         // queued by a path that predates the personal interaction mode.
+        const feedContext = await feedDiscussionContext(
+          deps.prisma,
+          { spaceId: run.spaceId, userId: run.userId },
+          thread.id,
+        );
         const personalRun = run.interactionMode === "personal" || thread.kind === "personal";
         const coordinationInstruction = coordinationInstructionFor({
           interactionMode: personalRun ? "personal" : run.interactionMode,
@@ -3962,7 +3958,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   pluginLine,
                   agentSkillsLine,
                   taughtSkillsLine,
-                  replyGuidance: runReplyGuidance(run.trigger),
+                  replyGuidance: [runReplyGuidance(run.trigger), feedContext]
+                    .filter(Boolean)
+                    .join("\n"),
                 })
                   .filter((instruction): instruction is string => Boolean(instruction))
                   .join("\n\n"),
@@ -4847,9 +4845,15 @@ export function selectBuiltinToolsForRun(options: {
   ).filter(
     (tool) =>
       !options.messagingChannelRun ||
-      (!["remember", "save_memory", "recall_memory", "forget_memory", "task_catalog"].includes(
-        tool.name,
-      ) &&
+      (![
+        "remember",
+        "read_memory",
+        "publish_feed",
+        "save_memory",
+        "recall_memory",
+        "forget_memory",
+        "task_catalog",
+      ].includes(tool.name) &&
         !tool.name.startsWith("scratchpad_")),
   );
 }
@@ -4986,7 +4990,7 @@ export { isExactNoResponse, NO_RESPONSE, stripNoResponseReply };
 export const LONG_WORK_PROGRESS_GUIDANCE =
   "During long work, send a few short progress updates with message_user so the user can see what you are doing. Keep them brief and high-signal (a sentence or two, not a dump). Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
 
-export const ROUTINE_SILENT_REPLY_GUIDANCE = `If this routine's prompt says to stay silent when there is nothing to report, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
+export const ROUTINE_SILENT_REPLY_GUIDANCE = `Only perform the work authorized by this routine. Publishing a feed item does not require a chat announcement. Unless the user explicitly requested every scheduled report, stay silent when there is no meaningful new result or required user decision. When staying silent, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 
 export function runAllowsSilentEmpty(trigger: string): boolean {
   return trigger === "routine";

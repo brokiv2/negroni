@@ -3,15 +3,13 @@ import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { VesperActivityScreen } from "../../components/vesper/activity/activity-screen";
 import { VesperAppsScreen } from "../../components/vesper/apps/apps-screen";
 import { VesperChatScreen } from "../../components/vesper/chat/chat-screen";
 import { useAssistantName } from "../../components/vesper/context/assistant-scope";
-import { AssistantTeamScreen } from "../../components/vesper/team-screen";
-import { VesperGoalsScreen } from "../../components/vesper/goals/goals-screen";
-import { VesperIdeasScreen } from "../../components/vesper/ideas/ideas-screen";
+import { PersonalFeedScreen } from "../../components/vesper/feed-screen";
 import { VesperBottomNav, VesperToast } from "../../components/vesper/shell/bottom-nav";
 import { VesperHeader } from "../../components/vesper/shell/header";
+import { AssistantTeamScreen } from "../../components/vesper/team-screen";
 import { colors, s, vt } from "../../components/vesper/theme";
 import { rpc } from "../../lib/api";
 import { t } from "../../lib/i18n";
@@ -111,8 +109,8 @@ export default function VesperShell() {
           showComputerPill={section === "chat"}
           computerState={pillState}
           onOpenMenu={() => setToast(t("Conversations arrive in a later pass."))}
-          onOpenNotifications={() => setSection("activity")}
-          onOpenIdentity={() => setSection("activity")}
+          onOpenNotifications={() => setSection("feed")}
+          onOpenIdentity={() => setSection("feed")}
           onOpenComputer={() => {
             if (botId) router.push({ pathname: "/(vesper)/computer", params: { botId } });
           }}
@@ -140,7 +138,6 @@ export default function VesperShell() {
                 section={section}
                 botId={botId}
                 activityToken={activityToken}
-                onOpenChat={() => setSection("chat")}
                 onSwitchToNegroni={() => {
                   void setShellMode("negroni").then(() => router.replace("/"));
                 }}
@@ -176,26 +173,18 @@ function VesperSectionBody({
   section,
   botId,
   activityToken,
-  onOpenChat,
   onSwitchToNegroni,
 }: {
   section: VesperSection;
   botId: string | null;
   activityToken: number;
-  onOpenChat: () => void;
   onSwitchToNegroni: () => void;
 }) {
   switch (section) {
-    case "activity":
-      return (
-        <VesperActivityScreen botId={botId} refreshToken={activityToken} onOpenChat={onOpenChat} />
-      );
+    case "feed":
+      return <PersonalFeedScreen botId={botId} />;
     case "team":
       return <AssistantTeamScreen botId={botId} refreshToken={activityToken} />;
-    case "ideas":
-      return <VesperIdeasScreen botId={botId} onOpenChat={onOpenChat} />;
-    case "goals":
-      return <VesperGoalsScreen botId={botId} onOpenChat={onOpenChat} />;
     case "apps":
       return <VesperAppsScreen onSwitchToNegroni={onSwitchToNegroni} />;
     case "chat":

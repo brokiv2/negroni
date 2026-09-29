@@ -68,8 +68,9 @@ export function ChatModelPicker({
     }
   }
   return (
-    <div className="app-no-drag max-w-[260px]">
+    <div className="app-no-drag max-w-[240px]">
       <NativeSelect
+        className="max-w-full [&_select]:h-8 [&_select]:border-0 [&_select]:py-0 [&_select]:text-xs [&_select]:shadow-none"
         aria-label={t`Chat model`}
         value={value}
         disabled={disabled || busy || !routing}

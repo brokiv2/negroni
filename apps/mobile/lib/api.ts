@@ -956,7 +956,7 @@ type ThreadEvent = {
 };
 
 export async function subscribeThread(
-  target: { botId: string } | { groupId: string },
+  target: { botId: string } | { groupId: string } | { feedItemId: string },
   cursor: number,
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,

@@ -59,6 +59,7 @@ import {
   listPiCatalog,
   listScratchpadItems,
   McpOAuthBroker,
+  mapFeedItem,
   mapScratchpadItem,
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
@@ -70,6 +71,7 @@ import {
   providerBaseUrl,
   providerCatalogModelIds,
   provisionComputer,
+  publishFeed,
   queueComputerUpdate,
   readStoredModelAuth,
   releaseComputerExecutionLease,
@@ -2849,6 +2851,40 @@ export function createRouter(deps: RouterDeps) {
           getLogger().error("routine testRun enqueue", error);
         });
         return { runId: run.id };
+      }),
+    },
+    feed: {
+      list: authed.feed.list.handler(async ({ context, input }) => {
+        const rows = await deps.prisma.feedItem.findMany({
+          where: {
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            hidden: input.hidden ?? false,
+            ...(input.saved ? { saved: true } : {}),
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+        });
+        return rows.map(mapFeedItem);
+      }),
+      create: authed.feed.create.handler(async ({ context, input }) => {
+        const personal = await resolvePersonalThread(deps.prisma, context.actor);
+        return publishFeed(deps.prisma, context.actor, personal.botId, input);
+      }),
+      update: authed.feed.update.handler(async ({ context, input }) => {
+        const where = {
+          id: input.id,
+          spaceId: context.actor.spaceId,
+          userId: context.actor.userId,
+        };
+        const row = await deps.prisma.feedItem.findFirst({ where });
+        if (!row) throw new ORPCError("NOT_FOUND");
+        return mapFeedItem(
+          await deps.prisma.feedItem.update({
+            where,
+            data: { saved: input.saved, hidden: input.hidden },
+          }),
+        );
       }),
     },
     personal: {

@@ -60,6 +60,7 @@ export function VesperChatScreen({
   onRunsChanged,
   onThreadEvent,
   onOpenComputer,
+  feedItemId,
   computerReachable,
   desktop,
 }: {
@@ -70,6 +71,7 @@ export function VesperChatScreen({
   /** Every stream event, so the shell's pill and bell stay live without polling. */
   onThreadEvent?: (event: { type: string }) => void;
   onOpenComputer: () => void;
+  feedItemId?: string;
   /** From `computer.status`, so a browser card never asserts its own liveness. */
   computerReachable: boolean;
   desktop: boolean;
@@ -91,6 +93,7 @@ export function VesperChatScreen({
   const [awayFromLatest, setAwayFromLatest] = useState(false);
 
   const target: ThreadTarget | null = botId ? { botId, threadKind: "personal" } : null;
+  const threadTarget = feedItemId ? { feedItemId } : target;
 
   useEffect(() => queue.subscribe(() => setQueueState(queue.getSnapshot())), [queue]);
 
@@ -120,10 +123,10 @@ export function VesperChatScreen({
 
   const refresh = useCallback(async () => {
     if (!target) return null;
-    const next = await rpc<MobileSnapshot>("threads/get", target);
+    const next = await rpc<MobileSnapshot>("threads/get", threadTarget);
     commit(mergeMobileSnapshot(snapRef.current, next, true));
     return next;
-  }, [commit, target?.botId]);
+  }, [commit, target?.botId, feedItemId]);
 
   // Subscribe, never poll: the SSE stream is the source of truth and a dropped
   // connection resumes from the cursor rather than re-fetching on a timer.
@@ -142,7 +145,7 @@ export function VesperChatScreen({
       while (!abort.signal.aborted) {
         try {
           await subscribeThread(
-            target,
+            threadTarget!,
             cursor,
             (event) => {
               cursor = Math.max(cursor, event.seq ?? -1);
@@ -155,7 +158,7 @@ export function VesperChatScreen({
                 // A finished turn is the moment held follow-ups can go out.
                 void queue
                   .flush(async (entry) => {
-                    await rpc("threads/followUp", { ...target, text: entry.text });
+                    await rpc("threads/followUp", { ...threadTarget, text: entry.text });
                   })
                   .catch((failure: Error) => setError(failure.message));
               }
@@ -172,7 +175,7 @@ export function VesperChatScreen({
       }
     })();
     return () => abort.abort();
-  }, [commit, onThreadEvent, queue, refresh, target?.botId]);
+  }, [commit, onThreadEvent, queue, refresh, target?.botId, feedItemId]);
 
   const running = snapshotIsRunning(snap);
   useEffect(() => {
@@ -198,7 +201,7 @@ export function VesperChatScreen({
     const artifactIds = [...state.attachmentIds];
     dispatch({ kind: "submit-started" });
     void rpc("threads/send", {
-      ...target,
+      ...threadTarget,
       ...(text ? { text } : {}),
       ...(artifactIds.length ? { artifactIds } : {}),
       clientNonce: newId(),
@@ -212,15 +215,15 @@ export function VesperChatScreen({
         dispatch({ kind: "submit-failed" });
         setError(failure.message);
       });
-  }, [queue, target?.botId]);
+  }, [queue, target?.botId, feedItemId]);
 
   const stop = useCallback(() => {
     if (!target) return;
     // Held, not dropped: the draft and the queue both survive a stop.
     queue.pause();
     dispatch({ kind: "stop-requested" });
-    void rpc("threads/stop", target).catch((failure: Error) => setError(failure.message));
-  }, [queue, target?.botId]);
+    void rpc("threads/stop", threadTarget).catch((failure: Error) => setError(failure.message));
+  }, [queue, target?.botId, feedItemId]);
 
   const answer = useCallback(
     async (block: MessageBlock, value: string, username?: string) => {
@@ -233,14 +236,14 @@ export function VesperChatScreen({
       // A secret answer is posted and forgotten: it is never written back into
       // the snapshot, and the answered card says "Saved" rather than the value.
       await rpc("threads/answer", {
-        ...target,
+        ...threadTarget,
         runId,
         messageId: message.id,
         answer: value,
         ...(username ? { username } : {}),
       });
     },
-    [target?.botId],
+    [target?.botId, feedItemId],
   );
 
   /**
@@ -292,7 +295,7 @@ export function VesperChatScreen({
         );
       }
     },
-    [target?.botId],
+    [target?.botId, feedItemId],
   );
 
   const showAttachMenu = useCallback(() => {
@@ -402,14 +405,16 @@ export function VesperChatScreen({
             if (!target) return;
             void queue
               .flush(async (entry) => {
-                await rpc("threads/followUp", { ...target, text: entry.text });
+                await rpc("threads/followUp", { ...threadTarget, text: entry.text });
               })
               .catch((failure: Error) => setError(failure.message));
           }}
           onRetry={(id) => queue.retry(id)}
         />
-        {botId ? <MobileChatModelPicker key={botId} botId={botId} disabled={running} /> : null}
         <VesperComposer
+          modelPicker={
+            botId ? <MobileChatModelPicker key={botId} botId={botId} disabled={running} /> : null
+          }
           state={composer}
           loading={loading}
           error={!!error}

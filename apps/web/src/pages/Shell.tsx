@@ -119,6 +119,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -3594,19 +3595,19 @@ export function ShellPage() {
               <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
             </div>
           ) : null}
-          {active && !inGroup ? (
-            <div className="mx-auto w-full max-w-3xl px-6 pb-2">
-              <ChatModelPicker
-                key={active.id}
-                botId={active.id}
-                disabled={sending || composerRunning}
-                onSettings={() => openSettings("models")}
-              />
-            </div>
-          ) : null}
           {active || activeGroup ? (
             <Composer
               key={composerTargetKey}
+              modelPicker={
+                active && !inGroup ? (
+                  <ChatModelPicker
+                    key={active.id}
+                    botId={active.id}
+                    disabled={sending || composerRunning}
+                    onSettings={() => openSettings("models")}
+                  />
+                ) : null
+              }
               prefill={
                 composerPrefill?.targetKey === composerTargetKey ? composerPrefill : undefined
               }
@@ -5212,6 +5213,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
 });
 
 const Composer = memo(function Composer({
+  modelPicker,
   prefill,
   onPrefillApplied,
   activeName,
@@ -5240,6 +5242,7 @@ const Composer = memo(function Composer({
   onSlashOpen,
   onSlashAction,
 }: {
+  modelPicker?: ReactNode;
   /** Seeded draft handed over when the personal workspace opens a conversation. */
   prefill?: { nonce: number; text: string };
   onPrefillApplied?: (nonce: number) => void;
@@ -5765,7 +5768,7 @@ const Composer = memo(function Composer({
       ) : null}
       <div
         data-testid="composer-bar"
-        className="flex items-center gap-3.5 rounded-full border border-border bg-background py-[9px] pe-2.5 ps-3 transition-colors focus-within:border-ring"
+        className="flex flex-wrap items-center gap-2 rounded-3xl border border-border bg-background p-3 transition-colors focus-within:border-ring"
       >
         <input
           ref={fileInputRef}
@@ -5785,7 +5788,7 @@ const Composer = memo(function Composer({
         >
           <Plus size={16} strokeWidth={2} />
         </Button>
-        <div className="flex min-w-0 flex-1 flex-wrap items-end gap-1.5">
+        <div className="order-first flex w-full min-w-0 flex-wrap items-end gap-1.5 px-1 pb-2">
           {selectedSkill ? (
             <span
               data-testid="skill-chip"
@@ -5899,6 +5902,7 @@ const Composer = memo(function Composer({
             className="max-h-32 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15.5px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-40"
           />
         </div>
+        <div className="min-w-0 flex-1">{modelPicker}</div>
         {onVoice ? (
           <Button
             variant="outline"
