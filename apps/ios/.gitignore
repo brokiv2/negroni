@@ -1,0 +1,5 @@
+.build/
+.build-config/
+*.xcodeproj/
+Core/.build/
+.env.local

@@ -1,0 +1,37 @@
+# Native iOS client
+
+Negroni for iOS is a Swift/UIKit application. The app target has no React Native, Expo, Hermes or JavaScript application bundle. It uses the existing backend RPC contracts and streaming protocol; agent execution remains on the configured server. Android and the previous iOS implementation remain in `apps/mobile`.
+
+The interface uses UIKit navigation and tab bars, native text selection, document and photo pickers, Keychain sessions, Sign in with Apple and APNs. The composer uses `keyboardLayoutGuide` and AVFoundation recording. On supported iOS versions the tab bar and recording controls use system Liquid Glass. Embedded X posts are isolated article content in a nonpersistent WKWebView, loaded only on request.
+
+Colors, avatar geometry and AI-sharing disclosures are generated from the shared packages. The main mascot and AppIcon are the existing product assets. `Scripts/generate-theme.mjs` regenerates the shared source derivatives.
+
+## Develop
+
+Requires Xcode with the iOS 26 SDK, XcodeGen, Node.js and Python 3. Deployment target is iOS 17.
+
+```sh
+NEGRONI_API_URL=http://127.0.0.1:3100 apps/ios/Scripts/prepare.sh
+open apps/ios/Negroni.xcodeproj
+swift test --package-path apps/ios/Core
+```
+
+The generated project and `.build-config/ClientConfiguration.plist` are ignored. Never commit a private backend URL, tunnel credential, signing configuration or session. `NEGRONI_TUNNEL_KEY` is optional and is sent only to the configured gateway. Existing mobile sessions migrate from Keychain without deleting the legacy session.
+
+## TestFlight
+
+`Scripts/testflight_release.sh` builds the UIKit project. It reads signing credentials from an ignored `PRIVATE_RELEASE_CONFIG`, and the gateway from `NEGRONI_API_URL` or the adjacent legacy `.env.local`. Set `TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_PATH` in private configuration. The tunnel credential can come from the existing Keychain item.
+
+```sh
+apps/ios/Scripts/testflight_release.sh local
+apps/ios/Scripts/testflight_release.sh validate
+apps/ios/Scripts/testflight_release.sh upload
+```
+
+Use `BUILD_NUMBER` and a fresh `OUTPUT_DIR` for subsequent releases. Before upload, the script checks the version, production HTTPS gateway, icon, store provisioning, APNs and Apple sign-in entitlements, encryption declaration, original mascot and absence of cross-platform runtimes. Apple processing and beta availability must be verified separately after delivery.
+
+## Verification boundaries
+
+Offline tests cover RPC values, endpoint validation, streaming frame parsing, message reconciliation and dictation draft preservation. Simulator review covers readable selectable messages, model menus, feed images, original team avatars, and the recording/edit flow. The isolated dictation test server returns a fixture transcript; this does not verify an external transcription provider.
+
+Physical-device microphone quality, keyboard gestures, APNs delivery, subscription-provider OAuth and remote screen sharing require separate live checks. Computer status reports server availability; it does not claim screen-control capability. There is no native remote-desktop viewer in this client yet.
