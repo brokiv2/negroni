@@ -346,6 +346,13 @@ export function appendToolCallSegment(
 }
 
 export function humanizeToolName(name: string): string {
+  const workLabels: Record<string, string> = {
+    work_create: "Save ongoing work",
+    work_update: "Save work progress",
+    work_list: "Review ongoing work",
+    work_control: "Manage ongoing work",
+  };
+  if (workLabels[name]) return workLabels[name];
   const spaced = name.replace(/_/g, " ").trim();
   if (!spaced) return name;
   const lower = spaced.toLowerCase();

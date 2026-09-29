@@ -164,6 +164,7 @@ model Member {
 }
 
 model Space {
+  assistantWork AssistantWork[]
   feedProfiles FeedProfile[]
   feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
@@ -342,6 +343,7 @@ model SpaceVoicePreference {
 }
 
 model Bot {
+  assistantWork AssistantWork[]
   feedItems FeedItem[]
   screenGeneration Int @default(0)
   id                String            @id @default(cuid())
@@ -468,6 +470,7 @@ model ChatGroupMember {
 }
 
 model Thread {
+  assistantWork AssistantWork[]
   feedItemId String? @unique
   feedItem FeedItem? @relation(fields: [feedItemId], references: [id], onDelete: Cascade)
   id                          String     @id @default(cuid())
@@ -506,6 +509,7 @@ enum ThreadKind {
 }
 
 model Message {
+  assignedWork AssistantWork[]
   id               String    @id @default(cuid())
   threadId         String
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
@@ -571,6 +575,9 @@ model Task {
 }
 
 model Run {
+  workId String?
+  work AssistantWork? @relation(fields: [workId], references: [id], onDelete: SetNull)
+  workVersion Int?
   interactionMode      String           @default("chat")
   id                   String           @id @default(cuid())
   spaceId              String
@@ -1385,4 +1392,40 @@ model FeedProfile {
   updatedAt DateTime @updatedAt
   @@id([spaceId, userId])
   @@map("feed_profiles")
+}
+
+// A user-authorized outcome can outlive any one model run.
+model AssistantWork {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId String
+  botId String
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  threadId String
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sourceMessageId String
+  sourceMessage Message @relation(fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  creationKey String @unique
+  title String
+  objective String @db.Text
+  authorization String @db.Text
+  status String @default("waiting")
+  version Int @default(1)
+  nextWakeAt DateTime?
+  wakeReason String
+  lastResult String @default("") @db.Text
+  activeRunId String? @unique
+  runCount Int @default(0)
+  maxRuns Int @default(24)
+  deadline DateTime
+  modelProvider String?
+  modelId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  runs Run[]
+
+  @@index([status, nextWakeAt])
+  @@index([spaceId, userId, threadId])
+  @@map("assistant_work")
 }

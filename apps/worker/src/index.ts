@@ -7,6 +7,7 @@ loadRootEnv();
 import {
   apnsConfigFromEnv,
   ChatSdkMessagingSurface,
+  createAgentRuntime,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
@@ -33,10 +34,10 @@ import {
   McpOAuthBroker,
   messagingEnvFromProcess,
   messagingPlatformsFromEnv,
-  createAgentRuntime,
   PipedreamConnector,
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
+  reconcileAssistantWork,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   resolveDeploymentModel,
@@ -243,6 +244,7 @@ async function main() {
     events,
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
+    reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
   });
   reconciler.start();

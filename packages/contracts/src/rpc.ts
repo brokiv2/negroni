@@ -1,6 +1,7 @@
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
+import { AssistantWorkSchema, ControlAssistantWorkInput } from "./assistant-work.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
   ARTIFACT_NAME_MAX_LENGTH,
@@ -182,6 +183,10 @@ const threadSendInput = threadTarget
   });
 
 export const appContract = {
+  work: {
+    list: oc.input(threadTarget).output(z.array(AssistantWorkSchema)),
+    control: oc.input(ControlAssistantWorkInput).output(AssistantWorkSchema),
+  },
   aiConsent: {
     status: oc.input(AiConsentQuerySchema).output(AiConsentStatusSchema),
     allow: oc

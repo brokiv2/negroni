@@ -56,6 +56,7 @@ import {
   pipedreamConfigFromEnv,
   piSessionsRoot,
   pushTokenPath,
+  reconcileAssistantWork,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   removePiUserSessions,
@@ -438,6 +439,7 @@ export async function createApp(
         prisma,
         jobs,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
+        reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
       })
     : undefined;

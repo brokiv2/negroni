@@ -2,8 +2,11 @@ import type { ConnectorTool } from "@rakazo/adapter-kit";
 import {
   BotSecretName,
   botSecretDestinationSchema,
+  ControlAssistantWorkInput,
+  CreateAssistantWorkInput,
   SecretAskPurpose,
   SecretHttpRequest,
+  UpdateAssistantWorkInput,
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
@@ -755,6 +758,30 @@ export const builtinAgentTools: ConnectorTool[] = [
       },
       required: ["itemId"],
     },
+  },
+  {
+    name: "work_create",
+    description:
+      "Save a user-requested ongoing responsibility with a specific future check, deadline and bounded run allowance. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
+    inputSchema: z.toJSONSchema(CreateAssistantWorkInput),
+  },
+  {
+    name: "work_list",
+    description:
+      "Read ongoing responsibilities, current versions, next checks and verified results in this conversation.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "work_update",
+    description:
+      "Save the outcome of your work: waiting requires nextWakeAt and a reason, needs_input waits for the user, completed requires verified result evidence. Use the version from work_list. End the turn after saving a background outcome; unchanged checks finish with NO_RESPONSE.",
+    inputSchema: z.toJSONSchema(UpdateAssistantWorkInput),
+  },
+  {
+    name: "work_control",
+    description:
+      "Pause, resume or cancel ongoing work when the user explicitly requests it. Use the current version from work_list. Cancelled or completed work cannot be restarted.",
+    inputSchema: z.toJSONSchema(ControlAssistantWorkInput),
   },
   {
     name: "schedule_create",

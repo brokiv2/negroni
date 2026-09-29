@@ -42,6 +42,7 @@ import {
   clearInactiveUserComputerControl,
   computerSupportsUpdate,
   computerUpdateView,
+  controlAssistantWork,
   createVoiceProvider,
   defaultCatalogModelId,
   deletePushToken,
@@ -56,6 +57,7 @@ import {
   isComputerScreenUnavailable,
   isSandboxGoneError,
   isScratchpadStatus,
+  listAssistantWork,
   listAvailablePiCatalog,
   listPiCatalog,
   listScratchpadItems,
@@ -617,6 +619,21 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     health: os.health.handler(async () => ({ ok: true as const, version: "0.1.0" })),
+    work: {
+      list: authed.work.list.handler(async ({ context, input }) => {
+        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        return listAssistantWork(deps.prisma, context.actor, target.threadId);
+      }),
+      control: authed.work.control.handler(async ({ context, input }) => {
+        try {
+          return await controlAssistantWork(deps.prisma, context.actor, input);
+        } catch (error) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: error instanceof Error ? error.message : "Could not update work.",
+          });
+        }
+      }),
+    },
     me: authed.me.handler(async ({ context }): Promise<Me> => meDto(deps, context.actor)),
     preferences: {
       update: authed.preferences.update.handler(async ({ context, input }): Promise<Me> => {

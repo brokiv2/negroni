@@ -17,7 +17,12 @@ export function filterBuiltinToolsForRun<T extends { name: string }>(
   tools: T[],
   runTrigger: string,
 ): T[] {
-  return runTrigger === "routine" ? tools.filter((tool) => tool.name !== "schedule_create") : tools;
+  return tools.filter(
+    (tool) =>
+      (!(runTrigger === "routine" || runTrigger === "work") || tool.name !== "schedule_create") &&
+      (["user", "follow_up"].includes(runTrigger) ||
+        !["work_create", "work_control"].includes(tool.name)),
+  );
 }
 
 /** Keep cross-bot messaging thread-specific while exposing schedules in DMs and groups. */

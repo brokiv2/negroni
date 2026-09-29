@@ -163,6 +163,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       navigationItem.titleView = titleView
     }
     let menu = UIMenu(children: [
+      UIAction(title: "Ongoing work", image: UIImage(systemName: "clock.arrow.circlepath")) { [weak self] _ in
+        guard let self else { return }
+        self.navigationController?.pushViewController(AssistantWorkController(target: self.target), animated: true)
+      },
       UIAction(title: "Models", image: UIImage(systemName: "cpu")) { [weak self] _ in
         self?.navigationController?.pushViewController(ModelsController(), animated: true)
       }

@@ -167,4 +167,14 @@ Build 34 ships native tool activity and message-reconciliation fixes. It does no
 
 Implement persistent responsibility and adaptive wake transitions first, using the existing queue and recovery machinery. Then integrate restricted research and findings, followed by selection/delivery and native controls. Run the scenarios above against isolated fake services before enabling recurring research on real accounts. Expand connected research sources only when their operation boundaries are enforced.
 
+### Local implementation: persistent assigned work
+
+The first implementation is now present in the source checkout, not yet in the installed backend or TestFlight. `AssistantWork` stores the originating user request, objective, current outcome, selected model, next check, deadline and run allowance. The existing elected reconciler claims due work under a conversation lock and publishes an ordinary run; the existing queue recovery repairs a missed publication. An unchanged wake can finish silently without another chat bubble. Run completion alone leaves the responsibility needing attention unless the assistant explicitly saves an outcome.
+
+Current user turns can create responsibilities through `work_create`; background runs cannot create or reactivate them. `work_update` saves waiting, a request for input or completion evidence. Native chat exposes “Ongoing work” in its overflow menu, with details, pause/resume and swipe-to-stop. Version checks reject stale updates after controls change. Expiry, revoked space membership and missing conversation/assistant availability stop further checks. Clearing the originating conversation removes its responsibilities.
+
+Validation: 17 real PostgreSQL lifecycle cases, one full executor scenario with scripted model events, and 228 adjacent API/executor/reconciler regressions pass. The executor scenario covers creation, persisted wake, task-model routing and a silent unchanged result through actual tool dispatch. Adapter/API/worker typechecks and the UIKit simulator build pass. All services in these scenarios are fake; no paid model or real account is used. Native touch behavior and actual model judgment remain unverified.
+
+This foundation does not yet implement independent discovery, restricted research tools, evidence ranking, source-change deduplication, daily inference allowances, or stop-all controls. A running external operation may already have taken effect when stopped; the current cancellation fence prevents subsequent tool dispatch and future wakes. Source-backed discovery and its delivery policy remain the next implementation stage.
+
 Acceptance needs both backend recovery tests and actual native interaction checks. Passing an archive or reaching TestFlight does not verify touch behavior or end-to-end proactive relevance on a physical phone.

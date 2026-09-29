@@ -147,6 +147,13 @@ import {
   uncertainEffectResult,
 } from "./approval-effect.js";
 import {
+  assistantWorkRunAllowed,
+  controlAssistantWork,
+  createAssistantWork,
+  listAssistantWork,
+  updateAssistantWork,
+} from "./assistant-work.js";
+import {
   autoReviewTimeoutMs,
   deploymentAutoReviewDefault,
   isAutoReviewCheckerConfigured,
@@ -294,7 +301,6 @@ import {
   filterBuiltinToolsForThread,
   listSchedulesFromTool,
 } from "./schedule-tools.js";
-
 import {
   addScratchpadItemFromTool,
   completeScratchpadItemFromTool,
@@ -353,6 +359,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "recall_memory",
   "read_memory",
   "schedule_list",
+  "work_list",
   "scratchpad_list",
   "skill_read",
   "web_search",
@@ -1116,6 +1123,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
     async continueRun(runId: string, workerId: string) {
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
+      if (
+        run.trigger === "work" &&
+        (!run.workId || !(await assistantWorkRunAllowed(deps.prisma, run.id, run.workId)))
+      ) {
+        await deps.prisma.run.updateMany({
+          where: { id: run.id, status: "queued" },
+          data: { status: "cancelled", completedAt: new Date() },
+        });
+        return;
+      }
       if (isTerminal(run.status as RunStatus)) return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
@@ -1200,9 +1217,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         void Promise.all([
           renewRunLease(deps, runId, workerId, fence),
           renewComputerExecutionLease(deps.prisma, computerLease),
+          run.workId ? assistantWorkRunAllowed(deps.prisma, run.id, run.workId) : true,
         ])
-          .then(([runRenewed, computerRenewed]) => {
-            if (!runRenewed || !computerRenewed) {
+          .then(([runRenewed, computerRenewed, workAllowed]) => {
+            if (!runRenewed || !computerRenewed || !workAllowed) {
               leaseValid = false;
               runAbortController?.abort();
             }
@@ -1443,7 +1461,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const { thinkingLevel } = selected;
         let runModelProvider = selected.provider ?? runtimeFallback?.provider;
         let runModelId = selected.id ?? runtimeFallback?.id;
-        const workload = thread.kind === "personal" && !bot.parentBotId ? "conversation" : "task";
+        const workload =
+          run.trigger !== "work" && thread.kind === "personal" && !bot.parentBotId
+            ? "conversation"
+            : "task";
         const failRunBeforeModel = async (message: string) => {
           const failed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
@@ -1899,6 +1920,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           executionId: string,
         ) => {
           context.signal.throwIfAborted();
+          if (
+            run.trigger === "work" &&
+            (!run.workId || !(await assistantWorkRunAllowed(deps.prisma, run.id, run.workId)))
+          ) {
+            throw new Error(
+              "This responsibility was stopped, changed or expired. No further actions are allowed.",
+            );
+          }
           if (handedOff) {
             return { error: "This stage was handed off. End the turn without more tool calls." };
           }
@@ -2784,7 +2813,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (
               !currentTurnMessage ||
               messagingChannelRun ||
-              run.trigger === "routine" ||
+              runAllowsSilentEmpty(run.trigger) ||
               run.trigger === "bot_message"
             )
               return finish({ ignored: true });
@@ -2807,7 +2836,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 { spaceId: run.spaceId, userId: run.userId },
                 bot.id,
                 args,
-                { automated: run.trigger === "routine" },
+                { automated: runAllowsSilentEmpty(run.trigger) },
               ),
             );
           }
@@ -2946,6 +2975,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
               itemId: String(args.itemId ?? ""),
             });
             return finish(removed);
+          }
+          if (["work_create", "work_update", "work_control", "work_list"].includes(name)) {
+            try {
+              if (name === "work_list") return await listAssistantWork(deps.prisma, run, thread.id);
+              if (name === "work_create")
+                return finish(await createAssistantWork(deps.prisma, run, args));
+              if (name === "work_update")
+                return finish(await updateAssistantWork(deps.prisma, run, args));
+              if (!["user", "follow_up"].includes(run.trigger))
+                return { error: "Only the user's request can pause, resume or cancel work." };
+              const items = await listAssistantWork(deps.prisma, run, thread.id);
+              if (!items.some((item) => item.id === args.workId))
+                return { error: "Work not found in this conversation." };
+              return finish(await controlAssistantWork(deps.prisma, run, args));
+            } catch (error) {
+              return {
+                error: error instanceof Error ? error.message : "Work could not be updated.",
+              };
+            }
           }
           if (name === "schedule_create") {
             const created = await createScheduleFromTool(deps, {
@@ -3943,6 +3991,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           select: { status: true, leaseOwner: true, leaseFence: true },
         });
         if (
+          (run.trigger === "work" &&
+            (!run.workId || !(await assistantWorkRunAllowed(deps.prisma, run.id, run.workId)))) ||
           !mayOpenModelStream(
             beforeModel,
             workerId,
@@ -3999,7 +4049,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       ? feedProfileInstruction(
                           feedProfile,
                           !!currentTurnMessage &&
-                            run.trigger !== "routine" &&
+                            !runAllowsSilentEmpty(run.trigger) &&
                             run.trigger !== "bot_message",
                         )
                       : undefined,
@@ -4985,7 +5035,7 @@ export function threadContextForRun<T>(
 ) {
   // Routine runs stay isolated from thread history. The creation intro does
   // too: a message that arrives during it waits and is answered afterward.
-  if (trigger === "created" || trigger === "routine") {
+  if (trigger === "created" || trigger === "routine" || trigger === "work") {
     return {
       messages: [] as T[],
       summary: null,
@@ -5039,16 +5089,19 @@ export const LONG_WORK_PROGRESS_GUIDANCE =
 export const ROUTINE_SILENT_REPLY_GUIDANCE = `Only perform the work authorized by this routine. Publishing a feed item does not require a chat announcement. Unless the user explicitly requested every scheduled report, stay silent when there is no meaningful new result or required user decision. When staying silent, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 
 export function runAllowsSilentEmpty(trigger: string): boolean {
-  return trigger === "routine";
+  return trigger === "routine" || trigger === "work";
 }
 
 export function runPromotesMidTurnNarration(trigger: string): boolean {
-  return trigger !== "routine";
+  return !runAllowsSilentEmpty(trigger);
 }
 
 export function runReplyGuidance(trigger: string): string {
   return runAllowsSilentEmpty(trigger)
-    ? ROUTINE_SILENT_REPLY_GUIDANCE
+    ? ROUTINE_SILENT_REPLY_GUIDANCE.replace(
+        "this routine",
+        trigger === "work" ? "this responsibility" : "this routine",
+      )
     : LONG_WORK_PROGRESS_GUIDANCE;
 }
 
@@ -5094,7 +5147,7 @@ export function completionNotificationPreview(text: string): string {
 }
 
 export function completionMarksUnread(trigger: string, text: string): boolean {
-  return trigger !== "routine" || Boolean(text);
+  return !runAllowsSilentEmpty(trigger) || Boolean(text);
 }
 
 export function missingTurnImagesInstruction(
@@ -5136,7 +5189,7 @@ export async function settleSteeringAttachmentLoads<TImage, TFile>(
 }
 
 export function subagentMarksUnread(trigger: string, status: "running" | "completed" | "failed") {
-  return status === "failed" || trigger !== "routine";
+  return status === "failed" || !runAllowsSilentEmpty(trigger);
 }
 
 function computerRunRequeueData(
