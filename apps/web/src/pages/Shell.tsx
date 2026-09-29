@@ -1346,7 +1346,7 @@ export function ShellPage() {
         const primed = bootstrappedThread.current;
         bootstrappedThread.current = null;
         // Pending search jumps load the around-page separately; avoid replacing it with latest.
-        return primed?.botId === active.id
+        return botThreadKind === "team" && primed?.botId === active.id
           ? primed
           : pendingJump
             ? rpc.threads.get(botThreadTarget(active.id), {
@@ -1423,7 +1423,7 @@ export function ShellPage() {
     return () => {
       abort.abort();
     };
-  }, [active?.id, markBotReadIfVisible, notifyBrowserForEvent]);
+  }, [active?.id, botThreadKind, markBotReadIfVisible, notifyBrowserForEvent]);
 
   useEffect(() => {
     if (!groupId || !activeGroup) return;
