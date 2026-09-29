@@ -7,6 +7,7 @@ import type {
   WebSearchHit,
   WebSearchRequest,
 } from "@rakazo/adapter-kit";
+import { FeedItemInput } from "@rakazo/contracts";
 import { JSDOM } from "jsdom";
 import { clampMaxChars, clampMaxResults } from "./web-limits.js";
 import { fetchSafeWebText, type ResolveHostname } from "./web-ssrf.js";
@@ -106,6 +107,7 @@ export class KeylessHttpWebProvider implements WebProvider {
   async fetch(request: WebFetchRequest, context: AdapterContext): Promise<WebFetchResult> {
     const maxChars = clampMaxChars(request.maxChars);
     const { url, body } = await fetchSafeWebText(request.url, {
+      allowedDomains: request.allowedDomains,
       fetch: this.fetchImpl,
       resolveHostname: this.resolveHostname,
       timeoutMs: this.fetchTimeoutMs,
@@ -119,6 +121,7 @@ export class KeylessHttpWebProvider implements WebProvider {
     return {
       url,
       title: extracted.title,
+      ...(extracted.imageUrl ? { imageUrl: extracted.imageUrl } : {}),
       text: truncated
         ? `${extracted.text.slice(0, maxChars)}\n\n[Content truncated]`
         : extracted.text,
@@ -163,23 +166,45 @@ function unwrapDuckDuckGoUrl(rawUrl: string): string {
   }
 }
 
-export function extractReadableText(html: string, url: string): { title: string; text: string } {
+export function extractReadableText(
+  html: string,
+  url: string,
+): { title: string; text: string; imageUrl?: string } {
   const readable = extractWithReadability(html, url);
   if (readable) return readable;
   return stripHtmlFallback(html);
 }
 
-function extractWithReadability(html: string, url: string): { title: string; text: string } | null {
+function extractWithReadability(
+  html: string,
+  url: string,
+): { title: string; text: string; imageUrl?: string } | null {
   try {
     const dom = new JSDOM(html, { url });
-    const article = new Readability(dom.window.document).parse();
-    if (article?.textContent && article.textContent.length > 0) {
-      return {
-        title: article.title?.trim() || "Untitled",
-        text: normalizeArticleText(article.textContent),
-      };
+    try {
+      const rawImage = dom.window.document
+        .querySelector('meta[property="og:image"], meta[name="twitter:image"]')
+        ?.getAttribute("content");
+      let imageUrl: string | undefined;
+      if (rawImage) {
+        try {
+          const candidate = new URL(rawImage, url).href;
+          if (FeedItemInput.shape.imageUrl.safeParse(candidate).success) imageUrl = candidate;
+        } catch {
+          /* Invalid metadata does not hide the article. */
+        }
+      }
+      const article = new Readability(dom.window.document).parse();
+      const content = article?.textContent?.length
+        ? {
+            title: article.title?.trim() || "Untitled",
+            text: normalizeArticleText(article.textContent),
+          }
+        : stripHtmlFallback(html);
+      return { ...content, ...(imageUrl ? { imageUrl } : {}) };
+    } finally {
+      dom.window.close();
     }
-    return null;
   } catch {
     return null;
   }

@@ -448,3 +448,22 @@ describe("web SSRF policy", () => {
     expect(resolveCalls).toBe(1);
   });
 });
+
+describe("research source scope", () => {
+  it.each(["https://other.test/page", "http://example.test/page"])(
+    "rejects redirect %s before requesting it",
+    async (destination) => {
+      const fetchMock = vi.fn(
+        async () => new Response(null, { status: 302, headers: { location: destination } }),
+      );
+      await expect(
+        fetchSafeWebText("https://example.test/start", {
+          allowedDomains: ["example.test"],
+          resolveHostname: publicResolver,
+          fetch: fetchMock,
+        }),
+      ).rejects.toThrow("outside the selected");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+});

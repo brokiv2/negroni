@@ -237,7 +237,27 @@ final class FeedSettingsController: ListController {
   }
   override func load() async throws {
     profile = try await API.shared.rpc("feed/profile")
+    let research = try await API.shared.rpc("feed/research")
+    let researchState = research["state"].string
+    let dateFormatter = ISO8601DateFormatter()
+    dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let nextCheck = dateFormatter.date(from: research["nextCheckAt"].string).map { " · Next: " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
+    let researchDetail = researchState == "learning" ? "Add a topic or let interests emerge from conversations."
+      : researchState == "researching" ? "Reading public sources"
+      : researchState == "needs_attention" ? research["error"].string
+      : "\(research["checksUsed"].int) of \(research["checksPerDay"].int) checks in the last 24 hours" + nextCheck
     sections = [
+      ListSection(title: "Discovery", rows: [
+        ListRow(title: "Find articles for me", symbol: "sparkle.magnifyingglass",
+          switchValue: profile["researchEnabled"].bool,
+          onSwitch: { [weak self] value in self?.mutate("feed/configure", ["researchEnabled": .bool(value)]) }),
+        ListRow(title: "Checks per day", detail: "\(profile["researchChecksPerDay"].int)",
+          action: { [weak self] in
+            self?.prompt("Checks per day", value: String(self?.profile["researchChecksPerDay"].int ?? 3)) { [weak self] value in
+              if let count = Int(value) { self?.mutate("feed/configure", ["researchChecksPerDay": .number(Double(count))]) }
+            }
+          }),
+      ], footer: profile["researchEnabled"].bool ? researchDetail : "Reads public sources and adds relevant articles to For you."),
       ListSection(rows: [
         ListRow(
           title: "Learn interests from conversations",
@@ -294,10 +314,10 @@ final class FeedSettingsController: ListController {
               }
             }),
           ListRow(
-            title: "Articles per collection", detail: "\(profile["maxItems"].int)",
+            title: "Articles per day", detail: "\(profile["maxItems"].int)",
             action: { [weak self] in
               self?.prompt(
-                "Articles per collection", value: String(self?.profile["maxItems"].int ?? 5)
+                "Articles per day", value: String(self?.profile["maxItems"].int ?? 5)
               ) { [weak self] value in
                 if let n = Int(value) {
                   self?.mutate("feed/configure", ["maxItems": .number(Double(n))])

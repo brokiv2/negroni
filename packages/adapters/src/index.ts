@@ -4,6 +4,7 @@ export * from "./agent-runtime.js";
 export * from "./ai-consent.js";
 export * from "./apns-push.js";
 export * from "./artifacts.js";
+export * from "./assistant-work.js";
 export * from "./auto-review.js";
 export * from "./auto-review-factory.js";
 export * from "./background-job-handlers.js";
@@ -61,6 +62,12 @@ export * from "./fake-browser.js";
 export * from "./fake-sandbox.js";
 export * from "./fake-web.js";
 export * from "./feed-profile.js";
+export {
+  executeFeedResearch,
+  getFeedResearchStatus,
+  reconcileFeedResearch,
+  researchRunAllowed,
+} from "./feed-research.js";
 export * from "./fish-audio-voice.js";
 export * from "./github-webhook-emulator.js";
 export * from "./graphql-connectors.js";
@@ -126,5 +133,3 @@ export * from "./web-limits.js";
 export * from "./web-provider-factory.js";
 export * from "./web-ssrf.js";
 export * from "./web-tools.js";
-
-export * from "./assistant-work.js";

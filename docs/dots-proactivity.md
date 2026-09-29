@@ -73,7 +73,7 @@ Keep the existing Codex tool loop as the execution unit. Put eligibility, persis
 | `packages/core/src/action-approval.ts` | Existing user rules and action review | Do not mistake approval exemptions or connector naming heuristics for a research sandbox |
 | `threads.activity`, native `ToolActivityView` | Real tool lifecycle and native detail sheet, shipped in build 34 | Add responsibility-level waiting/paused/completed states above individual tool calls |
 
-There is currently no equivalent of a persisted adaptive responsibility plus an isolated discovery worker. A cron job with a broad prompt would leave these gaps unresolved.
+The implementation status is recorded below. A cron job with a broad prompt alone would leave these lifecycle and capability boundaries unresolved.
 
 ## Persistent work contract
 
@@ -178,3 +178,16 @@ Validation: 17 real PostgreSQL lifecycle cases, one full executor scenario with 
 This foundation does not yet implement independent discovery, restricted research tools, evidence ranking, source-change deduplication, daily inference allowances, or stop-all controls. A running external operation may already have taken effect when stopped; the current cancellation fence prevents subsequent tool dispatch and future wakes. Source-backed discovery and its delivery policy remain the next implementation stage.
 
 Acceptance needs both backend recovery tests and actual native interaction checks. Passing an archive or reaching TestFlight does not verify touch behavior or end-to-end proactive relevance on a physical phone.
+
+
+### Local implementation: bounded public discovery
+
+The second source change adds opt-in discovery under For you → Feed settings. An ordinary UIKit switch enables it; checks per day and existing source/topic controls define its scope. It is independent of conversation-interest learning. No interest alone creates a monitor or responsibility. Status reports the next check, current collection and rolling allowance.
+
+The existing elected reconciler creates one persisted research cycle with a five-minute deadline. A separate internal thread keeps the main conversation available. The researcher receives only eligible public topics, allowed domains and previously seen URLs, with no conversation history, agent secrets, computer, connector, messaging, memory-write, schedule or delegation tools. The ordinary model registry resolves its conversation model; an isolated runtime request exposes only public search, page reading and private finding submission. Dispatch rechecks current authorization and enforces twelve tool calls. Domain restrictions apply before every page request, including redirects.
+
+Each private finding needs a source read in that run, an exact supporting quote, an eligible topic and a confidence threshold. The source fingerprint, quotation, relevance text and expiry are stored. Successful completion passes findings through current scope, exclusion, novelty and daily publication gates before creating feed cards. Hidden or previously seen URLs do not return. Preview images come from the fetched page metadata rather than model-invented links. The current selector combines the research model's relevance judgment with these deterministic gates; it does not claim to reproduce Dots' private ranking algorithm or run a separate coordinator model for each article.
+
+Discovery never posts narration or pushes to the chat. Empty checks back off. Pausing or changing scope cancels the current cycle and rejects late findings; revoked membership and expiry stop dispatch. Both continuing work and discovery run through the existing backend on the Mac. No virtual computer is created, and the discovery executor never provisions or controls a computer.
+
+Current boundaries: this discovery mode reads public web sources, not signed-in account connectors. Explicitly assigned ongoing work can use the assistant's existing authorized tools. Source events, semantic cross-URL story clustering and a single stop-all control remain additional work. This implementation and its UI have not yet been deployed or uploaded; interactive native verification is unavailable because the native UI automation tool cannot access the simulator.

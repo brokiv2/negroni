@@ -222,6 +222,7 @@ import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safe
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { feedProfileInstruction, getFeedProfile, learnFeedInterest } from "./feed-profile.js";
+import { executeFeedResearch, researchRunAllowed } from "./feed-research.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
   COMPACTION_BATCH_SIZE,
@@ -1133,6 +1134,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
         return;
       }
+      if (
+        run.trigger === "research" &&
+        (!run.researchId || !(await researchRunAllowed(deps.prisma, run.id, run.researchId)))
+      ) {
+        await deps.prisma.run.updateMany({
+          where: { id: run.id, status: "queued" },
+          data: { status: "cancelled", completedAt: new Date() },
+        });
+        return;
+      }
       if (isTerminal(run.status as RunStatus)) return;
       let { resumeCheckpoint, heldForTakeover, resumeHeldLease, takeoverResume } =
         takeoverContinuePlan(run);
@@ -1180,19 +1191,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
         where: { id: run.botId },
         select: { computerId: true, computerSwitching: true },
       });
-      if (!leaseTarget.computerId) throw new Error("Bot has no computer");
-      if (leaseTarget.computerSwitching) {
+      if (!leaseTarget.computerId && run.trigger !== "research")
+        throw new Error("Bot has no computer");
+      if (leaseTarget.computerSwitching && run.trigger !== "research") {
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
         return;
       }
       let computerLease: ComputerExecutionLease | null = null;
       try {
-        computerLease = await acquireComputerExecutionLease(deps.prisma, {
-          computerId: leaseTarget.computerId,
-          runId,
-          botId: run.botId,
-          resumeHeldLease,
-        });
+        computerLease =
+          run.trigger === "research"
+            ? null
+            : await acquireComputerExecutionLease(deps.prisma, {
+                computerId: leaseTarget.computerId!,
+                runId,
+                botId: run.botId,
+                resumeHeldLease,
+              });
       } catch (error) {
         if (!(error instanceof ComputerBusyError)) throw error;
         await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
@@ -1217,7 +1232,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         void Promise.all([
           renewRunLease(deps, runId, workerId, fence),
           renewComputerExecutionLease(deps.prisma, computerLease),
-          run.workId ? assistantWorkRunAllowed(deps.prisma, run.id, run.workId) : true,
+          run.workId
+            ? assistantWorkRunAllowed(deps.prisma, run.id, run.workId)
+            : run.researchId
+              ? researchRunAllowed(deps.prisma, run.id, run.researchId)
+              : true,
         ])
           .then(([runRenewed, computerRenewed, workAllowed]) => {
             if (!runRenewed || !computerRenewed || !workAllowed) {
@@ -1325,7 +1344,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           (connection) => connection.connectorId === "composio",
         );
         let liveSlugs: string[] = [];
-        if (needsLivePluginSync(composioRows)) {
+        if (run.trigger !== "research" && needsLivePluginSync(composioRows)) {
           const listing = await loadLivePluginSlugs(deps.listConnectedPluginSlugs, run.userId);
           if (listing.ok) {
             liveSlugs = listing.slugs;
@@ -1371,9 +1390,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           payload: { trigger: run.trigger, routineId: run.routineId },
         });
 
-        const discoveredPromise = deps.connector
-          ? deps.connector.discoverTools(context)
-          : Promise.resolve([]);
+        const discoveredPromise =
+          deps.connector && run.trigger !== "research"
+            ? deps.connector.discoverTools(context)
+            : Promise.resolve([]);
         const threadContext = threadContextForRun(
           run.trigger,
           {
@@ -1431,7 +1451,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const [discovered, currentTurnImages, memoryContext] = await Promise.all([
           discoveredPromise,
           loadCurrentTurnImages(deps, turnBlocks, context),
-          messagingChannelRun
+          messagingChannelRun || run.trigger === "research"
             ? Promise.resolve("")
             : loadAgentMemoryIndex(deps.memory, bot.id, context),
         ]);
@@ -1462,7 +1482,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let runModelProvider = selected.provider ?? runtimeFallback?.provider;
         let runModelId = selected.id ?? runtimeFallback?.id;
         const workload =
-          run.trigger !== "work" && thread.kind === "personal" && !bot.parentBotId
+          run.trigger === "research" ||
+          (run.trigger !== "work" && thread.kind === "personal" && !bot.parentBotId)
             ? "conversation"
             : "task";
         const failRunBeforeModel = async (message: string) => {
@@ -1493,7 +1514,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               "status",
             ).catch((error) => getLogger().error("bot message failure return", error));
           }
-          if (!failed.continuationRunId) {
+          if (run.trigger !== "research" && !failed.continuationRunId) {
             await notifyRun(deps, run, {
               kind: "failure",
               title: `${bot.name} failed`,
@@ -1589,6 +1610,59 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
           data: { modelProvider: runModelProvider, modelId: runModelId },
         });
+        if (run.trigger === "research") {
+          let researchError: string | undefined;
+          try {
+            if (!run.researchId) throw new Error("Research context is unavailable.");
+            if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+            await executeFeedResearch({
+              prisma: deps.prisma,
+              runtime: deps.runtime,
+              web: createWebProvider(),
+              researchId: run.researchId,
+              context,
+              request: {
+                botId: bot.id,
+                threadId: thread.id,
+                runId,
+                workload,
+                model: {
+                  provider: runModelProvider,
+                  id: runModelId,
+                  apiKey: resolved.oauth ? undefined : resolved.apiKey,
+                  baseUrl: resolved.baseUrl,
+                  reasoning: resolved.reasoning,
+                  maxTokens: Math.min(resolved.maxTokens ?? 8192, 8192),
+                  contextWindow: resolved.contextWindow,
+                  acceptsImages: false,
+                  thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
+                  oauth: resolved.oauth
+                    ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+                    : undefined,
+                },
+              },
+            });
+          } catch (error) {
+            researchError = redactSecrets(
+              error instanceof Error ? error.message : String(error),
+              runSecrets,
+            );
+          }
+          await deps.events.finalizeRun({
+            spaceId: run.spaceId,
+            threadId: thread.id,
+            botId: bot.id,
+            runId,
+            taskId: run.taskId,
+            attemptId: attempt.id,
+            leaseOwner: workerId,
+            leaseFence: fence,
+            ...(researchError
+              ? { outcome: "failed" as const, error: researchError }
+              : { outcome: "completed" as const, blocks: [], markUnread: false }),
+          });
+          return;
+        }
         if (!bot.computer) throw new Error("Bot has no computer");
         const storedComputer = bot.computer;
         const computerMode = parseComputerMode(storedComputer.scope);
@@ -4878,6 +4952,7 @@ async function notifyRun(
     where: { id: run.threadId, spaceId: run.spaceId },
     select: { kind: true },
   });
+  if (target?.kind === "research") return;
   await deps.notifications
     .send(
       { ...message, spaceId: run.spaceId, threadKind: target?.kind ?? "team" },
@@ -5035,7 +5110,12 @@ export function threadContextForRun<T>(
 ) {
   // Routine runs stay isolated from thread history. The creation intro does
   // too: a message that arrives during it waits and is answered afterward.
-  if (trigger === "created" || trigger === "routine" || trigger === "work") {
+  if (
+    trigger === "created" ||
+    trigger === "routine" ||
+    trigger === "work" ||
+    trigger === "research"
+  ) {
     return {
       messages: [] as T[],
       summary: null,
@@ -5066,7 +5146,7 @@ export function runIdentityInstruction(
 }
 
 export function runSendsFinishNotification(trigger: string): boolean {
-  return trigger !== "created";
+  return trigger !== "created" && trigger !== "research";
 }
 
 /** Open the model only while this worker still owns the running lease. */

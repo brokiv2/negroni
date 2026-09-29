@@ -40,6 +40,7 @@ import {
   reconcileAssistantWork,
   reconcileCloudAgents,
   reconcileComputerUpdates,
+  reconcileFeedResearch,
   resolveDeploymentModel,
   resolvePiSessionRoot,
   resolveSandboxProvider,
@@ -245,6 +246,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
+    reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
   });
   reconciler.start();

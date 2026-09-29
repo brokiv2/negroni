@@ -66,6 +66,8 @@ export const FeedInterestSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 export const FeedProfileSchema = z.object({
+  researchEnabled: z.boolean().default(false),
+  researchChecksPerDay: z.number().int().min(1).max(8).default(3),
   learningEnabled: z.boolean().default(false),
   interests: z.array(FeedInterestSchema).max(40).default([]),
   excludedTopics: z.array(z.string().min(1).max(100)).max(40).default([]),
@@ -85,6 +87,8 @@ export const FeedProfileSchema = z.object({
 export type FeedProfile = z.infer<typeof FeedProfileSchema>;
 // Patch fields must not inherit profile defaults: omitted values preserve saved settings.
 export const FeedProfilePatch = z.object({
+  researchEnabled: FeedProfileSchema.shape.researchEnabled.removeDefault().optional(),
+  researchChecksPerDay: FeedProfileSchema.shape.researchChecksPerDay.removeDefault().optional(),
   learningEnabled: FeedProfileSchema.shape.learningEnabled.removeDefault().optional(),
   sourceDomains: FeedProfileSchema.shape.sourceDomains.removeDefault().optional(),
   maxItems: FeedProfileSchema.shape.maxItems.removeDefault().optional(),
@@ -98,4 +102,13 @@ export const FeedObservation = z.object({
   reason: z.string().max(300),
   evidence: z.string().min(8).max(500),
   confidence: z.number().min(0.85).max(1),
+});
+
+export const FeedResearchStatus = z.object({
+  state: z.enum(["off", "learning", "waiting", "researching", "needs_attention"]),
+  nextCheckAt: z.string().datetime().nullable(),
+  lastCheckAt: z.string().datetime().nullable(),
+  checksUsed: z.number().int(),
+  checksPerDay: z.number().int(),
+  error: z.string().nullable(),
 });

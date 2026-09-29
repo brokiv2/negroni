@@ -135,3 +135,26 @@ describe("web tool clamps", () => {
     expect(clampMaxChars(999_999)).toBe(50_000);
   });
 });
+
+describe("source preview images", () => {
+  it("uses the page metadata and resolves relative image URLs", () => {
+    expect(
+      extractReadableText(
+        '<html><head><meta property="og:image" content="/preview.png"></head><body>Article text</body></html>',
+        "https://example.test/article",
+      ).imageUrl,
+    ).toBe("https://example.test/preview.png");
+  });
+  it.each([
+    "http://example.test/insecure.png",
+    "https://127.0.0.1/private.png",
+    "javascript:alert(1)",
+  ])("ignores invalid preview metadata %s", (image) => {
+    expect(
+      extractReadableText(
+        `<meta property="og:image" content="${image}"><p>Article</p>`,
+        "https://example.test/article",
+      ).imageUrl,
+    ).toBeUndefined();
+  });
+});

@@ -96,6 +96,7 @@ import {
   FeedItemSchema,
   FeedProfilePatch,
   FeedProfileSchema,
+  FeedResearchStatus,
 } from "./personal-feed.js";
 import { MessageReactionSchema } from "./reactions.js";
 import {
@@ -537,6 +538,7 @@ export const appContract = {
   },
   feed: {
     profile: oc.output(FeedProfileSchema),
+    research: oc.output(FeedResearchStatus),
     configure: oc.input(FeedProfilePatch).output(FeedProfileSchema),
     interest: oc.input(FeedInterestUpdate).output(FeedProfileSchema),
     list: oc

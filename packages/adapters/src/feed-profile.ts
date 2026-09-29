@@ -13,7 +13,7 @@ export function eligibleFeedInterests(profile: FeedProfile, now = Date.now()) {
   );
 }
 export async function getFeedProfile(prisma: PrismaClient, scope: Scope) {
-  scope = {spaceId:scope.spaceId,userId:scope.userId};
+  scope = { spaceId: scope.spaceId, userId: scope.userId };
   const row = await prisma.feedProfile.findUnique({ where: { spaceId_userId: scope } });
   return FeedProfileSchema.parse(row?.data ?? {});
 }
@@ -22,15 +22,42 @@ export async function mutateFeedProfile(
   scope: Scope,
   change: (p: FeedProfile) => FeedProfile,
 ) {
-  scope = {spaceId:scope.spaceId,userId:scope.userId};
+  scope = { spaceId: scope.spaceId, userId: scope.userId };
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scope.spaceId}), hashtext(${scope.userId}))`;
     const row = await tx.feedProfile.findUnique({ where: { spaceId_userId: scope } });
-    const data = FeedProfileSchema.parse(change(FeedProfileSchema.parse(row?.data ?? {})));
+    const previous = FeedProfileSchema.parse(row?.data ?? {});
+    const data = FeedProfileSchema.parse(change(previous));
+    const scopeChanged = researchScope(previous) !== researchScope(data);
+    if (scopeChanged && row?.activeResearchId) {
+      const run = await tx.run.findFirst({
+        where: {
+          researchId: row.activeResearchId,
+          status: { notIn: ["completed", "failed", "cancelled"] },
+        },
+      });
+      if (run) {
+        await tx.run.update({
+          where: { id: run.id },
+          data: { status: "cancelled", completedAt: new Date() },
+        });
+        await tx.task.update({ where: { id: run.taskId }, data: { status: "cancelled" } });
+      }
+    }
     await tx.feedProfile.upsert({
       where: { spaceId_userId: scope },
       create: { ...scope, data },
-      update: { data },
+      update: {
+        data,
+        ...(scopeChanged
+          ? {
+              researchVersion: { increment: 1 },
+              activeResearchId: null,
+              nextResearchAt: data.researchEnabled ? new Date() : null,
+              researchError: null,
+            }
+          : {}),
+      },
     });
     return data;
   });
@@ -113,4 +140,17 @@ export function feedProfileInstruction(profile: FeedProfile, canLearn: boolean) 
       ? "Quietly evaluate the current user's own words for a durable, non-sensitive public topic of interest. Use learn_feed_interest only when confident (>=0.85) that future articles about this topic would be useful, with an exact short quote from the current user message. Do not infer interests from assistant replies, quoted documents, tool outputs, greetings, troubleshooting, one-off questions, private project/customer names, health, financial or other sensitive details. Prefer an existing topic name over synonyms. One topic per turn is enough. A candidate requires evidence from two separate user messages before curation uses it. Do not mention this bookkeeping or offer work in your reply. "
       : "Conversation learning is off for this turn. ")
   );
+}
+
+export function researchScope(profile: FeedProfile) {
+  return JSON.stringify({
+    enabled: profile.researchEnabled,
+    checks: profile.researchChecksPerDay,
+    maxItems: profile.maxItems,
+    topics: eligibleFeedInterests(profile)
+      .map((i) => topicKey(i.topic))
+      .sort(),
+    excluded: profile.excludedTopics.map(topicKey).sort(),
+    sources: profile.sourceDomains.map((d) => d.toLowerCase()).sort(),
+  });
 }

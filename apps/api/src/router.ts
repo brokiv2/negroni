@@ -52,6 +52,7 @@ import {
   enqueueTakeoverContinuation,
   expireComputerControl,
   getFeedProfile,
+  getFeedResearchStatus,
   hasActiveComputerControl,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
@@ -2933,6 +2934,9 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     feed: {
+      research: authed.feed.research.handler(({ context }) =>
+        getFeedResearchStatus(deps.prisma, context.actor),
+      ),
       profile: authed.feed.profile.handler(({ context }) =>
         getFeedProfile(deps.prisma, context.actor),
       ),

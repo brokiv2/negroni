@@ -343,7 +343,9 @@ export async function originThreadOf(
     select: { thread: { select: { id: true, botId: true, kind: true } } },
   });
   const thread = message?.thread;
-  return thread && thread.botId === botId ? { id: thread.id, kind: thread.kind } : null;
+  return thread && thread.botId === botId && thread.kind !== "research"
+    ? { id: thread.id, kind: thread.kind }
+    : null;
 }
 
 /** Return a delegated run's terminal outcome unless it already sent one explicitly. */

@@ -3,7 +3,7 @@ import { ACTIVE_RUN_STATUSES, plainTextFromMarkdown } from "@rakazo/core";
 export const activeRunStatuses = [...ACTIVE_RUN_STATUSES];
 
 export const activeRunSelection = {
-  where: { status: { in: activeRunStatuses } },
+  where: { status: { in: activeRunStatuses }, trigger: { not: "research" } },
   orderBy: { createdAt: "desc" as const },
   take: 1,
   select: { status: true },

@@ -506,6 +506,7 @@ model Thread {
 enum ThreadKind {
   team
   personal
+  research
 }
 
 model Message {
@@ -575,6 +576,8 @@ model Task {
 }
 
 model Run {
+  researchId String? @unique
+  research FeedResearch? @relation(fields: [researchId], references: [id], onDelete: SetNull)
   workId String?
   work AssistantWork? @relation(fields: [workId], references: [id], onDelete: SetNull)
   workVersion Int?
@@ -1384,6 +1387,12 @@ model FeedItem {
 }
 
 model FeedProfile {
+  researchVersion Int @default(1)
+  nextResearchAt DateTime?
+  activeResearchId String? @unique
+  lastResearchAt DateTime?
+  researchError String?
+  researchCycles FeedResearch[]
   spaceId String
   userId String
   space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1428,4 +1437,33 @@ model AssistantWork {
   @@index([status, nextWakeAt])
   @@index([spaceId, userId, threadId])
   @@map("assistant_work")
+}
+
+model FeedResearch {
+  id String @id @default(cuid())
+  spaceId String
+  userId String
+  profile FeedProfile @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
+  version Int
+  deadline DateTime
+  createdAt DateTime @default(now())
+  deliveredAt DateTime?
+  run Run?
+  findings FeedFinding[]
+  @@index([spaceId, userId, createdAt])
+  @@map("feed_research")
+}
+
+model FeedFinding {
+  id String @id @default(cuid())
+  researchId String
+  research FeedResearch @relation(fields: [researchId], references: [id], onDelete: Cascade)
+  url String
+  sourceHash String
+  evidence String @db.Text
+  data Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@unique([researchId, url])
+  @@map("feed_findings")
 }

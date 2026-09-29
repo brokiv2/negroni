@@ -15,6 +15,8 @@ struct ListRow {
   var lines: Int = 2
   var deleteAction: (() -> Void)? = nil
   var deleteTitle: String = "Delete"
+  var switchValue: Bool? = nil
+  var onSwitch: ((Bool) -> Void)? = nil
 }
 struct ListSection {
   var title: String? = nil
@@ -110,6 +112,17 @@ class ListController: UITableViewController {
     }
     cell.backgroundColor = Theme.card
     cell.accessoryType = row.accessory
+    if let value = row.switchValue {
+      let toggle = UISwitch()
+      toggle.isOn = value
+      toggle.accessibilityLabel = row.title
+      toggle.addAction(UIAction { [weak toggle] _ in
+        guard let toggle else { return }
+        toggle.isEnabled = false
+        row.onSwitch?(toggle.isOn)
+      }, for: .valueChanged)
+      cell.accessoryView = toggle
+    }
     cell.selectionStyle = row.action == nil ? .none : .default
     return cell
   }
@@ -149,7 +162,10 @@ class ListController: UITableViewController {
         _ = try await API.shared.rpc(procedure, body)
         completed?()
         reloadData()
-      } catch { showError(error) }
+      } catch {
+        tableView.reloadData()
+        showError(error)
+      }
     }
   }
   func confirmDelete(_ title: String, action: @escaping () -> Void) {

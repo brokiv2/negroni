@@ -17,6 +17,7 @@ const MAX_REDIRECTS = 5;
 export type { ResolveHostname } from "./network-address.js";
 
 export interface SafeWebFetchOptions {
+  allowedDomains?: string[];
   fetch?: typeof globalThis.fetch;
   resolveHostname?: ResolveHostname;
   timeoutMs?: number;
@@ -111,6 +112,7 @@ export async function fetchSafeWebText(
       maxBytes,
       userAgent: options.userAgent ?? "Rakazo/0.1 (+https://github.com/elie222/rakazo)",
       headers: options.headers,
+      allowedDomains: options.allowedDomains,
       signal,
       redirectsRemaining: MAX_REDIRECTS,
     });
@@ -141,11 +143,24 @@ async function followRedirects(
     headers?: Record<string, string>;
     signal: AbortSignal;
     redirectsRemaining: number;
+    allowedDomains?: string[];
   },
 ): Promise<{ url: string; body: string; contentType: string | null }> {
   if (state.signal.aborted) {
     throw abortError(state.signal);
   }
+  const scoped = new URL(rawUrl);
+  if (
+    state.allowedDomains !== undefined &&
+    (scoped.protocol !== "https:" ||
+      (state.allowedDomains.length &&
+        !state.allowedDomains.some(
+          (domain) =>
+            scoped.hostname.toLowerCase() === domain.toLowerCase() ||
+            scoped.hostname.toLowerCase().endsWith(`.${domain.toLowerCase()}`),
+        )))
+  )
+    throw new Error("URL is outside the selected research sources");
   const validated = await assertSafeWebUrl(rawUrl, state.resolve, state.signal);
   // Race fetch against the deadline — injected fetch may ignore init.signal.
   const response = await withAbort(

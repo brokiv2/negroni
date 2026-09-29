@@ -22,6 +22,7 @@ export const RunActivityRowSchema = z.object({
     "messaging",
     "cloud_agent",
     "work",
+  "research",
     "created",
   ]),
   notificationsEnabled: z.boolean(),

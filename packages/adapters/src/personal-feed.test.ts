@@ -99,7 +99,7 @@ describe("feed curation boundaries", () => {
     const prisma={
       feedProfile:{findUnique:vi.fn(async()=>({data:{maxItems:3}}))},
       bot:{findMany:vi.fn(async()=>[])},feedItem:{findUnique:vi.fn(async()=>null)},
-      $transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn({$executeRaw:vi.fn(),feedItem:{count:vi.fn(async()=>3),create}}),
+      $transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn({$executeRaw:vi.fn(),feedProfile:{findUnique:vi.fn(async()=>({data:{maxItems:3}}))},feedItem:{findUnique:vi.fn(async()=>null),count:vi.fn(async()=>3),create}}),
     } as unknown as PrismaClient;
     await expect(publishFeed(prisma,scope,"root",raw,{automated:true})).rejects.toThrow("Daily feed limit");
     expect(create).not.toHaveBeenCalled();

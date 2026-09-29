@@ -868,6 +868,7 @@ export const RunSchema = z.object({
     "messaging",
     "cloud_agent",
     "work",
+  "research",
     "created",
   ]),
   routineId: Id.nullable(),
