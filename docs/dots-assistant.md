@@ -2,6 +2,8 @@
 
 Reference: [OpenAI, Getting started with your dot](https://help.openai.com/en/articles/20001530-getting-started-with-your-dot), reviewed September 29, 2026. The relevant product pattern is one named assistant, conversation as the entry point, persistent context, visible ongoing/scheduled/completed work, and user control over its actions. This is a behavioral reference, not a claim of compatibility or access to OpenAI's implementation.
 
+The detailed source review, current-code gaps, proposed state machine and acceptance scenarios are in [Dots research and Negroni proactivity](dots-proactivity.md). Background research, continuing assigned work and fixed automations have distinct execution and delivery contracts.
+
 ## Negroni decisions
 
 - Keep the native Swift/UIKit iOS app and the existing personal conversation as the primary entry point. Team is an optional view of the same work.
