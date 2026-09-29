@@ -772,6 +772,10 @@ describe("composio tool mapping", () => {
       description: "Code hosting",
       logo: "github.svg",
     });
+    const counts = vi.spyOn(connector, "listConnectedAccounts");
+    expect(await connector.logoURL(context, "github")).toBe("github.svg");
+    expect(counts).not.toHaveBeenCalled();
+    counts.mockRestore();
     expect(items.find((item) => item.slug === "GOOGLE_MAPS")?.categories).toEqual([
       { slug: "maps", name: "maps" },
     ]);

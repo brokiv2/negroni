@@ -88,7 +88,7 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
-import { ModelRoutingSchema } from "./model-routing.js";
+import { ModelRouteSchema, ModelRoutingSchema } from "./model-routing.js";
 import {
   FeedInterestUpdate,
   FeedItemInput,
@@ -145,6 +145,7 @@ const structuredMentionTarget = z.discriminatedUnion("kind", [
 const threadSendInput = threadTarget
   .safeExtend({
     interactionMode: z.enum(["chat", "voice"]).optional(),
+    model: ModelRouteSchema.optional(),
     text: z.string().optional(),
     artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
     /** Bare bot ids (legacy) or typed mention chips from the composer. */
@@ -746,12 +747,16 @@ export const appContract = {
       )
       .output(z.array(ConnectionCatalogItemSchema)),
     list: oc.output(z.array(ConnectionSchema)),
+    icon: oc
+      .input(z.object({ connectorId: z.string(), provider: z.string() }))
+      .output(z.object({ png: z.string().nullable() })),
+    remove: oc.input(z.object({ connectionId: Id })).output(z.object({ ok: z.literal(true) })),
     begin: oc
       .input(
         z.object({
           connectorId: z.string().default("composio"),
           provider: z.string(),
-          displayName: z.string(),
+          displayName: z.string().default(""),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),

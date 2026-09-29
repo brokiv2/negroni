@@ -297,7 +297,12 @@ export async function resolveThreadTarget(
     const bot = await repos.getBot(actor, item.botId);
     const thread = await prisma.thread.upsert({
       where: { feedItemId: item.id },
-      create: { spaceId: actor.spaceId, userId: actor.userId, kind: "personal", feedItemId: item.id },
+      create: {
+        spaceId: actor.spaceId,
+        userId: actor.userId,
+        kind: "personal",
+        feedItemId: item.id,
+      },
       update: {},
     });
     return { kind: "bot", botId: bot.id, threadId: thread.id, threadKind: "personal", bot };
@@ -628,6 +633,7 @@ export async function sendThreadMessage(
   target: ThreadTarget,
   input: {
     interactionMode?: "chat" | "voice";
+    model?: { provider: string; modelId: string };
     text?: string;
     artifactIds?: string[];
     mentions?: MentionTargetInput[];
@@ -816,6 +822,9 @@ export async function sendThreadMessage(
             userId: actor.userId,
             status: "queued",
             trigger: "user",
+            ...(input.model
+              ? { modelProvider: input.model.provider, modelId: input.model.modelId }
+              : {}),
             interactionMode,
             clientNonce: sendRunClientNonce(input.clientNonce, message.id),
             sourceMessageId: message.id,
@@ -963,6 +972,9 @@ export async function sendThreadMessage(
             userId: actor.userId,
             status: "queued",
             trigger: "user",
+            ...(input.model
+              ? { modelProvider: input.model.provider, modelId: input.model.modelId }
+              : {}),
             interactionMode,
             clientNonce: sendRunClientNonce(input.clientNonce, message.id, botId),
             sourceMessageId: message.id,

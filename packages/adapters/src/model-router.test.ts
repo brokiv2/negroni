@@ -58,11 +58,23 @@ describe("model orchestration", () => {
     expect(received[0]?.executeTool).toBeUndefined();
   });
   it.each(['{"index":99}', '{"index":-1}', '{"index":"1"}', "Use the expensive model"])(
-    "rejects invalid classifier output: %s",
+    "falls back to the configured default for invalid classifier output: %s",
     async (reply) => {
-      await expect(routeModel(fixture(reply).input)).rejects.toThrow();
+      await expect(routeModel(fixture(reply).input)).resolves.toEqual(fast);
     },
   );
+  it("falls back when the classifier credential or service is unavailable", async () => {
+    const { input } = fixture("");
+    input.resolve.mockRejectedValue(new Error("Unavailable"));
+    await expect(routeModel(input)).resolves.toEqual(fast);
+  });
+  it("does not turn a user cancellation into fallback execution", async () => {
+    const { input } = fixture("");
+    input.resolve.mockRejectedValue(new Error("Cancelled"));
+    await expect(
+      routeModel({ ...input, context: { signal: AbortSignal.abort() } }),
+    ).rejects.toThrow("Cancelled");
+  });
   it("uses the task profile without an extra model call when no router is configured", async () => {
     const { input, received } = fixture("");
     expect(

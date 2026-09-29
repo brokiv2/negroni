@@ -397,6 +397,13 @@ export class ComposioConnector implements ComposioProvider {
     );
   }
 
+  async logoURL(_context: AdapterContext, slug: string): Promise<string | null> {
+    const directory = await this.directory();
+    return (
+      directory.find((item) => composioSlugKey(item.slug) === composioSlugKey(slug))?.logo ?? null
+    );
+  }
+
   async warmDirectory(): Promise<void> {
     await this.directory();
   }
@@ -609,6 +616,14 @@ export class ComposioConnector implements ComposioProvider {
       }
       throw new Error(sanitizeComposioError(error));
     }
+  }
+
+  async connectionLabel(context: AdapterContext, slug: string, connectionRef: string) {
+    const accounts = await this.listConnectedAccounts(context.userId, slug);
+    const account = accounts.find((item) => item.id === connectionRef);
+    if (!account) return undefined;
+    const detail = await this.sdk().connectedAccounts.get(connectionRef);
+    return connectedAccountLabel(detail) ?? account.alias;
   }
 
   async connectionReady(
@@ -1030,4 +1045,27 @@ function redactConnectorText(value: string): string {
     .replace(/ck_[A-Za-z0-9]+/g, "[redacted]")
     .replace(/sk-or-v1-[A-Za-z0-9]+/g, "[redacted]")
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
+}
+
+/** Only identity fields are eligible for display, never credential values. */
+export function connectedAccountLabel(value: unknown): string | undefined {
+  const root = asObject(value) ?? {};
+  const data = asObject(root.data) ?? {};
+  const metadata = asObject(root.metadata) ?? {};
+  const profile = asObject(root.profile) ?? asObject(data.profile) ?? {};
+  for (const key of [
+    "email",
+    "email_address",
+    "emailAddress",
+    "display_name",
+    "displayName",
+    "name",
+  ]) {
+    for (const object of [profile, metadata, data, root]) {
+      const candidate = object[key];
+      if (typeof candidate === "string" && candidate.trim() && candidate.length <= 160)
+        return candidate.trim();
+    }
+  }
+  return undefined;
 }

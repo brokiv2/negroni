@@ -1283,10 +1283,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const agentEnvironment = decryptAgentEnvironment(agentSecretRows, deps.secretStore);
         runSecrets.push(...Object.values(agentEnvironment));
         const agentEnvironmentInstruction = formatAgentEnvironmentInstruction(agentEnvironment);
-        const hasModelOverride = Boolean(bot.modelProvider && bot.modelId);
+        const modelPreference =
+          run.modelProvider && run.modelId
+            ? { ...bot, modelProvider: run.modelProvider, modelId: run.modelId }
+            : bot;
+        const hasModelOverride = Boolean(modelPreference.modelProvider && modelPreference.modelId);
         const overrideCredential =
-          hasModelOverride && bot.modelProvider
-            ? await findModelCredential(deps.prisma, run, bot.modelProvider, bot.modelId)
+          hasModelOverride && modelPreference.modelProvider
+            ? await findModelCredential(
+                deps.prisma,
+                run,
+                modelPreference.modelProvider,
+                modelPreference.modelId,
+              )
             : null;
         runAbortController = new AbortController();
         if (!leaseValid) runAbortController.abort();
@@ -1424,7 +1433,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const runDeployment = deps.deploymentModelKey ? resolveDeploymentModel() : null;
         const runtimeFallback = runtimeFallbackModel(deps.runtime);
         const selected = selectConfiguredModel({
-          bot,
+          bot: modelPreference,
           overrideCredential,
           defaultCredential,
           settings,
@@ -1481,7 +1490,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           });
           routing = member?.modelRouting ? ModelRoutingSchema.parse(member.modelRouting) : null;
           // Explicit chat/bot selection always wins over Auto and deployment profiles.
-          const explicit = Boolean(bot.modelProvider && bot.modelId);
+          const explicit = hasModelOverride;
           const picked =
             !explicit && routing
               ? await routeModel({

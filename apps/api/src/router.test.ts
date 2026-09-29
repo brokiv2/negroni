@@ -479,7 +479,7 @@ describe("connections.begin", () => {
         displayName: "Gmail",
         status: "pending",
         providerRef: null,
-        metadata: {},
+        metadata: { automaticName: false },
       },
     });
     await expect(response.json()).resolves.toMatchObject({
@@ -2122,4 +2122,53 @@ describe("groups.archive", () => {
     );
     expect(calls).toEqual(["cancel run work", "release screen", "expire lease"]);
   });
+});
+
+describe("connections.remove", () => {
+  it.each(["revoked", "connected", "pending", "missing"])(
+    "only deletes owned revoked rows: %s",
+    async (status) => {
+      const actor = {
+        spaceId: "space-test",
+        userId: "user-test",
+        email: "test@example.test",
+        isDeploymentOwner: true,
+      } satisfies Actor;
+      const findFirst = vi
+        .fn()
+        .mockResolvedValue(status === "missing" ? null : { id: "connection-test", status });
+      const deleteMany = vi.fn().mockResolvedValue({ count: 1 });
+      const handler = new RPCHandler(
+        createRouter({
+          prisma: { connection: { findFirst, deleteMany } },
+          env: {},
+        } as unknown as RouterDeps),
+      );
+      const { response } = await handler.handle(
+        new Request("http://127.0.0.1/rpc/connections/remove", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ json: { connectionId: "connection-test" } }),
+        }),
+        { prefix: "/rpc", context: { actor } },
+      );
+      expect(findFirst).toHaveBeenCalledWith({
+        where: { id: "connection-test", spaceId: actor.spaceId, userId: actor.userId },
+      });
+      if (status === "revoked") {
+        expect(response.status).toBe(200);
+        expect(deleteMany).toHaveBeenCalledWith({
+          where: {
+            id: "connection-test",
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            status: "revoked",
+          },
+        });
+      } else {
+        expect(response.status).not.toBe(200);
+        expect(deleteMany).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

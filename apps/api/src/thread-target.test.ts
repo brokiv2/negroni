@@ -2812,10 +2812,19 @@ describe("sendThreadMessage", () => {
         replyToMessageId: "parent",
         replyQuote: "just this span",
         clientNonce: "nonce-1",
+        model: { provider: "test-provider", modelId: "test-model" },
+        mentions: ["bot-a", "bot-b"],
       },
     );
 
     expect(result).toMatchObject({ runId: "run-1", taskId: "task-1" });
+    expect(tx.run.create).toHaveBeenCalledTimes(2);
+    for (const call of tx.run.create.mock.calls as unknown as Array<
+      [{ data: { modelProvider: string; modelId: string } }]
+    >) {
+      expect(call[0].data).toMatchObject({ modelProvider: "test-provider", modelId: "test-model" });
+    }
+
     expect(tx.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         replyToMessageId: "parent",

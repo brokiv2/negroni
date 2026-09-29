@@ -75,6 +75,7 @@ import {
   provisionComputer,
   publishFeed,
   queueComputerUpdate,
+  rasterizeConnectorLogo,
   readStoredModelAuth,
   releaseComputerExecutionLease,
   replaceComputer,
@@ -1732,6 +1733,19 @@ export function createRouter(deps: RouterDeps) {
         }
       }),
       send: authed.threads.send.handler(async ({ context, input }) => {
+        if (
+          input.model &&
+          !(await findModelCredential(
+            deps.prisma,
+            context.actor,
+            input.model.provider,
+            input.model.modelId,
+          ))
+        ) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Connect the selected model in Models settings.",
+          });
+        }
         if ((await modelSetup(deps, context.actor)).needsModel) {
           throw new ORPCError("BAD_REQUEST", { message: "Connect a model to start a run." });
         }
@@ -3669,6 +3683,41 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     connections: {
+      remove: authed.connections.remove.handler(async ({ context, input }) => {
+        const row = await deps.prisma.connection.findFirst({
+          where: {
+            id: input.connectionId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+          },
+        });
+        if (!row) throw new IsolationError();
+        if (row.status !== "revoked")
+          throw new ORPCError("CONFLICT", {
+            message: "Disconnect this account before removing it.",
+          });
+        await deps.prisma.connection.deleteMany({
+          where: {
+            id: row.id,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            status: "revoked",
+          },
+        });
+        return { ok: true as const };
+      }),
+      icon: authed.connections.icon.handler(async ({ context, input }) => {
+        const connector = deps.connectors.managed(input.connectorId);
+        if (!connector) return { png: null };
+        const adapterContext = connectionContext(context.actor, "connections.icon", context.signal);
+        const logo = connector.logoURL
+          ? await connector.logoURL(adapterContext, input.provider)
+          : (await connector.catalog(adapterContext)).find((item) => item.slug === input.provider)
+              ?.logo;
+        return {
+          png: logo ? await rasterizeConnectorLogo(logo, context.signal).catch(() => null) : null,
+        };
+      }),
       catalog: authed.connections.catalog.handler(async ({ context, input }) => {
         const adapterContext = connectionContext(
           context.actor,
@@ -3785,10 +3834,10 @@ export function createRouter(deps: RouterDeps) {
             return tx.connection.update({
               where: { id: reusable.id },
               data: {
-                displayName: input.displayName,
+                displayName: input.displayName.trim() || input.provider,
                 status: "pending",
                 providerRef: null,
-                metadata: {},
+                metadata: { automaticName: !input.displayName.trim() },
               },
             });
           }
@@ -3798,8 +3847,9 @@ export function createRouter(deps: RouterDeps) {
               userId: context.actor.userId,
               connectorId: input.connectorId,
               provider: input.provider,
-              displayName: input.displayName,
+              displayName: input.displayName.trim() || input.provider,
               status: "pending",
+              metadata: { automaticName: !input.displayName.trim() },
             },
           });
         });
@@ -3837,7 +3887,7 @@ export function createRouter(deps: RouterDeps) {
                 status:
                   !auth.authorizationUrl && auth.state === input.provider ? "connected" : "pending",
                 providerRef: auth.state || null,
-                metadata: { state: auth.state },
+                metadata: { state: auth.state, automaticName: !input.displayName.trim() },
               },
             });
             return updated.count > 0;
@@ -4257,6 +4307,34 @@ export function createRouter(deps: RouterDeps) {
             { timeout: 60_000 },
           );
         }
+        if (
+          row.status === "connected" &&
+          row.providerRef &&
+          (row.metadata as { automaticName?: boolean })?.automaticName &&
+          connector.connectionLabel
+        ) {
+          const label = await connector
+            .connectionLabel(
+              connectionContext(context.actor, "connections.identity", context.signal),
+              row.provider,
+              row.providerRef,
+            )
+            .catch(() => undefined);
+          if (label) {
+            await deps.prisma.connection.updateMany({
+              where: {
+                id: row.id,
+                status: "connected",
+                displayName: row.displayName,
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                metadata: { path: ["automaticName"], equals: true },
+              },
+              data: { displayName: label },
+            });
+            row = await deps.prisma.connection.findUniqueOrThrow({ where: { id: row.id } });
+          }
+        }
         return {
           id: row.id,
           connectorId: row.connectorId,
@@ -4279,7 +4357,10 @@ export function createRouter(deps: RouterDeps) {
         if (!existing) throw new IsolationError();
         const row = await deps.prisma.connection.update({
           where: { id: existing.id },
-          data: { displayName: input.displayName },
+          data: {
+            displayName: input.displayName,
+            metadata: { ...(existing.metadata as Record<string, unknown>), automaticName: false },
+          },
         });
         return {
           id: row.id,

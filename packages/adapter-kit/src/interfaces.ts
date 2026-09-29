@@ -193,6 +193,12 @@ export interface ManagedConnectorProvider
     externalId: string,
     connectionRef?: string,
   ): Promise<boolean>;
+  logoURL?(context: AdapterContext, externalId: string): Promise<string | null>;
+  connectionLabel?(
+    context: AdapterContext,
+    externalId: string,
+    connectionRef: string,
+  ): Promise<string | undefined>;
   warmDirectory?(): Promise<void>;
 }
 
