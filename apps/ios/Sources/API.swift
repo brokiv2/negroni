@@ -83,7 +83,7 @@ enum Keychain {
     }
     let config = URLSessionConfiguration.default
     config.timeoutIntervalForRequest = 30
-    config.timeoutIntervalForResource = 90
+    config.timeoutIntervalForResource = 600
     config.waitsForConnectivity = false
     config.httpCookieStorage = nil
     session = URLSession(configuration: config)
@@ -257,10 +257,64 @@ enum Keychain {
         status: (response as? HTTPURLResponse)?.statusCode ?? 0, message: "Connection interrupted")
     }
     var decoder = SSEDecoder()
-    for try await line in bytes.lines {
+    for try await byte in bytes {
       try Task.checkCancellation()
-      if let next = decoder.consume(line) { event(next) }
+      if let next = decoder.consume(byte: byte) { event(next) }
     }
+  }
+  func uploadFile(url: URL, name: String, mime: String, target: JSON) async throws -> JSON {
+    let origin = base
+    let sessionToken = token
+    let scope = spaceID
+    let limits = try await raw(path: "api/artifacts/limits")
+    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+    guard size > 0, size <= limits["maxBytes"].int else {
+      throw APIError(
+        status: 413,
+        message: "This server accepts files up to \(limits["maxBytes"].int / 1024 / 1024) MB.")
+    }
+    var req = try request(path: "api/artifacts/upload", body: nil, timeout: 600)
+    var components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+    components.queryItems =
+      target.dictionary.map { URLQueryItem(name: $0.key, value: $0.value.string) }
+      + [URLQueryItem(name: "name", value: name), URLQueryItem(name: "mimeType", value: mime)]
+    req.url = components.url
+    req.httpMethod = "POST"
+    req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    req.setValue(String(size), forHTTPHeaderField: "Content-Length")
+    let (data, response) = try await session.upload(for: req, fromFile: url)
+    guard base == origin, token == sessionToken, spaceID == scope else { throw CancellationError() }
+    let result = try JSON.decode(data)
+    guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode)
+    else {
+      throw APIError(
+        status: (response as? HTTPURLResponse)?.statusCode ?? 0,
+        message: result["error"].string.isEmpty
+          ? "Upload failed. Try again." : result["error"].string)
+    }
+    return result
+  }
+  func downloadFile(id: String, name: String) async throws -> URL {
+    let origin = base
+    let sessionToken = token
+    let scope = spaceID
+    let req = try request(path: "api/artifacts/" + id + "/content", body: nil, timeout: 600)
+    let (temporary, response) = try await session.download(for: req)
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    guard base == origin, token == sessionToken, spaceID == scope else { throw CancellationError() }
+    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+      throw APIError(
+        status: (response as? HTTPURLResponse)?.statusCode ?? 0,
+        message: "This file could not be opened. Try again.")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let safeName = URL(fileURLWithPath: name).lastPathComponent
+    let url = directory.appendingPathComponent(safeName.isEmpty ? "Attachment" : safeName)
+    try FileManager.default.moveItem(at: temporary, to: url)
+    try FileManager.default.setAttributes(
+      [.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+    return url
   }
   func transcribe(_ data: Data) async throws -> String {
     guard data.count <= 8 * 1024 * 1024 else {

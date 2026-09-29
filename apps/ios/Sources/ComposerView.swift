@@ -5,6 +5,7 @@ import UIKit
 @MainActor final class ComposerView: UIView, UITextViewDelegate {
   let textView = UITextView()
   let modelButton = UIButton(type: .system)
+  private let attachmentLabel = Theme.label("", style: .caption1)
   private let placeholder = Theme.label("Message…", style: .body, color: Theme.muted)
   private let attach = UIButton(type: .system), mic = UIButton(type: .system),
     send = UIButton(type: .system)
@@ -25,6 +26,18 @@ import UIKit
     onError: ((Error) -> Void)?, onVoiceSettings: (() -> Void)?
   var running = false { didSet { updateSend() } }
   var sending = false { didSet { updateSend() } }
+  var uploading = false {
+    didSet {
+      updateSend()
+      attach.isEnabled = !uploading
+    }
+  }
+  var attachmentNames = "" {
+    didSet {
+      attachmentLabel.text = attachmentNames
+      attachmentLabel.isHidden = attachmentNames.isEmpty
+    }
+  }
   var ready = false { didSet { updateSend() } }
   var attachmentCount = 0 {
     didSet {
@@ -81,6 +94,9 @@ import UIKit
       })
     for item in [attach, textView, mic, send] { entry.addArrangedSubview(item) }
     entry.alignment = .bottom
+    attachmentLabel.isHidden = true
+    attachmentLabel.numberOfLines = 2
+    content.addArrangedSubview(attachmentLabel)
     content.addArrangedSubview(entry)
     var modelConfig = UIButton.Configuration.plain()
     modelConfig.title = "Auto"
@@ -154,7 +170,7 @@ import UIKit
     send.setImage(UIImage(systemName: running && !hasText ? "stop.fill" : "arrow.up"), for: .normal)
     send.accessibilityLabel =
       running && !hasText ? "Stop response" : running ? "Send follow-up" : "Send message"
-    send.isEnabled = ready && !sending && (hasText || running)
+    send.isEnabled = ready && !sending && !uploading && (hasText || running)
     send.backgroundColor = send.isEnabled ? Theme.ink : Theme.secondary
     send.tintColor = send.isEnabled ? Theme.card : Theme.muted
     send.layer.cornerRadius = 22

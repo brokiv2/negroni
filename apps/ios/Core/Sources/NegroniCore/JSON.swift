@@ -104,21 +104,53 @@ public enum Endpoint {
 }
 
 public struct SSEDecoder: Sendable {
+  private var lineBytes: [UInt8] = []
   private var lines: [String] = []
+  private var previousCR = false
+  private var frameBytes = 0
   public init() {}
+  // AsyncBytes.lines removes empty lines, including SSE's frame delimiters.
+  // Parse raw bytes so fragmented UTF-8, CRLF and multiple events stay intact.
+  public mutating func consume(byte: UInt8) -> JSON? {
+    if byte == 10 && previousCR {
+      previousCR = false
+      return nil
+    }
+    previousCR = byte == 13
+    if byte == 10 || byte == 13 {
+      let line = String(decoding: lineBytes, as: UTF8.self)
+      lineBytes.removeAll(keepingCapacity: true)
+      return consume(line)
+    }
+    lineBytes.append(byte)
+    if lineBytes.count > 2_000_000 {
+      lineBytes.removeAll()
+      lines.removeAll()
+      frameBytes = 0
+    }
+    return nil
+  }
   public mutating func consume(_ line: String) -> JSON? {
     if line.isEmpty {
-      defer { lines.removeAll(keepingCapacity: true) }
+      defer {
+        lines.removeAll(keepingCapacity: true)
+        frameBytes = 0
+      }
       let raw = lines.joined(separator: "\n")
       guard raw != "[DONE]", let data = raw.data(using: .utf8), let parsed = try? JSON.decode(data)
       else { return nil }
       return parsed["json"].isNull ? parsed : parsed["json"]
     }
     if line.hasPrefix("data:") {
-      lines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+      var value = String(line.dropFirst(5))
+      if value.hasPrefix(" ") { value.removeFirst() }
+      lines.append(value)
+      frameBytes += value.utf8.count
     }
-    // A broken stream must not grow memory indefinitely.
-    if lines.reduce(0, { $0 + $1.utf8.count }) > 2_000_000 { lines.removeAll() }
+    if frameBytes > 2_000_000 {
+      lines.removeAll()
+      frameBytes = 0
+    }
     return nil
   }
 }

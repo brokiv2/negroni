@@ -1,3 +1,4 @@
+import ImageIO
 import NegroniCore
 import PhotosUI
 import QuickLook
@@ -65,6 +66,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
     setupHeader()
     NotificationCenter.default.addObserver(
+      self, selector: #selector(pushReceived), name: Notifications.threadUpdated, object: nil)
+    NotificationCenter.default.addObserver(
       self, selector: #selector(background), name: UIApplication.didEnterBackgroundNotification,
       object: nil)
     NotificationCenter.default.addObserver(
@@ -87,6 +90,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     composer.cancelRecording()
   }
   @objc private func foreground() { if active { connect() } }
+  @objc private func pushReceived() {
+    guard active else { return }
+    Task { try? await refresh() }
+  }
   private func setupHeader() {
     if target["groupId"].isNull && target["feedItemId"].isNull {
       let stack = Theme.stack(spacing: 0)
@@ -150,8 +157,6 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       guard let self else { return }
       do {
         try await refresh()
-        await loadModels()
-        await refreshComputer()
       } catch { showConnectionError(error) }
       while !Task.isCancelled && active {
         do {
@@ -165,10 +170,20 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       }
     }
     statusTask = Task { [weak self] in
+      await self?.refreshIdentity()
+      await self?.loadModels()
+      await self?.refreshComputer()
+      var ticks = 0
       while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(20))
+        try? await Task.sleep(for: .seconds(4))
         if Task.isCancelled { break }
-        await self?.refreshComputer()
+        // Reconcile even if a proxy leaves an apparently open stream stalled.
+        ticks += 1
+        if self?.composer.running == true || ticks % 5 == 0 { try? await self?.refresh() }
+        if ticks % 5 == 0 {
+          await self?.refreshIdentity()
+          await self?.refreshComputer()
+        }
       }
     }
   }
@@ -200,6 +215,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private func refresh() async throws {
     let next = try await API.shared.rpc("threads/get", target)
     try Task.checkCancellation()
+    guard next["cursor"].int >= cursor else { return }
     render(next)
     composer.ready = true
     cursor = max(cursor, next["cursor"].int)
@@ -325,13 +341,19 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           ? "Mac connected"
           : status["state"].string == "running" ? "Computer ready" : "Computer sleeping",
         for: .normal)
-      if bot.isNull || bot.dictionary.isEmpty {
-        bot = try await API.shared.rpc("bots/get", ["botId": target["botId"]])
-        identity.configuration?.title = bot["name"].string
-        identity.configuration?.image = RobotAvatar.image(
-          color: bot["color"].string, size: 28, main: target["threadKind"].string == "personal")
-      }
+
     } catch { connection.setTitle("Mac unavailable · Retry", for: .normal) }
+  }
+  private func refreshIdentity() async {
+    guard !target["botId"].string.isEmpty else { return }
+    guard let current = try? await API.shared.rpc("bots/get", ["botId": target["botId"]]),
+      !Task.isCancelled
+    else { return }
+    bot = current
+    title = current["name"].string
+    identity.configuration?.title = title
+    identity.configuration?.image = RobotAvatar.image(
+      color: current["color"].string, size: 28, main: target["threadKind"].string == "personal")
   }
   private func loadModels() async {
     do {
@@ -402,7 +424,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
   private func send(_ text: String) {
-    guard composer.ready, !composer.sending,
+    guard composer.ready, !composer.sending, !composer.uploading,
       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     else { return }
     composer.sending = true
@@ -421,6 +443,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
             ]))
           attachments.removeAll()
           composer.attachmentCount = 0
+          composer.attachmentNames = ""
         }
         if composer.draft == text { composer.setDraft("") }
         try await refresh()
@@ -506,6 +529,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           [weak self] _ in
           self?.attachments.removeAll()
           self?.composer.attachmentCount = 0
+          self?.composer.attachmentNames = ""
         })
     }
     menu.addAction(UIAlertAction(title: "Cancel", style: .cancel))
@@ -533,19 +557,26 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
   private func upload(data: Data, name: String, mime: String) async throws {
-    guard data.count <= 8 * 1024 * 1024 else {
-      throw APIError(status: 0, message: "Choose a file smaller than 8 MB.")
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try data.write(to: file, options: [.atomic, .completeFileProtection])
+    defer { try? FileManager.default.removeItem(at: file) }
+    try await upload(url: file, name: name, mime: mime)
+  }
+  private func upload(url: URL, name: String, mime: String) async throws {
+    guard !composer.uploading else { return }
+    let limits = try await API.shared.raw(path: "api/artifacts/limits")
+    guard attachments.count < limits["maxCount"].int else {
+      throw APIError(status: 0, message: "Send these attachments before adding more files.")
     }
-    let artifact = try await API.shared.rpc(
-      "artifacts/create",
-      target.merging([
-        "name": .string(name), "mimeType": .string(mime),
-        "contentBase64": .string(data.base64EncodedString()),
-      ]))
+    composer.uploading = true
+    composer.attachmentNames = "Uploading \(name)…"
+    defer {
+      composer.uploading = false
+      composer.attachmentNames = attachments.map { $0["name"].string }.joined(separator: ", ")
+    }
+    let artifact = try await API.shared.uploadFile(url: url, name: name, mime: mime, target: target)
     attachments.append(artifact)
     composer.attachmentCount = attachments.count
-    composer.textView.accessibilityHint = attachments.map { $0["name"].string }.joined(
-      separator: ", ")
   }
   private func pickDocument() {
 
@@ -560,15 +591,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       do {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size <= 8 * 1024 * 1024 else {
-          throw APIError(status: 0, message: "Choose a file smaller than 8 MB.")
-        }
-        let data = try Data(contentsOf: url)
         let mime =
           UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
           ?? "application/octet-stream"
-        try await upload(data: data, name: url.lastPathComponent, mime: mime)
+        try await upload(url: url, name: url.lastPathComponent, mime: mime)
       } catch { showError(error) }
     }
   }
@@ -675,12 +701,22 @@ final class MessageCell: UITableViewCell {
           stack.addArrangedSubview(preview)
           imageTasks.append(
             Task {
-              if let artifact = try? await API.shared.rpc(
-                "artifacts/get", target.merging(["artifactId": block["artifactId"]])),
-                let data = Data(base64Encoded: artifact["contentBase64"].string), !Task.isCancelled
-              {
-                preview.image = UIImage(data: data)
-              }
+              guard
+                let url = try? await API.shared.downloadFile(
+                  id: block["artifactId"].string, name: block["name"].string)
+              else { return }
+              defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+              guard !Task.isCancelled,
+                let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                let image = CGImageSourceCreateThumbnailAtIndex(
+                  source, 0,
+                  [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 1000,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                  ] as CFDictionary)
+              else { return }
+              preview.image = UIImage(cgImage: image)
             })
         }
         stack.addArrangedSubview(
@@ -761,17 +797,8 @@ final class AttachmentController: UIViewController, QLPreviewControllerDataSourc
     spinner.startAnimating()
     Task {
       do {
-        let artifact = try await API.shared.rpc(
-          "artifacts/get", target.merging(["artifactId": block["artifactId"]]))
-        guard let data = Data(base64Encoded: artifact["contentBase64"].string) else {
-          throw APIError(status: 0, message: "This file could not be opened.")
-        }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-          UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let name = URL(fileURLWithPath: block["name"].string).lastPathComponent
-        let url = directory.appendingPathComponent(name.isEmpty ? "Attachment" : name)
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        let url = try await API.shared.downloadFile(
+          id: block["artifactId"].string, name: block["name"].string)
         localURL = url
         let preview = QLPreviewController()
         preview.dataSource = self

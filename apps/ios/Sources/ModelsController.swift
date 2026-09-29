@@ -155,7 +155,10 @@ final class ProviderController: ListController, UISearchResultsUpdating {
   }
   private func connect() {
     let alert = UIAlertController(
-      title: "Connect \(title ?? provider)", message: nil, preferredStyle: .alert)
+      title: "Connect \(title ?? provider)",
+      message:
+        "Connecting lets this provider process messages and files for the models you enable.",
+      preferredStyle: .alert)
     alert.addTextField {
       $0.placeholder = "API key"
       $0.isSecureTextEntry = true

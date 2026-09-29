@@ -26,6 +26,15 @@ final class CoreTests: XCTestCase {
     XCTAssertNil(decoder.consume("data: [DONE]"))
     XCTAssertNil(decoder.consume(""))
   }
+  func testRawSSEPreservesDelimitersAndFragmentedUnicode() {
+    var decoder = SSEDecoder()
+    let wire =
+      ": keepalive\r\n\r\nevent: message\r\ndata: {\"json\":{\"seq\":1,\"text\":\"Привет 👋\"}}\r\n\r\ndata: {\"json\":{\"seq\":2}}\n\ndata: [DONE]\n\n"
+    let events = wire.utf8.compactMap { decoder.consume(byte: $0) }
+    XCTAssertEqual(events.count, 2)
+    XCTAssertEqual(events[0]["text"].string, "Привет 👋")
+    XCTAssertEqual(events[1]["seq"].int, 2)
+  }
   func testTranscriptPreservesDraftAndEmptySpeech() {
     XCTAssertEqual(
       ThreadLogic.append("Existing draft", transcript: " next thought "),

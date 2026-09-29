@@ -4,6 +4,7 @@ import UserNotifications
 
 @MainActor final class Notifications: NSObject, UNUserNotificationCenterDelegate {
   static let shared = Notifications()
+  static let threadUpdated = Notification.Name("negroni.threadUpdated")
   func configure() {
     UNUserNotificationCenter.current().delegate = self
     Task {
@@ -38,7 +39,10 @@ import UserNotifications
   }
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification
-  ) async -> UNNotificationPresentationOptions { [.banner, .list] }
+  ) async -> UNNotificationPresentationOptions {
+    await MainActor.run { NotificationCenter.default.post(name: Self.threadUpdated, object: nil) }
+    return [.banner, .list]
+  }
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
   ) async {
