@@ -36,6 +36,16 @@ function fixture() {
   return { call, findUnique, update };
 }
 describe("space model routing", () => {
+  it("returns only enabled display choices without requiring credential access", async () => {
+    const f = fixture();
+    const response = await f.call("choices");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ json: [] });
+    expect(f.findUnique).toHaveBeenCalledWith({
+      where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      select: { modelRouting: true },
+    });
+  });
   it("reads only the authenticated member config and returns empty defaults for old accounts", async () => {
     const f = fixture();
     const response = await f.call("routing");

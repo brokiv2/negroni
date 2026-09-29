@@ -223,6 +223,7 @@ export const appContract = {
     routing: oc.output(ModelRoutingSchema),
     saveRouting: oc.input(ModelRoutingSchema).output(ModelRoutingSchema),
     list: oc.output(z.array(ModelCatalogEntrySchema)),
+    choices: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
     probeOpenAiCompatible: oc

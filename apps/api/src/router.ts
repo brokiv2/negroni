@@ -875,6 +875,23 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     models: {
+      choices: authed.models.choices.handler(async ({ context }) => {
+        const member = await deps.prisma.spaceMember.findUnique({
+          where: {
+            spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+          },
+          select: { modelRouting: true },
+        });
+        const routing = member?.modelRouting
+          ? ModelRoutingSchema.parse(member.modelRouting)
+          : emptyModelRouting();
+        // Display metadata only. Authorization still happens when saving routes and executing.
+        return listAvailablePiCatalog().filter((model) =>
+          routing.enabled.some(
+            (route) => route.provider === model.provider && route.modelId === model.id,
+          ),
+        );
+      }),
       routing: authed.models.routing.handler(async ({ context }) => {
         const member = await deps.prisma.spaceMember.findUnique({
           where: {

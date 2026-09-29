@@ -128,3 +128,17 @@ describe("executionBlocksUserTakeover", () => {
     ).toBe(false);
   });
 });
+
+describe("desktop capability reporting", () => {
+  it("does not advertise a live screen for the local command adapter", () => {
+    const result = toComputerStatus("fixture", {
+      kind: "desktop",
+      state: "running",
+      scope: "dedicated",
+      controlHolder: "none",
+      homeRevision: "fixture",
+    });
+    expect(result.screenAvailable).toBe(false);
+    expect(result.state).toBe("running");
+  });
+});
