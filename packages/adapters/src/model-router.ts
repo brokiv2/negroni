@@ -22,7 +22,7 @@ export async function routeModel(input: {
   onUsage: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => Promise<void>;
 }): Promise<ModelRoute | null> {
   const { routing } = input;
-  const preferred = routing[input.workload] ?? routing.conversation;
+  const preferred = routing[input.workload] ?? routing.conversation ?? routing.enabled[0] ?? null;
   if (!routing.router || routing.enabled.length < 2) return preferred;
   const model = await input.resolve(routing.router);
   let text = "";

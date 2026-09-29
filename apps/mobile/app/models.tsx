@@ -1002,7 +1002,7 @@ export default function Models() {
                 ]}
               >
                 <Text style={styles.primaryLabel}>
-                  {pending === "default" ? t("Switching…") : t("Use this model")}
+                  {pending === "default" ? t("Switching…") : t("Use as workspace default")}
                 </Text>
               </Pressable>
             ) : null}

@@ -970,7 +970,7 @@ export function ModelSettingsOverlay({
                     {pending === "default" ? (
                       <Trans>Switching…</Trans>
                     ) : (
-                      <Trans>Use this model</Trans>
+                      <Trans>Use as workspace default</Trans>
                     )}
                   </Button>
                 </div>

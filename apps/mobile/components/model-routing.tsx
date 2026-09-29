@@ -111,7 +111,14 @@ export function MobileModelRouting({
               more: t("More"),
               actions: [
                 {
-                  text: role === "router" ? t("Use default profiles") : t("Workspace default"),
+                  text:
+                    role === "router"
+                      ? t("Use default profiles")
+                      : role === "task"
+                        ? t("Default chat")
+                        : routing.enabled.length
+                          ? t("First enabled model")
+                          : t("Workspace default"),
                   onPress: () => void save({ ...routing, [role]: null }),
                 },
                 ...routing.enabled.map((r) => ({

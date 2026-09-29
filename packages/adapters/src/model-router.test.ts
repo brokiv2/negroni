@@ -43,6 +43,12 @@ function fixture(reply: string) {
   return { input, received, resolve };
 }
 describe("model orchestration", () => {
+  it("keeps Auto inside the enabled pool when role defaults are not set", async () => {
+    const { input } = fixture("");
+    expect(
+      await routeModel({ ...input, routing: { ...emptyModelRouting(), enabled: [fast] } }),
+    ).toEqual(fast);
+  });
   it("uses the router credential and returns only a configured provider/model pair", async () => {
     const { input, received, resolve } = fixture('{"index":1}');
     expect(await routeModel(input)).toEqual(task);

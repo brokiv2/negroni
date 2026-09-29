@@ -174,7 +174,13 @@ export function ModelRoutingPanel({
               }
             >
               <NativeSelectOption value="">
-                {role === "router" ? t`Use default profiles` : t`Workspace default`}
+                {role === "router"
+                  ? t`Use default profiles`
+                  : role === "task"
+                    ? t`Default chat`
+                    : routing.enabled.length
+                      ? t`First enabled model`
+                      : t`Workspace default`}
               </NativeSelectOption>
               {routing.enabled.map((route) => (
                 <NativeSelectOption key={modelRouteKey(route)} value={modelRouteKey(route)}>
