@@ -15,6 +15,12 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private var stream: Task<Void, Never>?, refreshTask: Task<Void, Never>?,
     statusTask: Task<Void, Never>?
   private var attachments: [JSON] = []
+  private var outgoing: [JSON] = []
+  private var threadModel: JSON?
+  private var modelPreferenceKey: String {
+    "chat-model:\(API.shared.base.absoluteString):\(API.shared.spaceID):\(target["groupId"].string):\(target["feedItemId"].string)"
+  }
+  private let workingIndicator = ChatWorkingView()
   private var cursor = -1
   private var lastReadCursor = -2
   private var earlierMessages: [JSON] = []
@@ -231,9 +237,18 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     snapshot = next
     let latest = next["messages"].array.filter { !$0["blocks"].array.isEmpty }
     let latestIDs = Set(latest.map { $0["id"].string })
-    let rows = earlierMessages.filter { !latestIDs.contains($0["id"].string) } + latest
+    outgoing = ThreadLogic.unconfirmed(outgoing, in: latest)
+    let rows = earlierMessages.filter { !latestIDs.contains($0["id"].string) } + latest + outgoing
     if earlierMessages.isEmpty { olderCursor = next["olderCursor"] }
-    composer.running = ThreadLogic.running(next)
+    composer.running = ThreadLogic.running(next) || !outgoing.isEmpty || composer.sending
+    let working = ThreadLogic.working(next) || !outgoing.isEmpty || composer.sending
+    workingIndicator.configure(
+      name: title ?? "Assistant", color: bot["color"].string,
+      main: target["threadKind"].string == "personal")
+    if working != (table.tableFooterView != nil) {
+      workingIndicator.frame = CGRect(x: 0, y: 0, width: table.bounds.width, height: 64)
+      table.tableFooterView = working ? workingIndicator : nil
+    }
     if rows.isEmpty {
       let empty = UIView()
       let welcome = Theme.stack(spacing: 18)
@@ -253,7 +268,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     } else {
       table.backgroundView = nil
     }
-    guard rows != messages else { return }
+    guard rows != messages else {
+      if nearBottom { scrollToEnd(animated: false) }
+      return
+    }
     let previous = messages
     messages = rows
     if previous.count <= rows.count && zip(previous, rows).allSatisfy({ $0["id"] == $1["id"] }) {
@@ -275,8 +293,12 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   }
   private func scrollToEnd(animated: Bool) {
     if !messages.isEmpty {
-      table.scrollToRow(
-        at: IndexPath(row: messages.count - 1, section: 0), at: .bottom,
+      table.layoutIfNeeded()
+      let bottom = max(
+        -table.adjustedContentInset.top,
+        table.contentSize.height - table.bounds.height + table.adjustedContentInset.bottom)
+      table.setContentOffset(
+        CGPoint(x: 0, y: bottom),
         animated: animated && !UIAccessibility.isReduceMotionEnabled)
     }
   }
@@ -360,12 +382,21 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     do {
       async let choices = API.shared.rpc("models/choices")
       async let routing = API.shared.rpc("models/routing")
-      guard !target["botId"].string.isEmpty else {
-        composer.modelButton.isHidden = true
-        return
+      let current: JSON
+      if !target["botId"].string.isEmpty {
+        current = try await API.shared.rpc("bots/get", ["botId": target["botId"]])
+      } else {
+        if let data = UserDefaults.standard.data(forKey: modelPreferenceKey) {
+          threadModel = try? JSON.decode(data)
+        }
+        current = [
+          "modelId": threadModel?["modelId"] ?? .null,
+          "modelProvider": threadModel?["provider"] ?? .null,
+        ]
       }
-      async let current = API.shared.rpc("bots/get", ["botId": target["botId"]])
-      let (catalog, routes, bot) = try await (choices, routing, current)
+      let (catalog, routes) = try await (choices, routing)
+      let bot = current
+      composer.modelButton.isHidden = false
       let selected = bot["modelId"].string
       var actions: [UIMenuElement] = [
         UIAction(title: "Auto", state: selected.isEmpty ? .on : .off) { [weak self] _ in
@@ -412,6 +443,16 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
   private func chooseModel(_ route: JSON?) {
+    if target["botId"].string.isEmpty {
+      threadModel = route
+      if let route, let data = try? route.encoded() {
+        UserDefaults.standard.set(data, forKey: modelPreferenceKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: modelPreferenceKey)
+      }
+      Task { await loadModels() }
+      return
+    }
     Task {
       do {
         _ = try await API.shared.rpc(
@@ -428,30 +469,76 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     guard composer.ready, !composer.sending, !composer.uploading,
       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     else { return }
+    let followUp =
+      ThreadLogic.running(snapshot) && attachments.isEmpty && !target["botId"].string.isEmpty
+    let nonce = UUID().uuidString
+    let messageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let sentAttachments = attachments
+    let blocks: [JSON] =
+      (messageText.isEmpty ? [] : [["kind": "text", "text": .string(messageText)]])
+      + sentAttachments.map { artifact in
+        [
+          "kind": "file", "artifactId": artifact["id"], "name": artifact["name"],
+          "mimeType": artifact["mimeType"],
+        ]
+      }
+    outgoing.append([
+      "id": .string(nonce), "role": "user", "blocks": .array(blocks),
+      "afterSeq": .number(Double(snapshot["messages"].array.map { $0["seq"].int }.max() ?? -1)),
+    ])
     composer.sending = true
-    let ids = attachments.map { $0["id"] }
+    composer.setDraft("")
+    attachments = []
+    composer.attachmentCount = 0
+    composer.attachmentNames = ""
+    render(snapshot)
+    scrollToEnd(animated: false)
     Task {
-      defer { composer.sending = false }
       do {
-        if composer.running {
-          _ = try await API.shared.rpc("threads/followUp", target.merging(["text": .string(text)]))
+        let receipt: JSON
+        if followUp {
+          receipt = try await API.shared.rpc(
+            "threads/followUp", target.merging(["text": .string(text)]))
         } else {
-          _ = try await API.shared.rpc(
+          receipt = try await API.shared.rpc(
             "threads/send",
             target.merging([
-              "text": .string(text), "artifactIds": .array(ids),
-              "clientNonce": .string(UUID().uuidString),
-            ]))
-          attachments.removeAll()
-          composer.attachmentCount = 0
-          composer.attachmentNames = ""
+              "text": .string(text), "artifactIds": .array(sentAttachments.map { $0["id"] }),
+              "clientNonce": .string(nonce),
+            ]).merging(threadModel.map { ["model": $0] } ?? [:]))
         }
-        if composer.draft == text { composer.setDraft("") }
-        try await refresh()
-        scrollToEnd(animated: true)
-      } catch { showError(error) }
+        if let index = outgoing.firstIndex(where: { $0["id"].string == nonce }),
+          !receipt["seq"].isNull
+        {
+          outgoing[index]["receiptSeq"] = receipt["seq"]
+        }
+        composer.sending = false
+        render(snapshot)
+        // A failed refresh must not turn an accepted send into a failed draft.
+        do { try await refresh() } catch { showConnectionError(error) }
+      } catch {
+        let notConfirmed = outgoing.contains { $0["id"].string == nonce }
+        outgoing.removeAll { $0["id"].string == nonce }
+        if !notConfirmed {
+          composer.sending = false
+          render(snapshot)
+          return
+        }
+        composer.sending = false
+        if composer.draft.isEmpty {
+          composer.setDraft(text)
+        } else {
+          composer.setDraft(text + "\n" + composer.draft)
+        }
+        attachments.insert(contentsOf: sentAttachments, at: 0)
+        composer.attachmentCount = attachments.count
+        composer.attachmentNames = attachments.map { $0["name"].string }.joined(separator: ", ")
+        render(snapshot)
+        showError(error)
+      }
     }
   }
+
   private func stop() {
     Task {
       do {
@@ -734,45 +821,70 @@ final class MessageCell: UITableViewCell {
 }
 
 enum Markdown {
-  static func render(_ value: String) -> NSAttributedString {
-    let paragraph = NSMutableParagraphStyle()
-    paragraph.lineSpacing = 3
-    let result = NSMutableAttributedString(
-      string: value,
-      attributes: [
-        .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: Theme.ink,
-        .paragraphStyle: paragraph,
-      ])
-    // Preserve native text selection while applying the common inline syntax.
-    for (pattern, kind) in [
-      ("\\[([^\\]]+)\\]\\((https?://[^\\s)]+)\\)", "link"), ("\\*\\*(.+?)\\*\\*", "bold"),
-      ("`([^`]+)`", "code"),
-    ] {
-      guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-      for match in regex.matches(
-        in: result.string, range: NSRange(location: 0, length: result.length)
-      ).reversed() {
-        let text = (result.string as NSString).substring(with: match.range(at: 1))
-        var attributes: [NSAttributedString.Key: Any] = [
-          .font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: Theme.ink,
-        ]
-        if kind == "bold" {
-          attributes[.font] = UIFont.preferredFont(forTextStyle: .body).withTraits(.traitBold)
-        }
-        if kind == "code" {
+  static func render(_ value: String, style: UIFont.TextStyle = .body, color: UIColor = Theme.ink)
+    -> NSAttributedString
+  {
+    let result = NSMutableAttributedString(string: "")
+    for block in MarkdownDocument.blocks(value) {
+      if result.length > 0 { result.append(NSAttributedString(string: "\n")) }
+      let paragraph = NSMutableParagraphStyle()
+      paragraph.lineSpacing = 3
+      paragraph.paragraphSpacing = 9
+      var font = UIFont.preferredFont(forTextStyle: style)
+      if block.kind == "heading" {
+        font = UIFont.preferredFont(
+          forTextStyle: block.level == 1 ? .title1 : block.level == 2 ? .title2 : .headline)
+      }
+      if block.kind == "code" {
+        font = UIFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+      }
+      if block.kind == "list" || block.kind == "quote" { paragraph.headIndent = 18 }
+      let base: [NSAttributedString.Key: Any] = [
+        .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
+      ]
+      if !block.prefix.isEmpty {
+        result.append(NSAttributedString(string: block.prefix, attributes: base))
+      }
+      if block.kind == "code" {
+        result.append(NSAttributedString(string: block.text, attributes: base))
+        continue
+      }
+      guard
+        let inline = try? AttributedString(
+          markdown: block.text,
+          options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+      else {
+        result.append(NSAttributedString(string: block.text, attributes: base))
+        continue
+      }
+      for run in inline.runs {
+        var attributes = base
+        var traits = UIFontDescriptor.SymbolicTraits()
+        let intent = run.inlinePresentationIntent ?? []
+        if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+        if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+        attributes[.font] = traits.isEmpty ? font : font.withTraits(traits)
+        if intent.contains(.code) {
           attributes[.font] = UIFont.monospacedSystemFont(
-            ofSize: UIFont.preferredFont(forTextStyle: .body).pointSize - 1, weight: .regular)
+            ofSize: font.pointSize - 1, weight: .regular)
+          attributes[.backgroundColor] = Theme.secondary
         }
-        if kind == "link" {
-          attributes[.link] = (result.string as NSString).substring(with: match.range(at: 2))
+        if intent.contains(.strikethrough) {
+          attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
-        result.replaceCharacters(
-          in: match.range, with: NSAttributedString(string: text, attributes: attributes))
+        if let link = run.link,
+          ["https", "http", "mailto"].contains(link.scheme?.lowercased() ?? "")
+        {
+          attributes[.link] = link
+        }
+        result.append(
+          NSAttributedString(string: String(inline[run.range].characters), attributes: attributes))
       }
     }
     return result
   }
 }
+
 extension UIFont {
   fileprivate func withTraits(_ traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
     UIFont(descriptor: fontDescriptor.withSymbolicTraits(traits) ?? fontDescriptor, size: pointSize)

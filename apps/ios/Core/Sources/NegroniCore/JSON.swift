@@ -168,6 +168,34 @@ public enum ChatNotificationPolicy {
 }
 
 public enum ThreadLogic {
+  public static func working(_ snapshot: JSON) -> Bool {
+    let runs = snapshot["activeRuns"].array + (snapshot["run"].isNull ? [] : [snapshot["run"]])
+    return runs.contains { ["queued", "leased", "running"].contains($0["status"].string) }
+  }
+  public static func unconfirmed(_ outgoing: [JSON], in messages: [JSON]) -> [JSON] {
+    var used = Set<String>()
+    return outgoing.filter { pending in
+      let match = messages.first { message in
+        guard message["role"].string == "user", !used.contains(message["id"].string) else {
+          return false
+        }
+        if !pending["receiptSeq"].isNull { return pending["receiptSeq"] == message["seq"] }
+        guard message["seq"].int > pending["afterSeq"].int else { return false }
+        let files: (JSON) -> [String] = { value in
+          value["blocks"].array.compactMap {
+            $0["artifactId"].isNull ? nil : $0["artifactId"].string
+          }.sorted()
+        }
+        return plainText(message) == plainText(pending) && files(message) == files(pending)
+      }
+      if let match {
+        used.insert(match["id"].string)
+        return false
+      }
+      return true
+    }
+  }
+
   public static func plainText(_ message: JSON) -> String {
     message["blocks"].array.compactMap { block in
       switch block["kind"].string {

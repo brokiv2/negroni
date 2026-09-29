@@ -8,10 +8,13 @@ struct ListRow {
   var color: UIColor? = nil
   var image: UIImage? = nil
   var imageURL: String? = nil
+  var iconRequest: JSON? = nil
   var action: (() -> Void)? = nil
   var menu: UIMenu? = nil
   var accessory: UITableViewCell.AccessoryType = .none
   var lines: Int = 2
+  var deleteAction: (() -> Void)? = nil
+  var deleteTitle: String = "Delete"
 }
 struct ListSection {
   var title: String? = nil
@@ -48,6 +51,11 @@ class ListController: UITableViewController {
   func load() async throws {}
   @objc func reloadData() {
     loadTask?.cancel()
+    if sections.isEmpty {
+      let spinner = UIActivityIndicatorView(style: .medium)
+      spinner.startAnimating()
+      tableView.backgroundView = spinner
+    }
     loadTask = Task { [weak self] in
       guard let self else { return }
       do {
@@ -90,9 +98,10 @@ class ListController: UITableViewController {
     config.imageProperties.tintColor = row.color ?? Theme.ink
     config.imageProperties.maximumSize = CGSize(width: 36, height: 36)
     cell.contentConfiguration = config
-    if let imageURL = row.imageURL, !imageURL.isEmpty {
+    if row.imageURL?.isEmpty == false || row.iconRequest != nil {
       Task { [weak cell] in
-        guard let image = await ImageStore.shared.image(imageURL), let cell,
+        let image = await ImageStore.shared.connectionImage(row.imageURL, request: row.iconRequest)
+        guard let image, let cell,
           var current = cell.contentConfiguration as? UIListContentConfiguration
         else { return }
         current.image = image.withRenderingMode(.alwaysOriginal)
@@ -113,6 +122,23 @@ class ListController: UITableViewController {
   ) -> UIContextMenuConfiguration? {
     guard let menu = sections[indexPath.section].rows[indexPath.row].menu else { return nil }
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in menu }
+  }
+  override func tableView(
+    _ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+  ) -> UISwipeActionsConfiguration? {
+    guard let action = sections[indexPath.section].rows[indexPath.row].deleteAction else {
+      return nil
+    }
+    let delete = UIContextualAction(
+      style: .destructive, title: sections[indexPath.section].rows[indexPath.row].deleteTitle
+    ) { _, _, completion in
+      completion(true)
+      action()
+    }
+    delete.image = UIImage(systemName: "trash")
+    let configuration = UISwipeActionsConfiguration(actions: [delete])
+    configuration.performsFirstActionWithFullSwipe = false
+    return configuration
   }
   func push(_ controller: UIViewController) {
     navigationController?.pushViewController(controller, animated: true)

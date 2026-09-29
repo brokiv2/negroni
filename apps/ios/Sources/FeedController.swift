@@ -121,7 +121,12 @@ final class FeedController: ListController {
                   self.expanded.insert(id)
                 }
                 self.reloadData()
-              }, menu: menu, accessory: .disclosureIndicator, lines: 0)
+              }, menu: menu, accessory: .disclosureIndicator, lines: 0,
+              deleteAction: { [weak self] in
+                self?.confirmDelete("Delete \(routine["name"].string)?") { [weak self] in
+                  self?.mutate("routines/remove", ["routineId": routine["id"]])
+                }
+              })
           },
           footer: routines.isEmpty
             ? "Ask Negroni in chat to schedule a task."
@@ -136,7 +141,27 @@ final class FeedController: ListController {
         ListSection(rows: [
           ListRow(
             title: item["title"].string,
-            action: { [weak self] in self?.push(ArticleController(item: item)) })
+            action: { [weak self] in self?.push(ArticleController(item: item)) },
+            menu: UIMenu(children: [
+              UIAction(
+                title: item["saved"].bool ? "Unsave" : "Save",
+                image: UIImage(systemName: "bookmark")
+              ) { [weak self] _ in
+                self?.mutate(
+                  "feed/update", ["id": item["id"], "saved": .bool(!item["saved"].bool)])
+              },
+              UIAction(
+                title: item["hidden"].bool ? "Restore" : "Hide",
+                image: UIImage(systemName: "eye.slash")
+              ) { [weak self] _ in
+                self?.mutate(
+                  "feed/update", ["id": item["id"], "hidden": .bool(!item["hidden"].bool)])
+              },
+            ]),
+            deleteAction: { [weak self] in
+              self?.mutate(
+                "feed/update", ["id": item["id"], "hidden": .bool(!item["hidden"].bool)])
+            }, deleteTitle: item["hidden"].bool ? "Restore" : "Hide")
         ])
       }
       if sections.isEmpty {
@@ -186,8 +211,12 @@ final class FeedCardCell: UITableViewCell {
     if !source.isEmpty {
       stack.addArrangedSubview(Theme.label(source, style: .caption1, color: Theme.muted))
     }
-    stack.addArrangedSubview(Theme.label(item["title"].string, style: .headline))
-    let summary = Theme.label(item["summary"].string, style: .subheadline, color: Theme.muted)
+    let title = Theme.label("", style: .headline)
+    title.attributedText = Markdown.render(item["title"].string, style: .headline)
+    stack.addArrangedSubview(title)
+    let summary = Theme.label("", style: .subheadline, color: Theme.muted)
+    summary.attributedText = Markdown.render(
+      item["summary"].string, style: .subheadline, color: Theme.muted)
     summary.numberOfLines = 3
     stack.addArrangedSubview(summary)
   }
@@ -321,7 +350,9 @@ final class ArticleController: UIViewController {
         }
       }
     }
-    stack.addArrangedSubview(Theme.label(item["title"].string, style: .title1))
+    let title = Theme.label("", style: .title1)
+    title.attributedText = Markdown.render(item["title"].string, style: .title1)
+    stack.addArrangedSubview(title)
     if let postID = EmbeddedPostView.postID(item["url"].string) {
       let button = Theme.button("Show post from X", symbol: "quote.bubble") {}
       button.addAction(

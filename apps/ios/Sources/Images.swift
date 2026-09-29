@@ -1,9 +1,24 @@
 import ImageIO
+import NegroniCore
 import UIKit
 
 @MainActor final class ImageStore {
   static let shared = ImageStore()
   private let cache = NSCache<NSURL, UIImage>()
+  private var connectionIcons: [String: UIImage] = [:]
+  func connectionImage(_ url: String?, request: JSON?) async -> UIImage? {
+    let key = (url ?? "") + (request?["provider"].string ?? "")
+    if let cached = connectionIcons[key] { return cached }
+    if let url, let image = await image(url) {
+      connectionIcons[key] = image
+      return image
+    }
+    guard let request, let result = try? await API.shared.rpc("connections/icon", request),
+      let data = Data(base64Encoded: result["png"].string), let image = UIImage(data: data)
+    else { return nil }
+    connectionIcons[key] = image
+    return image
+  }
   func image(_ raw: String) async -> UIImage? {
     guard let url = URL(string: raw), url.scheme == "https" else { return nil }
     if let image = cache.object(forKey: url as NSURL) { return image }

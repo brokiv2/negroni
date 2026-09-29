@@ -37,12 +37,19 @@ final class TeamController: ListController {
       ListRow(
         title: bot["name"].string, detail: bot["description"].string,
         symbol: "face.smiling.inverse",
-        image: RobotAvatar.image(color: bot["color"].string, size: 40),
+        image: RobotAvatar.image(
+          color: bot["color"].string, size: 40, main: bot["id"].string == self?.botID),
         action: { [weak self] in
-          self?.push(ChatController(target: ["botId": bot["id"]], title: bot["name"].string))
+          self?.push(
+            ChatController(
+              target: bot["id"].string == self?.botID
+                ? ["botId": bot["id"], "threadKind": "personal"] : ["botId": bot["id"]],
+              title: bot["name"].string))
         }, accessory: .disclosureIndicator)
     }
     sections = [
+      ListSection(
+        title: "Personal assistant", rows: bots.filter { $0["id"].string == botID }.map(makeRow)),
       ListSection(
         title: "Group chats",
         rows: groupRows.isEmpty

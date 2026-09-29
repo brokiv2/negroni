@@ -295,6 +295,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
 {
   private var connections: [JSON] = [], catalog: [JSON] = [], query = "", catalogError = false
   private var authSession: ASWebAuthenticationSession?
+  private var connecting = false
   private let search = UISearchController(searchResultsController: nil)
   init() { super.init(title: "Connections") }
   required init?(coder: NSCoder) { fatalError() }
@@ -328,26 +329,54 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
         || ($0["displayName"].string + $0["provider"].string).localizedCaseInsensitiveContains(
           query)
     }.map { connection in
-      ListRow(
-        title: connection["displayName"].string,
-        detail: connection["provider"].string + " · " + connection["status"].string,
-        symbol: "link",
-        imageURL: catalog.first { $0["slug"] == connection["provider"] }?["logo"].string,
+      let app = catalog.first {
+        $0["slug"] == connection["provider"] && $0["connectorId"] == connection["connectorId"]
+      }
+      let service = app?["name"].string ?? connection["provider"].string.capitalized
+      let name = connection["displayName"].string
+      let state =
+        [
+          "connected": "Connected", "pending": "Finish connecting", "revoked": "Disconnected",
+          "error": "Needs attention",
+        ][connection["status"].string] ?? ""
+      let rename: () -> Void = { [weak self] in
+        self?.prompt("Account name", value: name) { [weak self] value in
+          self?.mutate(
+            "connections/rename", ["connectionId": connection["id"], "displayName": .string(value)])
+        }
+      }
+      let remove: () -> Void = { [weak self] in self?.removeConnection(connection) }
+      return ListRow(
+        title: service,
+        detail: [name == connection["provider"].string ? "" : name, state].filter { !$0.isEmpty }
+          .joined(separator: " · "),
+        symbol: "app", imageURL: app?["logo"].string,
+        iconRequest: [
+          "connectorId": connection["connectorId"], "provider": connection["provider"],
+        ],
         action: { [weak self] in
-          self?.prompt("Account name", value: connection["displayName"].string) {
-            [weak self] value in
-            self?.mutate(
-              "connections/rename",
-              ["connectionId": connection["id"], "displayName": .string(value)])
+          guard let self else { return }
+          let sheet = UIAlertController(title: service, message: name, preferredStyle: .actionSheet)
+          sheet.addAction(UIAlertAction(title: "Rename", style: .default) { _ in rename() })
+          if connection["status"].string == "pending" {
+            sheet.addAction(
+              UIAlertAction(title: "Check connection", style: .default) { [weak self] _ in
+                self?.finishConnection(connection["id"])
+              })
           }
+          sheet.addAction(UIAlertAction(title: "Delete", style: .destructive) { _ in remove() })
+          sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+          sheet.popoverPresentationController?.sourceView = self.view
+          sheet.popoverPresentationController?.sourceRect = CGRect(
+            x: self.view.bounds.midX, y: self.view.bounds.midY, width: 1, height: 1)
+          self.present(sheet, animated: true)
         },
         menu: UIMenu(children: [
-          UIAction(title: "Disconnect", attributes: .destructive) { [weak self] _ in
-            self?.confirmDelete("Disconnect \(connection["displayName"].string)?") { [weak self] in
-              self?.mutate("connections/revoke", ["connectionId": connection["id"]])
-            }
-          }
-        ]))
+          UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in rename() },
+          UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) {
+            _ in remove()
+          },
+        ]), accessory: .disclosureIndicator, deleteAction: remove)
     }
     let apps = catalog.filter {
       query.isEmpty
@@ -356,12 +385,10 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
       ListRow(
         title: app["name"].string, detail: app["description"].string, symbol: "app",
         imageURL: app["logo"].string,
-        action: { [weak self] in
-          self?.prompt("Account name", placeholder: "Work, personal, or email") {
-            [weak self] value in self?.connect(app, name: value)
-          }
-        })
+        iconRequest: ["connectorId": app["connectorId"], "provider": app["slug"]],
+        action: { [weak self] in self?.connect(app) })
     }
+
     sections = [
       ListSection(title: "Connected accounts", rows: saved),
       ListSection(
@@ -371,14 +398,35 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
           : catalog.isEmpty ? "Loading apps…" : nil),
     ]
   }
-  private func connect(_ app: JSON, name: String) {
+  private func removeConnection(_ connection: JSON) {
+    let remove = { [weak self] in
+      guard let self else { return }
+      Task {
+        do {
+          if connection["status"].string != "revoked" {
+            _ = try await API.shared.rpc("connections/revoke", ["connectionId": connection["id"]])
+          }
+          _ = try await API.shared.rpc("connections/remove", ["connectionId": connection["id"]])
+          self.reloadData()
+        } catch { self.showError(error) }
+      }
+    }
+    if connection["status"].string == "revoked" {
+      remove()
+    } else {
+      confirmDelete("Disconnect and remove this account?", action: remove)
+    }
+  }
+  private func connect(_ app: JSON) {
+    guard !connecting, authSession == nil else { return }
+    connecting = true
     Task {
+      defer { connecting = false }
       do {
         let result = try await API.shared.rpc(
           "connections/begin",
           [
             "connectorId": app["connectorId"], "provider": app["slug"],
-            "displayName": .string(name),
           ])
         guard let url = URL(string: result["authorizationUrl"].string), url.scheme == "https" else {
           reloadData()
@@ -388,6 +436,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
           [weak self] _, error in
           Task { @MainActor in
             guard let self else { return }
+            self.authSession = nil
             if let error {
               if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
                 self.showError(error)
@@ -399,7 +448,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
         }
         authSession?.presentationContextProvider = self
         authSession?.prefersEphemeralWebBrowserSession = false
-        authSession?.start()
+        if authSession?.start() != true { authSession = nil }
       } catch { showError(error) }
     }
   }
