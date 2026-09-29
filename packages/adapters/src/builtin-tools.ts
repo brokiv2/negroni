@@ -762,7 +762,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "work_create",
     description:
-      "Save a user-requested ongoing responsibility with a specific future check, deadline and bounded run allowance. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
+      "Save one responsibility per explicit user request with a specific future check, deadline and bounded run allowance. Include all requested outcomes in its objective; retries return the same responsibility even if renamed. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
     inputSchema: z.toJSONSchema(CreateAssistantWorkInput),
   },
   {

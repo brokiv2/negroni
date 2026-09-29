@@ -57,9 +57,8 @@ export async function createAssistantWork(prisma: PrismaClient, run: WorkRun, in
   }
   const nextWakeAt = new Date(value.nextWakeAt);
   const deadline = new Date(value.deadline);
-  validateWake(nextWakeAt, deadline);
   const creationKey = createHash("sha256")
-    .update(`${run.spaceId}:${run.sourceMessageId}:${value.title.toLocaleLowerCase()}`)
+    .update(`${run.spaceId}:${run.sourceMessageId}`)
     .digest("hex");
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${run.threadId} FOR UPDATE`;
@@ -79,8 +78,14 @@ export async function createAssistantWork(prisma: PrismaClient, run: WorkRun, in
     });
     if (!message || !thread)
       throw new Error("The originating user message is no longer available.");
-    const existing = await tx.assistantWork.findUnique({ where: { creationKey } });
+    // Identity follows the authorizing request, not a model-generated title. Also
+    // recognize older keys so a renamed retry cannot resurrect stopped work.
+    const existing = await tx.assistantWork.findFirst({
+      where: { spaceId: run.spaceId, userId: run.userId, sourceMessageId: message.id },
+      orderBy: { createdAt: "asc" },
+    });
     if (existing) return assistantWorkView(existing);
+    validateWake(nextWakeAt, deadline);
     const authorization = JSON.stringify(message.blocks);
     const row = await tx.assistantWork.create({
       data: {

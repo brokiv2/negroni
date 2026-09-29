@@ -148,6 +148,19 @@ suite("assistant work lifecycle (PostgreSQL, no model or external services)", ()
       await listAssistantWork(prisma, { spaceId: h.id, userId: "another-owner" }, h.thread.id),
     ).toEqual([]);
   });
+  it("does not resurrect stopped work under a renamed retry of the same request", async () => {
+    const h = await setup();
+    const work = await h.create();
+    await controlAssistantWork(prisma, h.run, { workId: work.id, version: 1, action: "cancel" });
+    const retry = await createAssistantWork(prisma, h.run, {
+      ...h.input,
+      title: "A different title",
+      nextWakeAt: new Date(0).toISOString(),
+    });
+    expect(retry.id).toBe(work.id);
+    expect(retry.status).toBe("cancelled");
+    expect(await prisma.assistantWork.count({ where: { sourceMessageId: h.message.id } })).toBe(1);
+  });
   it("rejects background creation and a deleted originating message", async () => {
     const h = await setup();
     await expect(
