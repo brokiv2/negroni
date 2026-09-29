@@ -70,3 +70,11 @@ it("scopes automation deletion to the requesting owner", async()=>{
   expect(findFirst).toHaveBeenCalledWith({where:{id:"foreign",spaceId:actor.spaceId,userId:actor.userId}});
   expect(remove).not.toHaveBeenCalled();
 });
+
+it("passes only owner keys to the profile lookup",async()=>{
+ const findUnique=vi.fn(async()=>null);
+ const handler=new RPCHandler(createRouter({prisma:{feedProfile:{findUnique}},env:{defaultProvider:"fake",defaultModel:"fake"}} as unknown as RouterDeps));
+ const result=await handler.handle(new Request("http://fixture.test/rpc/feed/profile",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({json:{}})}),{prefix:"/rpc",context:{actor}});
+ expect(result.response?.status).toBe(200);
+ expect(findUnique).toHaveBeenCalledWith({where:{spaceId_userId:{spaceId:actor.spaceId,userId:actor.userId}}});
+});

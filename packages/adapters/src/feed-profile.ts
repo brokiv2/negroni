@@ -13,6 +13,7 @@ export function eligibleFeedInterests(profile: FeedProfile, now = Date.now()) {
   );
 }
 export async function getFeedProfile(prisma: PrismaClient, scope: Scope) {
+  scope = {spaceId:scope.spaceId,userId:scope.userId};
   const row = await prisma.feedProfile.findUnique({ where: { spaceId_userId: scope } });
   return FeedProfileSchema.parse(row?.data ?? {});
 }
@@ -21,6 +22,7 @@ export async function mutateFeedProfile(
   scope: Scope,
   change: (p: FeedProfile) => FeedProfile,
 ) {
+  scope = {spaceId:scope.spaceId,userId:scope.userId};
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scope.spaceId}), hashtext(${scope.userId}))`;
     const row = await tx.feedProfile.findUnique({ where: { spaceId_userId: scope } });

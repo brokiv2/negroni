@@ -33,6 +33,7 @@ export async function publishFeed(
   raw: unknown,
   options: { automated?: boolean } = {},
 ) {
+  scope = {spaceId:scope.spaceId,userId:scope.userId};
   const input = FeedItemInput.parse(raw);
   const profile = await getFeedProfile(prisma, scope);
   if (profile.excludedTopics.some((t) => topicKey(t) === topicKey(input.topic)))
