@@ -1,9 +1,10 @@
-import { LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
+import { ATTACHMENT_MAX_BASE64_LENGTH, LOCAL_SETTINGS_RPC } from "@rakazo/contracts";
 import type { Hono, MiddlewareHandler } from "hono";
 import { cancelBody } from "./http-body.js";
 
 export const MAX_AUTH_REQUEST_BYTES = 64 * 1024;
 export const MAX_RPC_REQUEST_BYTES = 16 * 1024 * 1024;
+export const MAX_ATTACHMENT_REQUEST_BYTES = ATTACHMENT_MAX_BASE64_LENGTH + 64 * 1024;
 
 /** Bound JSON entry points before their framework parsers buffer the request. */
 export function requestBodyLimit(maxSize: number): MiddlewareHandler {
@@ -59,5 +60,9 @@ export function requestBodyLimit(maxSize: number): MiddlewareHandler {
 export function mountApiRequestBodyLimits(app: Hono): void {
   app.use("/api/auth/*", requestBodyLimit(MAX_AUTH_REQUEST_BYTES));
   app.use(`${LOCAL_SETTINGS_RPC}/*`, requestBodyLimit(MAX_RPC_REQUEST_BYTES));
-  app.use("/rpc/*", requestBodyLimit(MAX_RPC_REQUEST_BYTES));
+  app.use("/rpc/*", (c, next) =>
+    requestBodyLimit(
+      c.req.path === "/rpc/artifacts/create" ? MAX_ATTACHMENT_REQUEST_BYTES : MAX_RPC_REQUEST_BYTES,
+    )(c, next),
+  );
 }

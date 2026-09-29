@@ -2,6 +2,7 @@ import { ATTACHMENT_MAX_BASE64_LENGTH } from "@rakazo/contracts";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_ATTACHMENT_REQUEST_BYTES,
   MAX_AUTH_REQUEST_BYTES,
   MAX_RPC_REQUEST_BYTES,
   mountApiRequestBodyLimits,
@@ -17,7 +18,7 @@ function testApp(maxSize: number, parse = vi.fn(async (request: Request) => requ
 
 describe("API request body limits", () => {
   it("keeps the RPC allowance above the largest supported attachment envelope", () => {
-    expect(MAX_RPC_REQUEST_BYTES).toBeGreaterThan(ATTACHMENT_MAX_BASE64_LENGTH);
+    expect(MAX_ATTACHMENT_REQUEST_BYTES).toBeGreaterThan(ATTACHMENT_MAX_BASE64_LENGTH);
     expect(MAX_AUTH_REQUEST_BYTES).toBeLessThan(MAX_RPC_REQUEST_BYTES);
   });
 
@@ -26,6 +27,7 @@ describe("API request body limits", () => {
     const app = new Hono();
     mountApiRequestBodyLimits(app);
     app.post("/api/auth/sign-in/email", async (c) => c.json(await parse(c.req.raw)));
+    app.post("/rpc/artifacts/create", async (c) => c.json(await parse(c.req.raw)));
     app.post("/rpc/test", async (c) => c.json(await parse(c.req.raw)));
     app.post("/api/voice/speak", async (c) => c.json(await parse(c.req.raw)));
 
@@ -42,10 +44,12 @@ describe("API request body limits", () => {
     const rpc = await request("/rpc/test", MAX_RPC_REQUEST_BYTES + 1);
     const voice = await request("/api/voice/speak", MAX_RPC_REQUEST_BYTES + 1);
 
+    const artifact = await request("/rpc/artifacts/create", MAX_RPC_REQUEST_BYTES + 1);
+    expect(artifact.status).toBe(200);
     expect(auth.status).toBe(413);
     expect(rpc.status).toBe(413);
     expect(voice.status).toBe(200);
-    expect(parse).toHaveBeenCalledOnce();
+    expect(parse).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an oversized declared body before the route parser", async () => {

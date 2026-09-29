@@ -20,7 +20,7 @@ export class AttachmentValidationError extends Error {
  * `/^(?:[A-Za-z0-9+/]{4})*(...)?$/` stack-overflows V8's regex engine on
  * inputs in the megabytes-of-characters range — reproduced directly: a 5 MiB
  * string throws `RangeError: Maximum call stack size exceeded` on `.test()`.
- * At the current 10 MiB attachment limit, base64 expansion (4/3) puts any
+ * At the current attachment limit, base64 expansion (4/3) puts any
  * attachment over ~3.75 MiB squarely in that range, so this crashes on a
  * routine, non-malicious upload. A flat, ungrouped `[chars]*` quantifier does
  * not have this problem; padding is checked separately since it can only
@@ -38,7 +38,7 @@ export function decodeAttachmentBase64(contentBase64: string): Uint8Array {
   const normalized = contentBase64.trim();
   if (!normalized) throw new AttachmentValidationError("Attachment content is empty");
   if (normalized.length > ATTACHMENT_MAX_BASE64_LENGTH) {
-    throw new AttachmentValidationError("Attachment exceeds the 10 MiB limit");
+    throw new AttachmentValidationError("Attachment exceeds the 50 MiB limit");
   }
   if (normalized.length % 4 !== 0 || !isWellFormedBase64(normalized)) {
     throw new AttachmentValidationError("Attachment content is not valid base64");
@@ -51,7 +51,7 @@ export function decodeAttachmentBase64(contentBase64: string): Uint8Array {
   }
   if (bytes.byteLength === 0) throw new AttachmentValidationError("Attachment content is empty");
   if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
-    throw new AttachmentValidationError("Attachment exceeds the 10 MiB limit");
+    throw new AttachmentValidationError("Attachment exceeds the 50 MiB limit");
   }
   return new Uint8Array(bytes);
 }
@@ -143,6 +143,8 @@ const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
   ".xls": "application/vnd.ms-excel",
   ".rtf": "application/rtf",
   ".zip": "application/zip",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  ".key": "application/vnd.apple.keynote",
   ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".md": "text/markdown",
@@ -166,6 +168,8 @@ const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
   "application/vnd.ms-excel": ".xls",
   "application/rtf": ".rtf",
   "application/zip": ".zip",
+  "application/vnd.oasis.opendocument.presentation": ".odp",
+  "application/vnd.apple.keynote": ".key",
   "application/pdf": ".pdf",
   "text/plain": ".txt",
   "text/markdown": ".md",

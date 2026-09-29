@@ -31,9 +31,9 @@ describe("attachment helpers", () => {
     const validLarge = "A".repeat(6 * 1024 * 1024);
     expect(() => decodeAttachmentBase64(validLarge)).not.toThrow();
 
-    // A base64 string decoding to just over the 10 MiB byte limit must still
+    // A base64 string decoding to just over the 50 MiB byte limit must still
     // be rejected for size — and, same regression, without a stack overflow.
-    const oversized = "A".repeat(15 * 1024 * 1024);
+    const oversized = "A".repeat(70 * 1024 * 1024);
     expect(() => decodeAttachmentBase64(oversized)).not.toThrow(RangeError);
     expect(() => decodeAttachmentBase64(oversized)).toThrow(AttachmentValidationError);
   });

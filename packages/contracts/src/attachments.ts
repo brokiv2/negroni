@@ -1,6 +1,6 @@
 // File uploads stream to disk; the legacy JSON/image budget stays separate.
 export const ATTACHMENT_FILE_MAX_BYTES = 512 * 1024 * 1024;
-export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
 export const ATTACHMENT_MAX_COUNT = 4;
 export const ARTIFACT_NAME_MAX_LENGTH = 255;
 export const ARTIFACT_DESCRIPTION_MAX_LENGTH = 280;
@@ -24,6 +24,8 @@ export const ATTACHMENT_FILE_MIME_TYPES = [
   "application/vnd.ms-excel",
   "application/rtf",
   "application/zip",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.apple.keynote",
   "text/plain",
   "text/markdown",
   "text/csv",

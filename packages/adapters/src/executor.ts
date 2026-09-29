@@ -29,7 +29,7 @@ import {
 } from "@rakazo/adapter-kit";
 import type { MessageBlock, ModelRouting, RunStatus } from "@rakazo/contracts";
 import {
-  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_FILE_MAX_BYTES,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
@@ -2558,7 +2558,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   computer,
                   resolveBotWorkspacePath(computerMode, bot.id, dataPath),
                   context,
-                  { maxBytes: ATTACHMENT_MAX_BYTES },
+                  { maxBytes: ATTACHMENT_FILE_MAX_BYTES },
                 );
                 rows = parsePlotData(dataPath, new TextDecoder().decode(bytes));
               }
@@ -2636,7 +2636,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             let bytes: Uint8Array;
             try {
               bytes = await deps.sandbox.readFile(computer, storedPath, context, {
-                maxBytes: ATTACHMENT_MAX_BYTES,
+                maxBytes: ATTACHMENT_FILE_MAX_BYTES,
               });
             } catch {
               return finish({ error: "file not found or unreadable", path: filePath });
@@ -5728,8 +5728,8 @@ export async function loadCurrentTurnImages(
 
 /** User turns whose attached images stay hydrated for the model. */
 export const RECENT_TURN_IMAGE_TURNS = 3;
-/** Total hydrated history image bytes, matching the per-attachment ceiling. */
-export const RECENT_TURN_IMAGE_BYTES = ATTACHMENT_MAX_BYTES;
+/** Model image-context budget, independent of document upload limits. */
+export const RECENT_TURN_IMAGE_BYTES = 10 * 1024 * 1024;
 
 function declaredArtifactBytes(size: unknown): number | undefined {
   if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return undefined;
