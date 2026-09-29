@@ -4125,3 +4125,95 @@ msgstr "Ваше имя"
 #: src/pages/Welcome.tsx:21
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Ваша команда постоянно работающих агентов<0/>, которым вы можете дать настоящую работу."
+
+#: src/pages/ModelRoutingPanel.tsx:94
+msgid "Add model"
+msgstr "Добавить модель"
+
+#: src/pages/ModelRoutingPanel.tsx:108
+msgid "Add model…"
+msgstr "Добавить модель…"
+
+#: src/pages/ModelRoutingPanel.tsx:147
+msgid "Add selected model"
+msgstr "Добавить выбранную модель"
+
+#: src/pages/shell/chat-model-picker.tsx:78
+msgid "Auto"
+msgstr "Авто"
+
+#: src/pages/ModelRoutingPanel.tsx:156
+msgid "Auto router"
+msgstr "Диспетчер Авто"
+
+#: src/pages/Shell.tsx:3700
+msgid "Chat"
+msgstr "Чат"
+
+#: src/pages/shell/chat-model-picker.tsx:73
+msgid "Chat model"
+msgstr "Модель чата"
+
+#: src/pages/ModelRoutingPanel.tsx:155
+msgid "Complex tasks"
+msgstr "Сложные задачи"
+
+#: src/pages/ModelSettingsOverlay.tsx:432
+msgid "Connect providers and choose models."
+msgstr "Подключаем провайдеров и выбираем модели."
+
+#: src/pages/shell/chat-model-picker.tsx:65
+msgid "Could not change model"
+msgstr "Не удалось сменить модель"
+
+#: src/pages/ModelRoutingPanel.tsx:36
+msgid "Could not load model routing"
+msgstr "Не удалось загрузить настройки выбора моделей"
+
+#: src/pages/shell/chat-model-picker.tsx:39
+msgid "Could not load models"
+msgstr "Не удалось загрузить модели"
+
+#: src/pages/ModelRoutingPanel.tsx:70
+msgid "Could not save models"
+msgstr "Не удалось сохранить модели"
+
+#: src/pages/ModelRoutingPanel.tsx:154
+#: src/pages/ModelRoutingPanel.tsx:180
+msgid "Default chat"
+msgstr "Основная модель"
+
+#: src/pages/ModelRoutingPanel.tsx:81
+#: src/pages/ModelRoutingPanel.tsx:85
+msgid "Enabled models"
+msgstr "Доступные модели"
+
+#: src/pages/ModelRoutingPanel.tsx:88
+#: src/pages/ModelRoutingPanel.tsx:89
+msgid "Find model"
+msgstr "Найти модель"
+
+#: src/pages/ModelRoutingPanel.tsx:182
+msgid "First enabled model"
+msgstr "Первая доступная модель"
+
+#: src/pages/shell/chat-model-picker.tsx:92
+msgid "Manage models…"
+msgstr "Настроить модели…"
+
+#: src/pages/ModelRoutingPanel.tsx:200
+msgid "Save models"
+msgstr "Сохранить модели"
+
+#: src/pages/ModelSettingsOverlay.tsx:973
+msgid "Use as workspace default"
+msgstr "Сделать основной для пространства"
+
+#: src/pages/ModelRoutingPanel.tsx:178
+msgid "Use default profiles"
+msgstr "Использовать заданные модели"
+
+#: src/pages/ModelRoutingPanel.tsx:183
+#: src/pages/ModelSettingsOverlay.tsx:461
+msgid "Workspace default"
+msgstr "По умолчанию для пространства"

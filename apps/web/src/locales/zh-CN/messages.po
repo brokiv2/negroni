@@ -4125,3 +4125,95 @@ msgstr "你的名字"
 #: src/pages/Welcome.tsx:21
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "你的一支随时在线的 Agent 团队<0/>可以交给它们真正的工作。"
+
+#: src/pages/ModelRoutingPanel.tsx:94
+msgid "Add model"
+msgstr "Add model"
+
+#: src/pages/ModelRoutingPanel.tsx:108
+msgid "Add model…"
+msgstr "Add model…"
+
+#: src/pages/ModelRoutingPanel.tsx:147
+msgid "Add selected model"
+msgstr "Add selected model"
+
+#: src/pages/shell/chat-model-picker.tsx:78
+msgid "Auto"
+msgstr "Auto"
+
+#: src/pages/ModelRoutingPanel.tsx:156
+msgid "Auto router"
+msgstr "Auto router"
+
+#: src/pages/Shell.tsx:3700
+msgid "Chat"
+msgstr "Chat"
+
+#: src/pages/shell/chat-model-picker.tsx:73
+msgid "Chat model"
+msgstr "Chat model"
+
+#: src/pages/ModelRoutingPanel.tsx:155
+msgid "Complex tasks"
+msgstr "Complex tasks"
+
+#: src/pages/ModelSettingsOverlay.tsx:432
+msgid "Connect providers and choose models."
+msgstr "Connect providers and choose models."
+
+#: src/pages/shell/chat-model-picker.tsx:65
+msgid "Could not change model"
+msgstr "Could not change model"
+
+#: src/pages/ModelRoutingPanel.tsx:36
+msgid "Could not load model routing"
+msgstr "Could not load model routing"
+
+#: src/pages/shell/chat-model-picker.tsx:39
+msgid "Could not load models"
+msgstr "Could not load models"
+
+#: src/pages/ModelRoutingPanel.tsx:70
+msgid "Could not save models"
+msgstr "Could not save models"
+
+#: src/pages/ModelRoutingPanel.tsx:154
+#: src/pages/ModelRoutingPanel.tsx:180
+msgid "Default chat"
+msgstr "Default chat"
+
+#: src/pages/ModelRoutingPanel.tsx:81
+#: src/pages/ModelRoutingPanel.tsx:85
+msgid "Enabled models"
+msgstr "Enabled models"
+
+#: src/pages/ModelRoutingPanel.tsx:88
+#: src/pages/ModelRoutingPanel.tsx:89
+msgid "Find model"
+msgstr "Find model"
+
+#: src/pages/ModelRoutingPanel.tsx:182
+msgid "First enabled model"
+msgstr "First enabled model"
+
+#: src/pages/shell/chat-model-picker.tsx:92
+msgid "Manage models…"
+msgstr "Manage models…"
+
+#: src/pages/ModelRoutingPanel.tsx:200
+msgid "Save models"
+msgstr "Save models"
+
+#: src/pages/ModelSettingsOverlay.tsx:973
+msgid "Use as workspace default"
+msgstr "Use as workspace default"
+
+#: src/pages/ModelRoutingPanel.tsx:178
+msgid "Use default profiles"
+msgstr "Use default profiles"
+
+#: src/pages/ModelRoutingPanel.tsx:183
+#: src/pages/ModelSettingsOverlay.tsx:461
+msgid "Workspace default"
+msgstr "Workspace default"
