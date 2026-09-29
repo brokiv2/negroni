@@ -71,6 +71,14 @@ target 'Negroni' do
         end
       end
 
+      if target.name == 'EXUpdates'
+        target.shell_script_build_phases.each do |phase|
+          if phase.name == '[CP-User] Generate updates resources for expo-updates'
+            phase.shell_script = 'bash "$PODS_TARGET_SRCROOT/../scripts/create-updates-resources-ios.sh"'
+          end
+        end
+      end
+
       next unless %w[RNReanimated RNWorklets].include?(target.name)
       target.build_configurations.each do |bc|
         extra = "$(PODS_ROOT)/RNWorklets/Common/cpp"
