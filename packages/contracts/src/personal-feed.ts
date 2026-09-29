@@ -83,11 +83,12 @@ export const FeedProfileSchema = z.object({
   maxItems: z.number().int().min(1).max(10).default(5),
 });
 export type FeedProfile = z.infer<typeof FeedProfileSchema>;
-export const FeedProfilePatch = FeedProfileSchema.pick({
-  learningEnabled: true,
-  sourceDomains: true,
-  maxItems: true,
-}).partial();
+// Patch fields must not inherit profile defaults: omitted values preserve saved settings.
+export const FeedProfilePatch = z.object({
+  learningEnabled: FeedProfileSchema.shape.learningEnabled.removeDefault().optional(),
+  sourceDomains: FeedProfileSchema.shape.sourceDomains.removeDefault().optional(),
+  maxItems: FeedProfileSchema.shape.maxItems.removeDefault().optional(),
+});
 export const FeedInterestUpdate = z.object({
   topic: z.string().trim().min(1).max(100),
   action: z.enum(["follow", "exclude", "forget"]),
