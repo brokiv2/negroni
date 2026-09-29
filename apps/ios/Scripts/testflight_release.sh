@@ -25,7 +25,7 @@ TEAM_ID="${TEAM_ID:-$(sed -n 's/.*DEVELOPMENT_TEAM = \([^;]*\);/\1/p' "$IOS_DIR/
 : "${ASC_ISSUER_ID:?Set ASC_ISSUER_ID}"
 ASC_KEY_PATH="${ASC_KEY_PATH:-$HOME/Downloads/AuthKey_${ASC_KEY_ID}.p8}"
 [[ -f "$ASC_KEY_PATH" ]] || { echo 'App Store Connect signing key is missing'; exit 1; }
-BUILD_NUMBER="${BUILD_NUMBER:-34}"
+BUILD_NUMBER="${BUILD_NUMBER:-35}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/Library/Developer/Negroni-Releases/native-build$BUILD_NUMBER}"
 export OUTPUT_DIR
 ARCHIVE="$OUTPUT_DIR/Negroni.xcarchive"

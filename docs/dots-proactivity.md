@@ -1,6 +1,6 @@
 # Dots research and Negroni proactivity
 
-Reviewed September 29, 2026. This document separates published product behavior from the proposed Negroni implementation. It does not claim access to OpenAI's private prompts, scheduler, memory schema, ranking algorithm or source code. The implementation below is pending unless explicitly marked shipped.
+Reviewed September 29–30, 2026. This document separates published product behavior from the proposed Negroni implementation. It does not claim access to OpenAI's private prompts, scheduler, memory schema, ranking algorithm or source code. The implementation below is pending unless explicitly marked shipped.
 
 ## Verified primary sources
 
@@ -169,13 +169,13 @@ Implement persistent responsibility and adaptive wake transitions first, using t
 
 ### Local implementation: persistent assigned work
 
-The first implementation is now present in the source checkout, not yet in the installed backend or TestFlight. `AssistantWork` stores the originating user request, objective, current outcome, selected model, next check, deadline and run allowance. The existing elected reconciler claims due work under a conversation lock and publishes an ordinary run; the existing queue recovery repairs a missed publication. An unchanged wake can finish silently without another chat bubble. Run completion alone leaves the responsibility needing attention unless the assistant explicitly saves an outcome.
+The first implementation is deployed in the installed Mac backend; its native controls are in build 35, validated by Apple and available to internal TestFlight testers. `AssistantWork` stores the originating user request, objective, current outcome, selected model, next check, deadline and run allowance. The existing elected reconciler claims due work under a conversation lock and publishes an ordinary run; the existing queue recovery repairs a missed publication. An unchanged wake can finish silently without another chat bubble. Run completion alone leaves the responsibility needing attention unless the assistant explicitly saves an outcome.
 
 Current user turns can create responsibilities through `work_create`; background runs cannot create or reactivate them. `work_update` saves waiting, a request for input or completion evidence. Native chat exposes “Ongoing work” in its overflow menu, with details, pause/resume and swipe-to-stop. Version checks reject stale updates after controls change. Expiry, revoked space membership and missing conversation/assistant availability stop further checks. Clearing the originating conversation removes its responsibilities.
 
-Validation: 17 real PostgreSQL lifecycle cases, one full executor scenario with scripted model events, and 228 adjacent API/executor/reconciler regressions pass. The executor scenario covers creation, persisted wake, task-model routing and a silent unchanged result through actual tool dispatch. Adapter/API/worker typechecks and the UIKit simulator build pass. All services in these scenarios are fake; no paid model or real account is used. Native touch behavior and actual model judgment remain unverified.
+Validation: 18 real PostgreSQL lifecycle cases, one full executor scenario with scripted model events, and 228 adjacent API/executor/reconciler regressions pass. The executor scenario covers creation, persisted wake, task-model routing and a silent unchanged result through actual tool dispatch. Adapter/API/worker typechecks and the UIKit simulator build pass. All services in these scenarios are fake; no paid model or real account is used. Native touch behavior and actual model judgment remain unverified.
 
-This foundation does not yet implement independent discovery, restricted research tools, evidence ranking, source-change deduplication, daily inference allowances, or stop-all controls. A running external operation may already have taken effect when stopped; the current cancellation fence prevents subsequent tool dispatch and future wakes. Source-backed discovery and its delivery policy remain the next implementation stage.
+The public discovery implementation below adds restricted reading, evidence and novelty gates, and a daily check allowance. The ongoing-work foundation itself does not provide a single stop-all control. A running external operation may already have taken effect when stopped; the current cancellation fence prevents subsequent tool dispatch and future wakes. See the public discovery implementation below for the separate feed delivery policy.
 
 Acceptance needs both backend recovery tests and actual native interaction checks. Passing an archive or reaching TestFlight does not verify touch behavior or end-to-end proactive relevance on a physical phone.
 
@@ -190,4 +190,28 @@ Each private finding needs a source read in that run, an exact supporting quote,
 
 Discovery never posts narration or pushes to the chat. Empty checks back off. Pausing or changing scope cancels the current cycle and rejects late findings; revoked membership and expiry stop dispatch. Both continuing work and discovery run through the existing backend on the Mac. No virtual computer is created, and the discovery executor never provisions or controls a computer.
 
-Current boundaries: this discovery mode reads public web sources, not signed-in account connectors. Explicitly assigned ongoing work can use the assistant's existing authorized tools. Source events, semantic cross-URL story clustering and a single stop-all control remain additional work. This implementation and its UI have not yet been deployed or uploaded; interactive native verification is unavailable because the native UI automation tool cannot access the simulator.
+Current boundaries: this discovery mode reads public web sources, not signed-in account connectors. Explicitly assigned ongoing work can use the assistant's existing authorized tools. Source events, semantic cross-URL story clustering and a single stop-all control remain additional work. The backend is deployed and the authenticated mobile gateway exposes both ongoing work and discovery controls. Native build 35 is `VALID` and `IN_BETA_TESTING` for internal testers. Interactive native verification remains unavailable because the native UI automation tool cannot access the simulator.
+
+
+### Acceptance audit for build 35
+
+This audit distinguishes deterministic implementation checks from behavior that still depends on live model judgment or native interaction. Test and release details are in [the build 35 record](native-build35-background-work.md).
+
+| Scenario above | Evidence and remaining boundary |
+| --- | --- |
+| 1. Quiet greetings | Main-assistant policy explicitly forbids unsolicited recaps; actual model adherence needs conversational QA. |
+| 2. Interests do not authorize work | Discovery defaults off; learned topics alone do not create responsibility records. PostgreSQL coverage verifies the boundary. |
+| 3. Repeated source | Publication and hidden-source regressions enforce URL deduplication. Different URLs describing the same event are not semantically clustered. |
+| 4. Conflicting sources | Findings preserve source references and supporting quotations. Automatic reconciliation of conflicting claims is not verified; an evidence quote alone does not establish truth. |
+| 5. Stopped work stays stopped | Terminal-state tests and a renamed retry regression enforce the originating-request identity. |
+| 6. Scope changes win | Version checks and membership-revocation tests reject queued or in-flight stale work and findings. Already completed external effects cannot be undone by cancellation. |
+| 7. Restricted researcher | Executor tests reject unexposed actions at dispatch; search/fetch domain restrictions also apply through redirects. |
+| 8. Concurrent recovery | Real PostgreSQL tests cover concurrent claims and recovery after queue publication is lost. |
+| 9. Recovery without flood | Persisted next-check tests create one catch-up; actual Mac sleep/network recovery has not been exercised on-device. |
+| 10. Backoff and limits | Real PostgreSQL tests cover empty-check backoff, rolling daily allowance, deadlines and run budgets. |
+| 11. Delegation and origin | Existing bot-message tests cover return to Personal and Team; responsibility tests preserve origin and model. Live multi-agent conversation quality remains unverified. |
+| 12. Foreground delivery | Existing presence/client suppression and activity endpoint are retained. Current production activity responds successfully; actual foreground APNs presentation needs device QA. |
+| 13. Controls | Per-responsibility pause/resume/stop and discovery pause are enforced by versions. Existing automation cancellation remains separate. There is no combined stop-all control. |
+| 14. Tool success is not completion | Lifecycle tests leave work requiring attention when an execution ends without a saved verified outcome. |
+
+The bounded implementation is released. Native interaction and live model relevance are still outstanding acceptance checks. Supported source-event subscriptions, signed-in research adapters, semantic story clustering and a combined stop-all control are extensions rather than capabilities claimed by this release.
