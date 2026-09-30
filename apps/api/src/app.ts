@@ -856,7 +856,9 @@ export async function createApp(
       ok: true,
       runtime: env.agentRuntime,
       sandbox: env.sandboxProvider,
-      composio: Boolean(stack.composio),
+      // Composio is registered through integration settings, not the base connector
+      // stack, so stack.composio stays empty while Composio tools work.
+      composio: Boolean(stack.composio) || isComposioEnabled(env.composioApiKey),
       pipedream: Boolean(pipedream),
       messaging: Boolean(messaging),
       email: email?.describe().id ?? null,
