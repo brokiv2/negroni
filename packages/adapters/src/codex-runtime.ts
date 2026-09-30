@@ -21,6 +21,33 @@ export interface CodexRuntimeOptions {
   binary?: string;
 }
 
+/**
+ * Process-level switches for the embedded app server. Plugin sync starts a background
+ * git clone inside CODEX_HOME before any thread exists; it outlived SIGTERM and raced
+ * the per-run temp cleanup (ENOTEMPTY). Negroni exposes its own tools, so Codex plugins
+ * and ChatGPT apps are never used here.
+ */
+export const CODEX_APP_SERVER_ARGS = [
+  "app-server",
+  "-c",
+  "features.plugins=false",
+  "-c",
+  "features.remote_plugin=false",
+  "-c",
+  "features.apps=false",
+] as const;
+
+/** Thread-level switches: no shell tool, no login-shell environment snapshot per run. */
+export const CODEX_THREAD_FEATURES = {
+  shell_tool: false,
+  shell_snapshot: false,
+  plugins: false,
+  apps: false,
+  multi_agent: false,
+  multi_agent_v2: false,
+  code_mode: false,
+} as const;
+
 /** Codex owns each turn. All side effects still pass through the Negroni executor. */
 export class CodexAgentRuntime implements AgentRuntime {
   private active = new Map<string, AbortController>();
@@ -153,52 +180,73 @@ export class CodexAgentRuntime implements AgentRuntime {
       });
     const stop = () => {
       stopped.abort();
-      proc?.kill("SIGTERM");
+      killCodexProcess(proc, "SIGTERM");
       complete?.();
     };
     signal.addEventListener("abort", stop, { once: true });
     try {
       bridge = await startCodexModelBridge(request.model, new Set(names), childSignal);
       signal.throwIfAborted();
-      proc = spawn(
-        await resolveCodexBinary(this.options.binary ?? process.env.CODEX_BINARY),
-        ["app-server"],
-        {
-          cwd: home,
-          env: {
-            PATH: process.env.PATH,
-            HOME: home,
-            TMPDIR: tmpdir(),
-            CODEX_HOME: home,
-            NEGRONI_MODEL_BRIDGE_TOKEN: bridge.token,
-          },
-          stdio: ["pipe", "pipe", "pipe"],
+      const binary = await resolveCodexBinary(this.options.binary ?? process.env.CODEX_BINARY);
+      proc = spawn(binary, [...CODEX_APP_SERVER_ARGS], {
+        cwd: home,
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          TMPDIR: tmpdir(),
+          CODEX_HOME: home,
+          NEGRONI_MODEL_BRIDGE_TOKEN: bridge.token,
         },
-      );
-      proc.stderr?.resume(); // Never forward provider/config logs into a user's conversation.
+        // Own process group, so teardown also stops helpers Codex started. The server
+        // exits on stdin EOF, so a crashed worker cannot leave it running.
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      // Never forward provider/config logs into a user's conversation; keep a short tail
+      // for the worker log so an early exit is diagnosable.
+      let stderrTail = "";
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
+      });
       const completion = new Promise<void>((resolve, reject) => {
         complete = resolve;
         fail = reject;
       });
       // A startup failure can precede awaiting completion.
       void completion.catch(() => undefined);
-      const rejectPending = () => {
+      const rejectPending = (error: Error) => {
         for (const item of pending.values()) {
           clearTimeout(item.timer);
-          item.reject(new Error("Codex process exited"));
+          item.reject(error);
         }
         pending.clear();
       };
-      proc.on("error", () => {
-        rejectPending();
-        fail?.(
-          new Error("Codex could not start. Set CODEX_BINARY to an installed Codex executable."),
+      proc.on("error", (cause: NodeJS.ErrnoException) => {
+        // A pending initialize must fail with the start error, not a generic exit.
+        const error = new Error(
+          `Agent engine could not start (${cause.code ?? "spawn error"}). Check CODEX_BINARY; the Codex app may have moved it during an update.`,
         );
+        getLogger().error("Codex app server could not start", {
+          "error.code": cause.code,
+          "codex.binary": binary,
+        });
+        rejectPending(error);
+        fail?.(error);
       });
-      proc.on("exit", () => {
-        rejectPending();
-        if (signal.aborted || paused) complete?.();
-        else fail?.(new Error("Codex process exited before completing the turn"));
+      proc.on("exit", (code, exitSignal) => {
+        const expected = signal.aborted || paused || stopped.signal.aborted;
+        const error = new Error(
+          `Agent engine stopped unexpectedly (${exitSignal ?? `exit ${code}`}) before finishing the reply. Please try again.`,
+        );
+        if (!expected)
+          getLogger().warn("Codex app server exited before completing the turn", {
+            "process.exit_code": code,
+            "process.signal": exitSignal,
+            "codex.stderr_tail": stderrTail.slice(-600),
+          });
+        rejectPending(expected ? new Error("Codex run closed") : error);
+        if (expected) complete?.();
+        else fail?.(error);
       });
       const onTool = async (message: any) => {
         const p = message.params;
@@ -339,7 +387,10 @@ export class CodexAgentRuntime implements AgentRuntime {
                 : { type: "inputText", text: part.text },
             )
           : [{ type: "inputText", text: JSON.stringify(result ?? null) }];
-        send({ id: message.id, result: { success: !error, contentItems } });
+        send({
+          id: message.id,
+          result: { success: !error && !isErrorResult(result), contentItems },
+        });
         if (paused) {
           stop();
           return;
@@ -426,12 +477,7 @@ export class CodexAgentRuntime implements AgentRuntime {
               supports_websockets: false,
             },
           },
-          features: {
-            shell_tool: false,
-            multi_agent: false,
-            multi_agent_v2: false,
-            code_mode: false,
-          },
+          features: CODEX_THREAD_FEATURES,
           web_search: "disabled",
         },
         dynamicTools: definitions.map((tool, i) => ({
@@ -477,7 +523,7 @@ export class CodexAgentRuntime implements AgentRuntime {
     } finally {
       stopped.abort();
       signal.removeEventListener("abort", stop);
-      proc?.kill("SIGTERM");
+      killCodexProcess(proc, "SIGTERM");
       for (const item of pending.values()) {
         clearTimeout(item.timer);
         item.reject(new Error("Codex run closed"));
@@ -487,7 +533,7 @@ export class CodexAgentRuntime implements AgentRuntime {
       if (proc && proc.exitCode === null && proc.signalCode === null && proc.pid) {
         await new Promise<void>((resolve) => {
           const timer = setTimeout(() => {
-            proc?.kill("SIGKILL");
+            killCodexProcess(proc, "SIGKILL");
           }, 2_000);
           proc!.once("exit", () => {
             clearTimeout(timer);
@@ -504,6 +550,34 @@ export class CodexAgentRuntime implements AgentRuntime {
     }
   }
 }
+/** Signal the whole Codex process group (helpers included); fall back to the process. */
+export function killCodexProcess(
+  proc: ReturnType<typeof spawn> | undefined,
+  signal: NodeJS.Signals,
+) {
+  if (!proc?.pid) return;
+  if (process.platform !== "win32") {
+    try {
+      // Also after the server itself exited: its helpers can outlive it in the group.
+      process.kill(-proc.pid, signal);
+      return;
+    } catch {
+      // The group is gone or was never created; signal the process directly.
+    }
+  }
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  try {
+    proc.kill(signal);
+  } catch {}
+}
+
+function isErrorResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const record = result as { error?: unknown; isError?: unknown; details?: unknown };
+  if (record.details && typeof record.details === "object") return isErrorResult(record.details);
+  return (record.error !== undefined && record.error !== null) || record.isError === true;
+}
+
 function contextFor(signal: AbortSignal): Partial<AdapterContext> {
   return { signal };
 }
