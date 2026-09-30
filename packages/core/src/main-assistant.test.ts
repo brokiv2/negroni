@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assistantHierarchyIds,
+  CONVERSATION_POLICY,
   coordinationInstructionFor,
   MAIN_ASSISTANT_INSTRUCTION,
   mainAssistantBot,
@@ -84,7 +85,28 @@ describe("coordinationInstructionFor", () => {
     ).toMatch(/specialist.*chief/);
     expect(
       coordinationInstructionFor({ ...base, interactionMode: "chat", isMainAssistant: false }),
-    ).toBeUndefined();
+    ).toBe(CONVERSATION_POLICY);
+  });
+
+  it("applies the conversation policy to every direct chat, specialists included", () => {
+    const specialist = coordinationInstructionFor({
+      ...base,
+      interactionMode: "chat",
+      isMainAssistant: false,
+      parentBotId: "chief",
+    });
+    for (const prompt of [
+      specialist,
+      coordinationInstructionFor({ ...base, interactionMode: "chat" }),
+      coordinationInstructionFor({ ...base, interactionMode: "personal" }),
+    ]) {
+      expect(prompt).toContain(CONVERSATION_POLICY);
+    }
+    expect(CONVERSATION_POLICY).toMatch(/^Answer the latest user message\./);
+    expect(CONVERSATION_POLICY).toMatch(
+      /greetings and casual talk, reply without calling any tools/,
+    );
+    expect(CONVERSATION_POLICY).toMatch(/never answered are background only/);
   });
 
   it("adds no role prompt inside a group", () => {

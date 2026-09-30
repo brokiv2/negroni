@@ -288,7 +288,12 @@ import {
 } from "./plot-tool.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
-import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import {
+  loadReplyContext,
+  messageToAgentHistoryText,
+  UNANSWERED_TURN_NOTE,
+  unansweredFailedTurnIds,
+} from "./reply-context.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -1407,6 +1412,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           deps.connector && run.trigger !== "research"
             ? deps.connector.discoverTools(context)
             : Promise.resolve([]);
+        const strandedTurnIds = unansweredFailedTurnIds(messages, runId);
         const threadContext = threadContextForRun(
           run.trigger,
           {
@@ -1417,7 +1423,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 | "user"
                 | "assistant"
                 | "system",
-              content: messageToAgentHistoryText(m),
+              content: strandedTurnIds.has(m.id)
+                ? `${UNANSWERED_TURN_NOTE}\n${messageToAgentHistoryText(m)}`
+                : messageToAgentHistoryText(m),
             })),
             summary: thread.historyCompactionSummary,
             historyCompactedUpToSeq: thread.historyCompactedUpToSeq,

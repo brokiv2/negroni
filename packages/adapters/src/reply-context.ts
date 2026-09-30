@@ -68,3 +68,42 @@ export async function loadReplyContext(
   });
   return source ? replyContext(source, threadId) : undefined;
 }
+
+export const UNANSWERED_TURN_NOTE =
+  "[Never answered: the attempt to reply to this earlier message failed. Background only; answer it only if the latest message asks about it.]";
+
+const ENDED_WITHOUT_REPLY = new Set(["failed", "cancelled"]);
+
+/**
+ * User turns whose runs all ended failed or cancelled with no bot message. Without this
+ * mark a model answers every stranded question again (a weather card for a question
+ * asked hours earlier, before the one the user just sent).
+ */
+export function unansweredFailedTurnIds(
+  messages: readonly {
+    id: string;
+    role: string;
+    runId?: string | null;
+    sourceRuns?: readonly { id: string; status: string }[];
+  }[],
+  currentRunId: string,
+): Set<string> {
+  const answeredRunIds = new Set(
+    messages.filter((message) => message.role !== "user" && message.runId).map((m) => m.runId!),
+  );
+  const ids = new Set<string>();
+  for (const message of messages) {
+    const runs = message.sourceRuns ?? [];
+    if (message.role !== "user" || runs.length === 0) continue;
+    if (
+      runs.every(
+        (run) =>
+          run.id !== currentRunId &&
+          ENDED_WITHOUT_REPLY.has(run.status) &&
+          !answeredRunIds.has(run.id),
+      )
+    )
+      ids.add(message.id);
+  }
+  return ids;
+}

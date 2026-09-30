@@ -1,7 +1,11 @@
 import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import {
+  loadReplyContext,
+  messageToAgentHistoryText,
+  unansweredFailedTurnIds,
+} from "./reply-context.js";
 
 function harness(replyTo: unknown = null, replyQuote: string | null = null) {
   const findFirst = vi.fn().mockResolvedValue({
@@ -153,5 +157,44 @@ describe("reply context", () => {
     expect(text).toContain("User reacted with ❤️ to");
     expect(text).toContain("Test message 1/3: Hello!");
     expect(text).not.toContain("quotedText");
+  });
+});
+
+describe("unanswered failed turns", () => {
+  it("marks only user turns whose runs all ended without any reply", () => {
+    const ids = unansweredFailedTurnIds(
+      [
+        { id: "weather", role: "user", runId: "r1", sourceRuns: [{ id: "r1", status: "failed" }] },
+        {
+          id: "stopped",
+          role: "user",
+          runId: "r2",
+          sourceRuns: [{ id: "r2", status: "cancelled" }],
+        },
+        // Failed after it had already posted a reply: the user saw an answer.
+        { id: "partial", role: "user", runId: "r3", sourceRuns: [{ id: "r3", status: "failed" }] },
+        { id: "partial-reply", role: "bot", runId: "r3" },
+        // Retried successfully.
+        {
+          id: "retried",
+          role: "user",
+          runId: "r4",
+          sourceRuns: [
+            { id: "r4", status: "failed" },
+            { id: "r5", status: "completed" },
+          ],
+        },
+        { id: "queued", role: "user", runId: "r6", sourceRuns: [{ id: "r6", status: "queued" }] },
+        {
+          id: "current",
+          role: "user",
+          runId: "now",
+          sourceRuns: [{ id: "now", status: "failed" }],
+        },
+        { id: "no-runs", role: "user", runId: null, sourceRuns: [] },
+      ],
+      "now",
+    );
+    expect([...ids].sort()).toEqual(["stopped", "weather"]);
   });
 });

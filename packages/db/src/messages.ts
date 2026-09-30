@@ -36,6 +36,8 @@ export function loadRunHistoryMessages(
       replyToMessageId: true,
       replyQuote: true,
       replyTo: { select: { id: true, threadId: true, role: true, blocks: true } },
+      // Lets a run tell a user turn whose own run failed from one that was answered.
+      sourceRuns: { select: { id: true, status: true } },
     },
   });
 }
