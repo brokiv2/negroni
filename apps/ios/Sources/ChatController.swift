@@ -21,6 +21,9 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     "chat-model:\(API.shared.base.absoluteString):\(API.shared.spaceID):\(target["groupId"].string):\(target["feedItemId"].string)"
   }
   private let workingIndicator = ChatWorkingView()
+  private let runError = Theme.label("", style: .callout, color: Theme.muted)
+  private var renderedError = ""
+  private let errorContainer = UIStackView()
   private let toolActivity = ToolActivityView()
   private let activityFooter = UIStackView()
   private let activityCell = UITableViewCell()
@@ -95,6 +98,11 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     workingHeight.isActive = true
     activityFooter.addArrangedSubview(toolActivity)
     activityFooter.addArrangedSubview(workingIndicator)
+    errorContainer.addArrangedSubview(runError)
+    errorContainer.isLayoutMarginsRelativeArrangement = true
+    errorContainer.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 18, bottom: 14, trailing: 18)
+    activityFooter.addArrangedSubview(errorContainer)
+    errorContainer.isHidden = true
     toolActivity.onOpen = { [weak self] in self?.openActivity() }
     setupHeader()
     NotificationCenter.default.addObserver(
@@ -299,11 +307,17 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let actions = activities.filter { $0["runId"].string == activityRun }
     toolActivity.isHidden = actions.isEmpty || !outgoing.isEmpty
     workingIndicator.isHidden = !working
-    let activityChanged = actions != renderedActions || working != renderedWorking
+    let failed = next["run"]["status"].string == "failed"
+    let failure = failed ? (next["run"]["error"].string.isEmpty ? "Please try again." : next["run"]["error"].string) : ""
+    let errorText = failure.isEmpty ? "" : "Couldn’t finish this response. " + failure
+    runError.text = errorText
+    errorContainer.isHidden = errorText.isEmpty
+    let activityChanged = actions != renderedActions || working != renderedWorking || errorText != renderedError
+    renderedError = errorText
     renderedActions = actions
     renderedWorking = working
     toolActivity.configure(actions)
-    hasActivity = !toolActivity.isHidden || working
+    hasActivity = !toolActivity.isHidden || working || !errorContainer.isHidden
     if rows.isEmpty {
       let empty = UIView()
       let welcome = Theme.stack(spacing: 18)

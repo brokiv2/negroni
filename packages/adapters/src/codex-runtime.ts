@@ -13,6 +13,7 @@ import type {
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
+import { resolveCodexBinary } from "./codex-binary.js";
 import { startCodexModelBridge } from "./codex-model-bridge.js";
 import { normalizeAgentToolNames } from "./pi-runtime.js";
 
@@ -159,17 +160,21 @@ export class CodexAgentRuntime implements AgentRuntime {
     try {
       bridge = await startCodexModelBridge(request.model, new Set(names), childSignal);
       signal.throwIfAborted();
-      proc = spawn(this.options.binary ?? process.env.CODEX_BINARY ?? "codex", ["app-server"], {
-        cwd: home,
-        env: {
-          PATH: process.env.PATH,
-          HOME: home,
-          TMPDIR: tmpdir(),
-          CODEX_HOME: home,
-          NEGRONI_MODEL_BRIDGE_TOKEN: bridge.token,
+      proc = spawn(
+        await resolveCodexBinary(this.options.binary ?? process.env.CODEX_BINARY),
+        ["app-server"],
+        {
+          cwd: home,
+          env: {
+            PATH: process.env.PATH,
+            HOME: home,
+            TMPDIR: tmpdir(),
+            CODEX_HOME: home,
+            NEGRONI_MODEL_BRIDGE_TOKEN: bridge.token,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
         },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      );
       proc.stderr?.resume(); // Never forward provider/config logs into a user's conversation.
       const completion = new Promise<void>((resolve, reject) => {
         complete = resolve;

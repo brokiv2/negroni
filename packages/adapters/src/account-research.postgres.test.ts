@@ -4,6 +4,7 @@ import type {
   BackgroundJob,
   ManagedConnectorProvider,
   MemoryStore,
+  NotificationProvider,
 } from "@rakazo/adapter-kit";
 import { createDb, type PrismaClient } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import { executeAccountResearch, validateAccountResearch } from "./account-resea
 import { mutateFeedProfile } from "./feed-profile.js";
 import { reconcileFeedResearch } from "./feed-research.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
+
 const suite =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
 suite("connected-source anticipation (PostgreSQL, offline)", () => {
@@ -168,6 +170,53 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
       reconcile,
     };
   }
+  it("delivers a timely finding once and leaves repeated publication silent", async () => {
+    const s = await setup();
+    const offset = new Date().getUTCHours() - 12;
+    const timeZone = `Etc/GMT${offset >= 0 ? "+" : ""}${offset}`;
+    await mutateFeedProfile(prisma, s.owner, (p) => ({
+      ...p,
+      accountAlerts: true,
+      accountTimeZone: timeZone,
+    }));
+    await s.next();
+    await s.run([
+      {
+        type: "tool",
+        executionId: "urgent",
+        name: "save_opportunity",
+        args: {
+          ...s.candidate,
+          urgency: "time_sensitive",
+          interruptReason: "A changed imminent meeting requires preparing the prototype now.",
+          confidence: 0.98,
+          expiresAt: new Date(Date.now() + 3600000).toISOString(),
+        },
+      },
+    ]);
+    const cycle = await s.active();
+    await prisma.run.update({ where: { id: cycle.run!.id }, data: { status: "completed" } });
+    const send = vi.fn(async () => undefined);
+    const deps = {
+      prisma,
+      jobs: {
+        enqueue: async () => undefined,
+        cancel: async () => undefined,
+        close: async () => undefined,
+      },
+      notifications: { send } as unknown as NotificationProvider,
+    };
+    await reconcileFeedResearch(deps);
+    await reconcileFeedResearch(deps);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]).toBeDefined();
+    expect(
+      await prisma.message.count({
+        where: { thread: s.owner, clientNonce: { startsWith: "account-alert:" } },
+      }),
+    ).toBe(1);
+    expect(await prisma.feedItem.count({ where: s.owner })).toBe(1);
+  });
   it("links changed notes to memory, publishes once, skips unchanged input before inference", async () => {
     const s = await setup();
     expect((await s.active()).kind).toBe("accounts");

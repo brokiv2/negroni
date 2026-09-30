@@ -4,6 +4,7 @@ import type {
   AgentRunRequest,
   AgentRuntime,
   JobPublisher,
+  NotificationProvider,
   WebProvider,
   WebSearchHit,
 } from "@rakazo/adapter-kit";
@@ -12,9 +13,9 @@ import { FeedItemInput, FeedProfileSchema } from "@rakazo/contracts";
 import { mainAssistantBot } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import * as z from "zod";
+import { publishAccountFinding } from "./account-research.js";
 import { eligibleFeedInterests, topicKey } from "./feed-profile.js";
 import { feedDedupKey, publishFeed } from "./personal-feed.js";
-import { publishAccountFinding } from "./account-research.js";
 import { WebSearchUnavailableError } from "./web-errors.js";
 
 const TERMINAL = ["completed", "failed", "cancelled"];
@@ -301,7 +302,11 @@ export async function executeFeedResearch(input: {
 }
 
 /** Existing leader and queued-run recovery are the only scheduler. */
-export async function reconcileFeedResearch(deps: { prisma: PrismaClient; jobs: JobPublisher }) {
+export async function reconcileFeedResearch(deps: {
+  prisma: PrismaClient;
+  jobs: JobPublisher;
+  notifications?: NotificationProvider;
+}) {
   const { prisma, jobs } = deps;
   const active = await prisma.feedProfile.findMany({
     where: { activeResearchId: { not: null } },
@@ -337,7 +342,15 @@ export async function reconcileFeedResearch(deps: { prisma: PrismaClient; jobs: 
       for (const finding of cycle.findings) {
         if (finding.expiresAt <= new Date()) continue;
         if (cycle.kind === "accounts") {
-          if (await publishAccountFinding(prisma, cycle.id, finding.id, cycle.run.botId))
+          if (
+            await publishAccountFinding(
+              prisma,
+              cycle.id,
+              finding.id,
+              cycle.run.botId,
+              deps.notifications,
+            )
+          )
             delivered++;
           continue;
         }

@@ -575,6 +575,8 @@ export const ConnectionSchema = z.object({
   provider: z.string(),
   displayName: z.string(),
   status: z.enum(["pending", "connected", "revoked", "error"]),
+  /** Provider verified identity, independent of the optional user nickname. */
+  accountLabel: z.string().optional(),
   /** Composio connected-account id when known (multi-account). */
   accountId: z.string().nullable().optional(),
   capabilities: z.array(z.string()),
@@ -868,7 +870,7 @@ export const RunSchema = z.object({
     "messaging",
     "cloud_agent",
     "work",
-  "research",
+    "research",
     "created",
   ]),
   routineId: Id.nullable(),

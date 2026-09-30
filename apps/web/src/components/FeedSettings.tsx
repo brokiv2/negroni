@@ -67,14 +67,30 @@ export function FeedSettings() {
                       void apply(() => rpc.feed.configure({ accountResearchIds: ids }));
                     }}
                   />
-                  {account.displayName}
+                  {account.accountLabel ?? account.displayName}
                 </label>
               ))}
             <p className="text-sm text-muted-foreground">
-              Read recent meetings and relevant memory for quiet suggestions in For you. Connect
-              Granola in Settings to add a source.
+              Read new mail and recent meetings from selected accounts. Useful findings appear in
+              For you.
             </p>
           </fieldset>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={profile.accountAlerts}
+              disabled={busy}
+              onChange={(e) =>
+                void apply(() =>
+                  rpc.feed.configure({
+                    accountAlerts: e.target.checked,
+                    accountTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  }),
+                )
+              }
+            />
+            Important updates · up to two a day, 08:00–22:00
+          </label>
           <label className="flex items-center gap-2">
             <input
               type="checkbox"

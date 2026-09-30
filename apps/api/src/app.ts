@@ -441,7 +441,7 @@ export async function createApp(
         jobs,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
-        reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
+        reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs, notifications }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
       })
     : undefined;

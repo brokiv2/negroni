@@ -45,10 +45,32 @@ vi.mock("../lib/rpc", () => ({
   rpc: {
     connections: {
       catalog: vi.fn(async () => catalog),
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => [
+        {
+          id: "a",
+          connectorId: "composio",
+          provider: "GMAIL",
+          displayName: "Gmail",
+          accountLabel: "demo@example.test",
+          status: "connected",
+          capabilities: [],
+          createdAt: "2026-01-01",
+        },
+      ]),
     },
     capabilities: {
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => [
+        {
+          id: "a",
+          connectorId: "composio",
+          provider: "GMAIL",
+          displayName: "Gmail",
+          accountLabel: "demo@example.test",
+          status: "connected",
+          capabilities: [],
+          createdAt: "2026-01-01",
+        },
+      ]),
       catalogSearch: vi.fn(async () => ({ items: [], enabled: false })),
     },
   },
@@ -70,6 +92,13 @@ describe("PluginsOverlay", () => {
     expect(connected?.querySelector("img")?.getAttribute("src")).toBe(
       "https://logos.example/gmail",
     );
+    expect(document.body.querySelector('[data-testid="integration-categories"]')).toBeNull();
+    const browse = [...document.body.querySelectorAll("button")].find(
+      (b) => b.textContent === "Add app",
+    )!;
+    await act(async () => {
+      browse.click();
+    });
     const headers = [
       ...document.body.querySelectorAll(
         '[data-testid="integration-categories"] button[aria-expanded]',

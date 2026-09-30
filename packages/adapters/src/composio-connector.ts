@@ -18,6 +18,7 @@ import {
   withToolkitMetadata,
 } from "./composio-catalog-cache.js";
 import { DestinationEmulator } from "./destination-emulator.js";
+import { observeGmail } from "./gmail-observation.js";
 import { observeGranola } from "./granola-observation.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
@@ -321,6 +322,7 @@ export class ComposioConnector implements ComposioProvider {
   async sessionForExecute(
     userId: string,
     connections: ReturnType<typeof connectedComposioConnections>,
+    requireSelectedAccount = false,
   ): Promise<ComposioSession> {
     const canonicalToolkits = await this.canonicalizeToolkits(
       connections.map((connection) => connection.externalId),
@@ -338,7 +340,11 @@ export class ComposioConnector implements ComposioProvider {
       if (composioSlugKey(accountId) === composioSlugKey(connection.externalId)) continue;
       // Drop refs the provider no longer lists as ACTIVE so a revoked sibling
       // with a deleted account cannot fail the whole tool-router session.
-      if (liveAccountIds && !liveAccountIds.has(accountId)) continue;
+      if (liveAccountIds && !liveAccountIds.has(accountId)) {
+        if (requireSelectedAccount)
+          throw new Error("The selected account is no longer connected. Reconnect it to continue.");
+        continue;
+      }
       const toolkit = canonicalByKey.get(composioSlugKey(connection.externalId));
       if (!toolkit) continue;
       const ids = accountIdsByToolkit.get(toolkit) ?? new Set<string>();
@@ -470,7 +476,7 @@ export class ComposioConnector implements ComposioProvider {
   }
 
   canObserve(externalId: string) {
-    return externalId.toLowerCase() === "granola_mcp";
+    return ["granola_mcp", "gmail"].includes(externalId.toLowerCase());
   }
 
   async observe(
@@ -484,7 +490,9 @@ export class ComposioConnector implements ComposioProvider {
     context: AdapterContext,
   ) {
     if (!this.canObserve(request.externalId)) throw new Error("Source observation is unavailable.");
-    return observeGranola(this, request, context);
+    return request.externalId.toLowerCase() === "gmail"
+      ? observeGmail(this, request, context)
+      : observeGranola(this, request, context);
   }
 
   async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {
@@ -521,14 +529,18 @@ export class ComposioConnector implements ComposioProvider {
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
     try {
       context = await this.authorizedAccountContext(context);
-      const session = await this.sessionForExecute(
-        context.userId,
-        connectedComposioConnections(context),
-      );
       const args = { ...(call.args ?? {}) };
       const account = selectComposioAccount(call.tool, args._account, context);
       delete args._account;
-      const result = await session.execute(call.tool, args, account ? { account } : undefined);
+      const connections = connectedComposioConnections(context);
+      // Pin the session to the chosen remote account. The optional per-call
+      // account parameter is rejected by projects without multi-account routing.
+      const selected = account
+        ? connections.filter((row) => row.providerRef === account)
+        : connections;
+      if (account && selected.length !== 1) throw new Error("The selected account is unavailable.");
+      const session = await this.sessionForExecute(context.userId, selected, Boolean(account));
+      const result = await session.execute(call.tool, args);
       if (result.error) {
         yield { type: "error", message: sanitizeComposioError(result.error) };
         return;
@@ -642,7 +654,24 @@ export class ComposioConnector implements ComposioProvider {
     const account = accounts.find((item) => item.id === connectionRef);
     if (!account) return undefined;
     const detail = await this.sdk().connectedAccounts.get(connectionRef);
-    return connectedAccountLabel(detail) ?? account.alias;
+    const label = connectedAccountLabel(detail);
+    if (label?.includes("@") || slug.toLowerCase() !== "gmail") return label ?? account.alias;
+    // Bind profile lookup to the exact verified account, not the toolkit default.
+    const session = await this.sessionForExecute(
+      context.userId,
+      [
+        {
+          id: connectionRef,
+          connectorId: "composio",
+          externalId: slug,
+          displayName: label ?? slug,
+          providerRef: connectionRef,
+        },
+      ],
+      true,
+    );
+    const result = await session.execute("GMAIL_GET_PROFILE", { user_id: "me" });
+    return connectedAccountLabel(result.data) ?? label ?? account.alias;
   }
 
   async connectionReady(

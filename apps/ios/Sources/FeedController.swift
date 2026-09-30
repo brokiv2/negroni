@@ -178,47 +178,92 @@ final class FeedController: ListController {
       return super.tableView(tableView, cellForRowAt: indexPath)
     }
     let cell = FeedCardCell(style: .default, reuseIdentifier: nil)
-    cell.configure(feedItems[indexPath.section])
+    let item = feedItems[indexPath.section]
+    cell.configure(item, discuss: { [weak self] in
+      self?.push(ChatController(target: ["feedItemId": item["id"]], title: item["title"].string))
+    }, save: { [weak self] in
+      self?.mutate("feed/update", ["id": item["id"], "saved": .bool(!item["saved"].bool)])
+    }, info: { [weak self] in
+      let alert = UIAlertController(title: "Why this post", message: item["reason"].string, preferredStyle: .actionSheet)
+      alert.addAction(UIAlertAction(title: "Not interested in this topic", style: .destructive) { _ in
+        self?.mutate("feed/interest", ["topic": item["topic"], "action": "exclude"])
+      })
+      alert.addAction(UIAlertAction(title: "Hide this post", style: .default) { _ in
+        self?.mutate("feed/update", ["id": item["id"], "hidden": true])
+      })
+      alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+      alert.popoverPresentationController?.sourceView = self?.view
+      alert.popoverPresentationController?.sourceRect = CGRect(x: 20, y: 80, width: 1, height: 1)
+      self?.present(alert, animated: true)
+    })
     return cell
   }
 }
 
 final class FeedCardCell: UITableViewCell {
   private var imageTask: Task<Void, Never>?
-  func configure(_ item: JSON) {
-    backgroundColor = Theme.card
+  func configure(_ item: JSON, discuss: @escaping () -> Void, save: @escaping () -> Void, info: @escaping () -> Void) {
+    backgroundColor = Theme.canvas
     selectionStyle = .none
-    let stack = Theme.stack(spacing: 12)
+    let stack = Theme.stack(spacing: 14)
     contentView.addSubview(stack)
-    stack.pin(to: contentView, inset: 16)
+    stack.pin(to: contentView, inset: 18)
+    let title = Theme.label("", style: .title3)
+    title.attributedText = Markdown.render(item["title"].string, style: .headline)
+    stack.addArrangedSubview(title)
+    let summary = UITextView()
+    summary.isEditable = false
+    summary.isSelectable = true
+    summary.isScrollEnabled = false
+    summary.backgroundColor = .clear
+    summary.textContainerInset = .zero
+    summary.textContainer.lineFragmentPadding = 0
+    summary.linkTextAttributes = [.foregroundColor: Theme.ink, .underlineStyle: NSUnderlineStyle.single.rawValue]
+    summary.attributedText = Markdown.render(item["summary"].string, style: .body)
+    stack.addArrangedSubview(summary)
     if !item["imageUrl"].string.isEmpty {
       let image = UIImageView()
       image.contentMode = .scaleAspectFill
       image.clipsToBounds = true
-      image.layer.cornerRadius = 14
+      image.layer.cornerRadius = 18
       image.backgroundColor = Theme.secondary
-      image.heightAnchor.constraint(equalToConstant: 180).isActive = true
+      image.heightAnchor.constraint(equalToConstant: 210).isActive = true
       stack.addArrangedSubview(image)
       imageTask = Task {
-        if let loaded = await ImageStore.shared.image(item["imageUrl"].string), !Task.isCancelled {
-          image.image = loaded
-        } else {
-          image.isHidden = true
-        }
+        if let loaded = await ImageStore.shared.image(item["imageUrl"].string), !Task.isCancelled { image.image = loaded }
+        else { image.isHidden = true }
       }
     }
     let source = URL(string: item["url"].string)?.host ?? item["topic"].string
-    if !source.isEmpty {
-      stack.addArrangedSubview(Theme.label(source, style: .caption1, color: Theme.muted))
-    }
-    let title = Theme.label("", style: .headline)
-    title.attributedText = Markdown.render(item["title"].string, style: .headline)
-    stack.addArrangedSubview(title)
-    let summary = Theme.label("", style: .subheadline, color: Theme.muted)
-    summary.attributedText = Markdown.render(
-      item["summary"].string, style: .subheadline, color: Theme.muted)
-    summary.numberOfLines = 3
-    stack.addArrangedSubview(summary)
+    if let url = URL(string: item["url"].string), url.scheme == "https" {
+      let sourceButton = UIButton(type: .system)
+      sourceButton.setTitle(source + " ↗", for: .normal)
+      sourceButton.titleLabel?.font = UIFont.preferredFont(forTextStyle: .caption1)
+      sourceButton.tintColor = Theme.muted
+      sourceButton.contentHorizontalAlignment = .leading
+      sourceButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+      sourceButton.addAction(UIAction { _ in UIApplication.shared.open(url) }, for: .touchUpInside)
+      stack.addArrangedSubview(sourceButton)
+    } else if !source.isEmpty { stack.addArrangedSubview(Theme.label(source, style: .caption1, color: Theme.muted)) }
+    let actions = Theme.stack(.horizontal, spacing: 14)
+    let saved = UIButton(type: .system)
+    saved.setImage(UIImage(systemName: item["saved"].bool ? "heart.fill" : "heart"), for: .normal)
+    saved.tintColor = Theme.ink
+    saved.accessibilityLabel = item["saved"].bool ? "Unsave" : "Save"
+    saved.addAction(UIAction { _ in save() }, for: .touchUpInside)
+    saved.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    saved.heightAnchor.constraint(equalToConstant: 44).isActive = true
+    actions.addArrangedSubview(saved)
+    actions.addArrangedSubview(Theme.button("Discuss", symbol: "bubble.left", action: discuss))
+    actions.addArrangedSubview(UIView())
+    let why = UIButton(type: .system)
+    why.setImage(UIImage(systemName: "info.circle"), for: .normal)
+    why.tintColor = Theme.muted
+    why.accessibilityLabel = "Why this post"
+    why.addAction(UIAction { _ in info() }, for: .touchUpInside)
+    why.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    actions.addArrangedSubview(why)
+    stack.addArrangedSubview(actions)
   }
   override func prepareForReuse() {
     super.prepareForReuse()
@@ -288,7 +333,7 @@ final class FeedSettingsController: ListController {
         title: "Connected sources",
         rows: observableAccounts.map { account in
           ListRow(
-            title: account["displayName"].string,
+            title: account["accountLabel"].string.isEmpty ? account["displayName"].string : account["accountLabel"].string,
             detail: account["status"].string == "connected" ? "" : "Reconnect in Settings",
             symbol: "doc.text.magnifyingglass",
             switchValue: selectedAccounts.contains(account["id"].string),
@@ -305,7 +350,11 @@ final class FeedSettingsController: ListController {
                 ConnectionsController(), animated: true)
             })
         ],
-        footer: "Reads recent meetings and relevant memory. Suggestions appear quietly in For you."),
+        footer: "Reads new mail and recent meetings from selected accounts. Useful findings appear in For you."),
+      ListSection(rows: [ListRow(title: "Important updates", symbol: "bell",
+        switchValue: profile["accountAlerts"].bool,
+        onSwitch: { [weak self] value in self?.mutate("feed/configure", ["accountAlerts": .bool(value), "accountTimeZone": .string(TimeZone.current.identifier)]) })],
+        footer: "Up to two timely updates a day, between 08:00 and 22:00. Other findings stay in For you."),
       ListSection(rows: [
         ListRow(
           title: "Learn interests from conversations",

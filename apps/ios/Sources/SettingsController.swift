@@ -291,108 +291,133 @@ final class VoiceSettingsController: ListController {
 }
 
 final class ConnectionsController: ListController, UISearchResultsUpdating {
-  private var connections: [JSON] = [], catalog: [JSON] = [], query = "", catalogError = false
+  private var connections: [JSON] = [], catalog: [JSON] = [], query = ""
   private let search = UISearchController(searchResultsController: nil)
-  init() { super.init(title: "Connections") }
+  private let provider: String?
+  private let browsing: Bool
+  private var showDisconnected = false
+  init(provider: String? = nil, browsing: Bool = false) {
+    self.provider = provider
+    self.browsing = browsing
+    super.init(title: provider.map(Self.serviceName) ?? (browsing ? "Add app" : "Connections"))
+  }
   required init?(coder: NSCoder) { fatalError() }
+  private static func serviceName(_ value: String) -> String {
+    let names = ["gmail": "Gmail", "googlecalendar": "Google Calendar", "googledrive": "Google Drive", "granola_mcp": "Granola", "youtube": "YouTube", "linkedin": "LinkedIn"]
+    return names[value.lowercased()] ?? value.replacingOccurrences(of: "_", with: " ").capitalized
+  }
   override func viewDidLoad() {
     super.viewDidLoad()
     search.searchResultsUpdater = self
     search.obscuresBackgroundDuringPresentation = false
-    search.searchBar.placeholder = "Search apps"
+    search.searchBar.placeholder = provider == nil ? "Search apps" : "Search accounts"
     navigationItem.searchController = search
+    if !browsing && provider == nil {
+      navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .add, primaryAction: UIAction { [weak self] _ in
+        self?.push(ConnectionsController(browsing: true))
+      })
+    }
   }
   override func load() async throws {
-    async let catalogRequest = API.shared.rpc("connections/catalog")
-    connections = try await API.shared.rpc("connections/list").array
-    render()
-    do {
-      catalog = try await catalogRequest.array
-      catalogError = false
-    } catch {
-      if Task.isCancelled { throw error }
-      catalogError = true
+    if browsing {
+      catalog = try await API.shared.rpc("connections/catalog").array
+    } else {
+      connections = try await API.shared.rpc("connections/list").array
     }
     render()
+    // Identity reads belong to the account detail, never block the app directory.
+    if let provider {
+      for account in connections.filter({ $0["provider"].string == provider && $0["status"].string == "connected" }) {
+        if Task.isCancelled { return }
+        if let updated = try? await API.shared.rpc("connections/complete", ["connectionId": account["id"]]),
+           let index = connections.firstIndex(where: { $0["id"] == updated["id"] }) {
+          connections[index] = updated
+          render()
+        }
+      }
+    }
   }
   func updateSearchResults(for searchController: UISearchController) {
     query = searchController.searchBar.text ?? ""
     render()
   }
+  private func matches(_ value: String) -> Bool {
+    query.isEmpty || value.localizedCaseInsensitiveContains(query)
+  }
+  private func label(_ account: JSON) -> String {
+    let identity = account["accountLabel"].string
+    return identity.isEmpty ? account["displayName"].string : identity
+  }
   private func render() {
-    let saved = connections.filter {
-      query.isEmpty
-        || ($0["displayName"].string + $0["provider"].string).localizedCaseInsensitiveContains(
-          query)
-    }.map { connection in
-      let app = catalog.first {
-        $0["slug"] == connection["provider"] && $0["connectorId"] == connection["connectorId"]
+    if browsing {
+      sections = [ListSection(rows: catalog.filter { matches($0["name"].string) }.map { app in
+        ListRow(title: app["name"].string, symbol: "app", imageURL: app["logo"].string,
+          iconRequest: ["connectorId": app["connectorId"], "provider": app["slug"]],
+          action: { [weak self] in self?.connect(app) }, accessory: .disclosureIndicator)
+      })]
+      return
+    }
+    guard let provider else {
+      let groups = Dictionary(grouping: connections.filter { $0["status"].string != "revoked" }, by: { $0["provider"].string })
+      let rows = groups.keys.sorted { Self.serviceName($0) < Self.serviceName($1) }.compactMap { key -> ListRow? in
+        let accounts = groups[key]!
+        guard matches(Self.serviceName(key) + " " + accounts.map { label($0) }.joined(separator: " ")) else { return nil }
+        let connected = accounts.filter { $0["status"].string == "connected" }.count
+        let detail = connected == 0 ? "Needs attention" : "\(connected) " + (connected == 1 ? "account" : "accounts")
+        return ListRow(title: Self.serviceName(key), detail: detail, symbol: "app",
+          iconRequest: ["connectorId": accounts[0]["connectorId"], "provider": .string(key)],
+          action: { [weak self] in self?.push(ConnectionsController(provider: key)) }, accessory: .disclosureIndicator)
       }
-      let service = app?["name"].string ?? connection["provider"].string.capitalized
-      let name = connection["displayName"].string
-      let state =
-        [
-          "connected": "Connected", "pending": "Finish connecting", "revoked": "Disconnected",
-          "error": "Needs attention",
-        ][connection["status"].string] ?? ""
-      let rename: () -> Void = { [weak self] in
-        self?.prompt("Account name", value: name) { [weak self] value in
-          self?.mutate(
-            "connections/rename", ["connectionId": connection["id"], "displayName": .string(value)])
-        }
+      sections = [ListSection(title: "Your apps", rows: rows,
+        footer: rows.isEmpty ? "Connect an app with +." : nil)]
+      // Old disconnected accounts remain removable, but never clutter Your apps.
+      let revoked = connections.filter { $0["status"].string == "revoked" }
+      if !revoked.isEmpty {
+        sections.append(ListSection(rows: [ListRow(title: "Disconnected accounts", detail: String(revoked.count),
+          action: { [weak self] in self?.showDisconnected.toggle(); self?.render() }, accessory: .disclosureIndicator)]))
+        if showDisconnected { sections.append(ListSection(rows: revoked.filter { matches(label($0)) }.map(accountRow))) }
       }
-      let remove: () -> Void = { [weak self] in self?.removeConnection(connection) }
-      return ListRow(
-        title: service,
-        detail: [name == connection["provider"].string ? "" : name, state].filter { !$0.isEmpty }
-          .joined(separator: " · "),
-        symbol: "app", imageURL: app?["logo"].string,
-        iconRequest: [
-          "connectorId": connection["connectorId"], "provider": connection["provider"],
-        ],
+      return
+    }
+    let accounts = connections.filter { $0["provider"].string == provider }
+    let active = accounts.filter { $0["status"].string != "revoked" && matches(label($0)) }
+    sections = [ListSection(title: "Connected accounts", rows: active.map(accountRow))]
+    if let account = accounts.first {
+      sections.append(ListSection(rows: [ListRow(title: "Connect another account", symbol: "plus",
         action: { [weak self] in
-          guard let self else { return }
-          let sheet = UIAlertController(title: service, message: name, preferredStyle: .actionSheet)
-          sheet.addAction(UIAlertAction(title: "Rename", style: .default) { _ in rename() })
-          if connection["status"].string == "pending" {
-            sheet.addAction(
-              UIAlertAction(title: "Check connection", style: .default) { [weak self] _ in
-                self?.finishConnection(connection["id"])
-              })
-          }
-          sheet.addAction(UIAlertAction(title: "Delete", style: .destructive) { _ in remove() })
-          sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-          sheet.popoverPresentationController?.sourceView = self.view
-          sheet.popoverPresentationController?.sourceRect = CGRect(
-            x: self.view.bounds.midX, y: self.view.bounds.midY, width: 1, height: 1)
-          self.present(sheet, animated: true)
-        },
-        menu: UIMenu(children: [
-          UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in rename() },
-          UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) {
-            _ in remove()
-          },
-        ]), accessory: .disclosureIndicator, deleteAction: remove)
+          self?.connect(["name": .string(Self.serviceName(provider)), "slug": .string(provider), "connectorId": account["connectorId"]])
+        })]))
     }
-    let apps = catalog.filter {
-      query.isEmpty
-        || ($0["name"].string + $0["description"].string).localizedCaseInsensitiveContains(query)
-    }.prefix(80).map { app in
-      ListRow(
-        title: app["name"].string, detail: app["description"].string, symbol: "app",
-        imageURL: app["logo"].string,
-        iconRequest: ["connectorId": app["connectorId"], "provider": app["slug"]],
-        action: { [weak self] in self?.connect(app) })
+  }
+  private func accountRow(_ connection: JSON) -> ListRow {
+    let name = label(connection)
+    let rename: () -> Void = { [weak self] in
+      self?.prompt("Account nickname", value: connection["displayName"].string) { [weak self] value in
+        self?.mutate("connections/rename", ["connectionId": connection["id"], "displayName": .string(value)])
+      }
     }
-
-    sections = [
-      ListSection(title: "Connected accounts", rows: saved),
-      ListSection(
-        title: "Add connection", rows: Array(apps),
-        footer: catalogError
-          ? "Could not load the app catalog. Pull to retry."
-          : catalog.isEmpty ? "Loading apps…" : nil),
-    ]
+    let remove: () -> Void = { [weak self] in self?.removeConnection(connection) }
+    let state = ["connected": "Connected", "pending": "Finish connecting", "revoked": "Disconnected", "error": "Needs attention"][connection["status"].string] ?? ""
+    let nickname = connection["displayName"].string
+    let generatedName = nickname.range(of: #"^.+\s+[0-9]+$"#, options: .regularExpression) != nil
+    let detail = [nickname == name || generatedName ? "" : nickname, state].filter { !$0.isEmpty }.joined(separator: " · ")
+    return ListRow(title: name, detail: detail, symbol: "person.crop.circle",
+      action: { [weak self] in
+        guard let self else { return }
+        let sheet = UIAlertController(title: name, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Rename", style: .default) { _ in rename() })
+        if connection["status"].string == "pending" {
+          sheet.addAction(UIAlertAction(title: "Check connection", style: .default) { [weak self] _ in self?.finishConnection(connection["id"]) })
+        }
+        sheet.addAction(UIAlertAction(title: "Delete", style: .destructive) { _ in remove() })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = self.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 1, height: 1)
+        self.present(sheet, animated: true)
+      }, menu: UIMenu(children: [
+        UIAction(title: "Rename", image: UIImage(systemName: "pencil")) { _ in rename() },
+        UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in remove() }
+      ]), accessory: .disclosureIndicator, deleteAction: remove)
   }
   private func removeConnection(_ connection: JSON) {
     let remove = { [weak self] in

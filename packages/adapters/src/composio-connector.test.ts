@@ -737,12 +737,12 @@ describe("composio tool mapping", () => {
       events.push(event);
     expect(events).toContainEqual(expect.objectContaining({ type: "result" }));
     expect(composioSdkState.executions).toEqual([
-      { tool: "GITHUB_GET_REPOS", args: { owner: "example" }, options: { account: "ca-github-3" } },
+      { tool: "GITHUB_GET_REPOS", args: { owner: "example" } },
     ]);
     expect(composioSdkState.created.at(-1)?.config).toMatchObject({
-      connectedAccounts: { GITHUB: ["ca-github-1", "ca-github-2", "ca-github-3"] },
-      multiAccount: { requireExplicitSelection: true },
+      connectedAccounts: { GITHUB: ["ca-github-3"] },
     });
+    expect(composioSdkState.created.at(-1)?.config.multiAccount).toBeUndefined();
     const before = composioSdkState.created.length;
     await connector.discoverTools({
       ...context,
@@ -752,6 +752,15 @@ describe("composio tool mapping", () => {
     expect(composioSdkState.created.at(-1)?.config.connectedAccounts).toEqual({
       GITHUB: ["ca-github-1"],
     });
+    composioSdkState.accounts = [];
+    const revoked = [];
+    for await (const event of connector.execute(
+      { tool: "GITHUB_GET_REPOS", args: { _account: "github-3" }, executionId: "revoked" },
+      context,
+    ))
+      revoked.push(event);
+    expect(revoked).toContainEqual(expect.objectContaining({ type: "error" }));
+    expect(composioSdkState.executions).toHaveLength(1);
     composioSdkState.accounts = savedAccounts;
   });
 
@@ -846,7 +855,7 @@ describe("composio tool mapping", () => {
     }
     expect(events).toContainEqual(expect.objectContaining({ type: "result" }));
     expect(composioSdkState.executions).toEqual([
-      { tool: "GITHUB_GET_REPOS", args: { owner: "composio" }, options: { account: "ca-github" } },
+      { tool: "GITHUB_GET_REPOS", args: { owner: "composio" } },
     ]);
     await expect(connector.connectionReady(context, "github")).resolves.toBe(true);
     await expect(connector.connectedAccountId("user-1", "github")).resolves.toBe("ca-github");

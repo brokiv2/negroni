@@ -1547,7 +1547,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const picked =
             !explicit && routing
               ? await routeModel({
-                  routing,
+                  routing: run.trigger === "research" ? { ...routing, router: null } : routing,
                   workload,
                   prompt: redactSecrets(task.prompt, runSecrets),
                   history,

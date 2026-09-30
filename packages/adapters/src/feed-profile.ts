@@ -146,6 +146,8 @@ export function feedProfileInstruction(profile: FeedProfile, canLearn: boolean) 
 export function researchScope(profile: FeedProfile) {
   return JSON.stringify({
     accounts: [...profile.accountResearchIds].sort(),
+    alerts: profile.accountAlerts,
+    timeZone: profile.accountTimeZone,
     enabled: profile.researchEnabled,
     checks: profile.researchChecksPerDay,
     maxItems: profile.maxItems,

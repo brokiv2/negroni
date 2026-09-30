@@ -71,8 +71,21 @@ export const FeedProfileSchema = z.object({
     .max(5)
     .refine((ids) => new Set(ids).size === ids.length, "Choose each account once")
     .default([]),
+  accountAlerts: z.boolean().default(false),
+  accountTimeZone: z
+    .string()
+    .max(100)
+    .refine((v) => {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: v });
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .default("UTC"),
   researchEnabled: z.boolean().default(false),
-  researchChecksPerDay: z.number().int().min(1).max(8).default(3),
+  researchChecksPerDay: z.number().int().min(1).max(96).default(3),
   learningEnabled: z.boolean().default(false),
   interests: z.array(FeedInterestSchema).max(40).default([]),
   excludedTopics: z.array(z.string().min(1).max(100)).max(40).default([]),
@@ -93,6 +106,8 @@ export type FeedProfile = z.infer<typeof FeedProfileSchema>;
 // Patch fields must not inherit profile defaults: omitted values preserve saved settings.
 export const FeedProfilePatch = z.object({
   accountResearchIds: FeedProfileSchema.shape.accountResearchIds.removeDefault().optional(),
+  accountAlerts: FeedProfileSchema.shape.accountAlerts.removeDefault().optional(),
+  accountTimeZone: FeedProfileSchema.shape.accountTimeZone.removeDefault().optional(),
   researchEnabled: FeedProfileSchema.shape.researchEnabled.removeDefault().optional(),
   researchChecksPerDay: FeedProfileSchema.shape.researchChecksPerDay.removeDefault().optional(),
   learningEnabled: FeedProfileSchema.shape.learningEnabled.removeDefault().optional(),

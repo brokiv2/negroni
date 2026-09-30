@@ -234,7 +234,7 @@ public enum ThreadLogic {
   public static func running(_ snapshot: JSON) -> Bool {
     let runs = snapshot["activeRuns"].array + (snapshot["run"].isNull ? [] : [snapshot["run"]])
     return runs.contains {
-      ["queued", "running", "waiting_input", "waiting_takeover"].contains($0["status"].string)
+      ["queued", "leased", "running", "waiting_input", "waiting_takeover"].contains($0["status"].string)
     }
   }
   public static func append(_ draft: String, transcript: String) -> String {

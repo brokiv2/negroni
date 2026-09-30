@@ -51,7 +51,6 @@ import {
   displayBotWorkspacePath,
   enqueueTakeoverContinuation,
   expireComputerControl,
-  validateAccountResearch,
   getFeedProfile,
   getFeedResearchStatus,
   hasActiveComputerControl,
@@ -98,6 +97,7 @@ import {
   touchRunningComputer,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
   updateFeedInterest,
+  validateAccountResearch,
   validateModelAuthAvailability,
   validateStoredModelAuth,
   verifyMcpInstall,
@@ -3867,6 +3867,7 @@ export function createRouter(deps: RouterDeps) {
             connectorId: row.connectorId,
             provider: row.provider,
             displayName: row.displayName,
+            accountLabel: connectionAccountLabel(row.metadata),
             status: row.status as "pending" | "connected" | "revoked" | "error",
             accountId: row.providerRef,
             capabilities:
@@ -4384,7 +4385,9 @@ export function createRouter(deps: RouterDeps) {
         if (
           row.status === "connected" &&
           row.providerRef &&
-          (row.metadata as { automaticName?: boolean })?.automaticName &&
+          Date.now() -
+            Number((row.metadata as { identityCheckedAt?: number })?.identityCheckedAt ?? 0) >
+            86_400_000 &&
           connector.connectionLabel
         ) {
           const label = await connector
@@ -4402,9 +4405,18 @@ export function createRouter(deps: RouterDeps) {
                 displayName: row.displayName,
                 spaceId: context.actor.spaceId,
                 userId: context.actor.userId,
-                metadata: { path: ["automaticName"], equals: true },
+                updatedAt: row.updatedAt,
               },
-              data: { displayName: label },
+              data: {
+                ...((row.metadata as { automaticName?: boolean })?.automaticName
+                  ? { displayName: label }
+                  : {}),
+                metadata: {
+                  ...(row.metadata as Record<string, string | number | boolean>),
+                  accountLabel: label,
+                  identityCheckedAt: Date.now(),
+                },
+              },
             });
             row = await deps.prisma.connection.findUniqueOrThrow({ where: { id: row.id } });
           }
@@ -4414,6 +4426,7 @@ export function createRouter(deps: RouterDeps) {
           connectorId: row.connectorId,
           provider: row.provider,
           displayName: row.displayName,
+          accountLabel: connectionAccountLabel(row.metadata),
           status: row.status as "pending" | "connected" | "revoked" | "error",
           accountId: row.providerRef,
           capabilities: [],
@@ -5981,4 +5994,10 @@ async function messagingConnectionDto(
     status: connection.status as "pending" | "approved" | "declined" | "revoked",
     incoming,
   };
+}
+
+function connectionAccountLabel(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const label = (metadata as { accountLabel?: unknown }).accountLabel;
+  return typeof label === "string" ? label : undefined;
 }

@@ -246,7 +246,12 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
-    reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
+    reconcileFeedResearch: () =>
+      reconcileFeedResearch({
+        prisma,
+        jobs,
+        notifications: new ExpoPushProvider(dataDir, { apns: apnsConfigFromEnv(process.env) }),
+      }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
   });
   reconciler.start();
