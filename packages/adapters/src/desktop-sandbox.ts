@@ -720,6 +720,10 @@ function runCommand(
       cwd,
       env: process.env,
       detached: process.platform !== "win32",
+      // Nothing ever writes to an agent command's stdin. An inherited open pipe makes
+      // stdin readers (`cat`, `grep -r pattern` without a path, REPLs) wait until the
+      // command timeout instead of seeing end of input immediately.
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";

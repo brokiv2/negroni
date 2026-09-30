@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   boundedSandboxCommandTimeoutMs,
+  chatSandboxCommandTimeoutMs,
+  DEFAULT_CHAT_SANDBOX_COMMAND_TIMEOUT_MS,
   DEFAULT_SANDBOX_COMMAND_TIMEOUT_MS,
   MAX_SANDBOX_COMMAND_TIMEOUT_MS,
+  sandboxCommandTimedOut,
   sandboxCommandTimeoutMs,
 } from "./sandbox-command.js";
 
@@ -27,5 +30,27 @@ describe("sandbox command timeout", () => {
     expect(boundedSandboxCommandTimeoutMs(undefined, Number.POSITIVE_INFINITY)).toBe(
       DEFAULT_SANDBOX_COMMAND_TIMEOUT_MS,
     );
+  });
+
+  it("gives chat turns a short command budget that never exceeds the general one", () => {
+    expect(chatSandboxCommandTimeoutMs({})).toBe(DEFAULT_CHAT_SANDBOX_COMMAND_TIMEOUT_MS);
+    // A deployment that raised the general timeout to five minutes still answers chat in one.
+    expect(chatSandboxCommandTimeoutMs({ SANDBOX_COMMAND_TIMEOUT_MS: "300000" })).toBe(60_000);
+    expect(chatSandboxCommandTimeoutMs({ SANDBOX_CHAT_COMMAND_TIMEOUT_MS: "20000" })).toBe(20_000);
+    expect(
+      chatSandboxCommandTimeoutMs({
+        SANDBOX_CHAT_COMMAND_TIMEOUT_MS: "90000",
+        SANDBOX_COMMAND_TIMEOUT_MS: "30000",
+      }),
+    ).toBe(30_000);
+    expect(chatSandboxCommandTimeoutMs({ SANDBOX_CHAT_COMMAND_TIMEOUT_MS: "-1" })).toBe(60_000);
+  });
+
+  it("recognizes a provider timeout but not an ordinary exit 124", () => {
+    expect(
+      sandboxCommandTimedOut({ code: 124, stderr: "partial\ncommand timed out after 60000 ms\n" }),
+    ).toBe(true);
+    expect(sandboxCommandTimedOut({ code: 124, stderr: "timeout: sending signal" })).toBe(false);
+    expect(sandboxCommandTimedOut({ code: 0, stderr: "command timed out after 5 ms" })).toBe(false);
   });
 });

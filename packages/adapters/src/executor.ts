@@ -50,6 +50,7 @@ import {
   assertTransition,
   blocksToAgentHistoryText,
   botMessageAllowsSilence,
+  chatSandboxCommandTimeoutMs,
   connectorKindFromToolName,
   containsSecret,
   coordinationInstructionFor,
@@ -74,6 +75,7 @@ import {
   redactSecrets,
   renderBotDirectory,
   resolveActionApprovalDetail,
+  sandboxCommandTimedOut,
   sandboxCommandTimeoutMs,
   type ToolCallStreak,
   toolRequiresApproval,
@@ -2854,8 +2856,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               cwd,
               agentEnvironment,
               context,
+              shellCommandTimeoutMs(run.trigger),
             );
-            return finish(redactAgentCommandResult(result, runSecrets));
+            const redacted = redactAgentCommandResult(result, runSecrets);
+            if (sandboxCommandTimedOut(result)) {
+              // Tool arguments are not persisted, so this line is the only record of what hung.
+              getLogger().warn("agent shell command timed out", {
+                "run.id": runId,
+                "bot.id": bot.id,
+                "command.preview": redactSecrets(command, runSecrets).slice(0, 300),
+              });
+              return finish({
+                ...redacted,
+                error: shellTimeoutError(shellCommandTimeoutMs(run.trigger)),
+              });
+            }
+            return finish(redacted);
           }
           if (name === "open_path") {
             if (heldForTakeover) {
@@ -5311,6 +5327,23 @@ export const LONG_WORK_PROGRESS_GUIDANCE =
 
 export const ROUTINE_SILENT_REPLY_GUIDANCE = `Only perform the work authorized by this routine. Publishing a feed item does not require a chat announcement. Unless the user explicitly requested every scheduled report, stay silent when there is no meaningful new result or required user decision. When staying silent, the entire final assistant reply must be exactly ${NO_RESPONSE} — no surrounding prose, no variants, no progress updates, no all-clear, and no meta note that you are staying silent. Do not call message_user unless you have something to report.`;
 
+const USER_WAITING_TRIGGERS = new Set(["user", "resume", "follow_up", "reaction", "messaging"]);
+
+/** A turn someone is waiting on gets the short chat budget; background work keeps the long one. */
+export function shellCommandTimeoutMs(
+  trigger: string,
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return USER_WAITING_TRIGGERS.has(trigger)
+    ? chatSandboxCommandTimeoutMs(env)
+    : sandboxCommandTimeoutMs(env);
+}
+
+export function shellTimeoutError(timeoutMs: number): string {
+  const seconds = Math.round(timeoutMs / 1000);
+  return `The command did not finish within ${seconds} s and was stopped, so its result is incomplete. Do not repeat it unchanged. Narrow it: search one specific folder instead of the home directory or ~/Library, add -maxdepth or head, and never run a command that waits for input. If the work genuinely needs longer, start it in the background with nohup … > log 2>&1 & and read the log later.`;
+}
+
 export function runAllowsSilentEmpty(trigger: string): boolean {
   return trigger === "routine" || trigger === "work";
 }
@@ -5765,6 +5798,7 @@ async function runSandboxCommand(
     runId?: string;
     signal: AbortSignal;
   },
+  timeoutMs: number = sandboxCommandTimeoutMs(),
 ) {
   let stdout = "";
   let stderr = "";
@@ -5775,7 +5809,7 @@ async function runSandboxCommand(
       argv,
       cwd,
       env: Object.keys(env).length > 0 ? env : undefined,
-      timeoutMs: sandboxCommandTimeoutMs(),
+      timeoutMs,
     },
     context,
   )) {

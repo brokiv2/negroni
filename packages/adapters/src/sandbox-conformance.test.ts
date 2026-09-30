@@ -161,6 +161,30 @@ describe("sandbox conformance", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("desktop executor gives commands an empty stdin instead of an open pipe", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rakazo-desktop-stdin-"));
+    const desktop = new DesktopSandboxProvider({ root });
+    const computer = await desktop.provision({ botId: "stdin", homePath: "/unused" }, ctx);
+    const events: ProcessEvent[] = [];
+    const startedAt = Date.now();
+
+    // `cat` with no file and BSD `grep -r` with no path both read stdin.
+    for await (const event of desktop.execute(
+      computer,
+      { argv: ["bash", "-lc", "cat; echo read-done"], timeoutMs: 5_000 },
+      ctx,
+    )) {
+      events.push(event);
+    }
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(events).toContainEqual({ type: "stdout", data: "read-done\n" });
+    expect(events).toContainEqual({ type: "exit", code: 0 });
+
+    await desktop.destroy(computer, ctx);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("desktop executor aborts and kills a running command", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rakazo-desktop-abort-"));
     const desktop = new DesktopSandboxProvider({ root });
