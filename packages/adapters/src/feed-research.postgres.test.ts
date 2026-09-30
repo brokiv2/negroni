@@ -178,6 +178,40 @@ suite("bounded public research (PostgreSQL, no external services)", () => {
     expect(h.enqueue).not.toHaveBeenCalled();
     expect((await getFeedResearchStatus(prisma, h.owner)).state).toBe("off");
   });
+  it.each([
+    ["waiting_input", 1],
+    ["waiting_takeover", 1],
+    ["running", 0],
+    ["queued", 0],
+  ] as const)("a main-assistant run in %s leaves %i background claims", async (status, claims) => {
+    const h = await setup();
+    const task = await prisma.task.create({
+      data: {
+        ...h.owner,
+        botId: h.bot.id,
+        threadId: h.thread.id,
+        prompt: "chat",
+        status: "running",
+      },
+    });
+    await prisma.run.create({
+      data: {
+        ...h.owner,
+        botId: h.bot.id,
+        threadId: h.thread.id,
+        taskId: task.id,
+        trigger: "user",
+        status,
+      },
+    });
+    await h.reconcile();
+    // The reconciler scans every due profile; count only this owner's research claims.
+    const own = await prisma.run.count({
+      where: { ...h.owner, trigger: "research" },
+    });
+    expect(own).toBe(claims);
+    expect(!!(await h.profile()).activeResearchId).toBe(claims === 1);
+  });
   it("claims one wake under concurrency, saves verified private findings, then delivers only a feed card", async () => {
     const h = await setup();
     await Promise.all([h.reconcile(), h.reconcile()]);

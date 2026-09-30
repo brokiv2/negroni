@@ -53,12 +53,23 @@ scenario.each([
     const p = h.prisma,
       id = randomUUID();
     let calls = 0;
+    let triageCalls = 0;
     let computerCalls = 0;
     h.sandbox.provision = async () => {
       computerCalls++;
       throw new Error("Research must never provision a computer");
     };
     h.runtime.run = async function* (request) {
+      if (request.runId.endsWith(":triage")) {
+        // The cheap first pass is tool-less and sees no chat history either.
+        triageCalls++;
+        assert.deepEqual(request.tools, []);
+        assert.deepEqual(request.history, []);
+        assert.ok(!request.prompt.includes("PRIVATE_THREAD_CONTEXT"));
+        assert.equal(request.model.thinkingLevel, "off");
+        yield { type: "text", text: JSON.stringify({ shortlist: [`${accountId}:meeting`] }) };
+        return;
+      }
       calls++;
       assert.deepEqual(
         request.tools.map((t) => t.name),
@@ -183,11 +194,14 @@ scenario.each([
       assert.notEqual(run.threadId, thread.id);
       await h.executor.continueRun(run.id, "research-executor-probe");
       const ended = await p.run.findUniqueOrThrow({ where: { id: run.id } });
-      assert.equal(ended.status, forbidden ? "failed" : "completed");
+      // Public research treats a forbidden tool as fatal. Connected-source checks refuse the
+      // call but finish, so one hostile email cannot stall monitoring of later mail.
+      assert.equal(ended.status, forbidden && !accounts ? "failed" : "completed");
       await reconcileFeedResearch({ prisma: p, jobs });
       assert.equal(await p.message.count({ where: { threadId: thread.id, role: "bot" } }), 0);
       assert.equal(await p.feedItem.count({ where: owner }), accounts && !forbidden ? 1 : 0);
       assert.equal(calls, 1);
+      assert.equal(triageCalls, accounts ? 1 : 0);
       assert.equal(computerCalls, 0);
     } finally {
       await p.organization.deleteMany({ where: { id } });

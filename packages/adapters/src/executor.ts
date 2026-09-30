@@ -5,6 +5,7 @@ import type {
   AgentModelOAuthCredential,
   AgentRunRequest,
   AgentRuntime,
+  AgentRuntimeEvent,
   AgentToolCompletion,
   ArtifactStore,
   AutoReviewProvider,
@@ -168,6 +169,7 @@ import {
   resolveAutoReviewProviderKind,
 } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
+import { resolveBackgroundModel } from "./background-triage.js";
 import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.js";
 import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import {
@@ -240,6 +242,7 @@ import {
   selectCompactedHistory,
   shouldEnqueueCompaction,
 } from "./history-compaction.js";
+import { learnInterestsInBackground } from "./interest-learning.js";
 import { knowledgeRootInstruction } from "./knowledge-root.js";
 import {
   assertConnectorToolArgs,
@@ -1664,6 +1667,79 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             const executeResearch =
               researchCycle.kind === "accounts" ? executeAccountResearch : executeFeedResearch;
+            const researchModel: AgentRunRequest["model"] = {
+              provider: runModelProvider,
+              id: runModelId,
+              apiKey: resolved.oauth ? undefined : resolved.apiKey,
+              baseUrl: resolved.baseUrl,
+              reasoning: resolved.reasoning,
+              maxTokens: Math.min(resolved.maxTokens ?? 8192, 8192),
+              contextWindow: resolved.contextWindow,
+              acceptsImages: false,
+              thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
+              oauth: resolved.oauth
+                ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+                : undefined,
+            };
+            const recordUsage = async (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => {
+              await deps.prisma.usageRecord.create({
+                data: {
+                  spaceId: run.spaceId,
+                  userId: run.userId,
+                  botId: bot.id,
+                  runId,
+                  provider: event.provider,
+                  model: event.model,
+                  inputTokens: event.inputTokens,
+                  outputTokens: event.outputTokens,
+                  cacheReadTokens: event.cacheReadTokens,
+                  cacheWriteTokens: event.cacheWriteTokens,
+                },
+              });
+            };
+            // The first pass (triage, interest learning) runs on the cheapest connected model;
+            // only its shortlist reaches the conversation model selected above.
+            const triageModel = await resolveBackgroundModel({
+              routing,
+              override: process.env.BACKGROUND_MODEL,
+              main: researchModel,
+              resolve: (route) =>
+                resolveConnectedModel(run, route.provider, route.modelId, (values) =>
+                  runSecrets.push(...values),
+                ),
+            });
+            getLogger().info("background research started", {
+              "run.id": runId,
+              "research.id": run.researchId,
+              kind: researchCycle.kind,
+              "model.triage": `${triageModel.provider}:${triageModel.id}`,
+              "model.escalation": `${runModelProvider}:${runModelId}`,
+            });
+            const researchRequest = {
+              botId: bot.id,
+              threadId: thread.id,
+              runId,
+              workload,
+            } as const;
+            try {
+              await learnInterestsInBackground({
+                prisma: deps.prisma,
+                runtime: deps.runtime,
+                researchId: run.researchId,
+                model: triageModel,
+                request: researchRequest,
+                context,
+                onUsage: recordUsage,
+              });
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              getLogger().warn("background interest learning skipped", {
+                error: redactSecrets(
+                  error instanceof Error ? error.message : String(error),
+                  runSecrets,
+                ),
+              });
+            }
             await executeResearch({
               registry: deps.connectors,
               memory: deps.memory,
@@ -1672,26 +1748,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               web: runWeb,
               researchId: run.researchId,
               context,
-              request: {
-                botId: bot.id,
-                threadId: thread.id,
-                runId,
-                workload,
-                model: {
-                  provider: runModelProvider,
-                  id: runModelId,
-                  apiKey: resolved.oauth ? undefined : resolved.apiKey,
-                  baseUrl: resolved.baseUrl,
-                  reasoning: resolved.reasoning,
-                  maxTokens: Math.min(resolved.maxTokens ?? 8192, 8192),
-                  contextWindow: resolved.contextWindow,
-                  acceptsImages: false,
-                  thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
-                  oauth: resolved.oauth
-                    ? { credential: resolved.oauth, persist: resolved.persistOAuth }
-                    : undefined,
-                },
-              },
+              triage: { model: triageModel, onUsage: recordUsage },
+              request: { ...researchRequest, model: researchModel },
             });
           } catch (error) {
             researchError = redactSecrets(

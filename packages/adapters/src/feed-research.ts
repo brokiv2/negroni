@@ -12,6 +12,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import { FeedItemInput, FeedProfileSchema } from "@rakazo/contracts";
 import { mainAssistantBot } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import * as z from "zod";
 import { publishAccountFinding } from "./account-research.js";
 import { eligibleFeedInterests, topicKey } from "./feed-profile.js";
@@ -391,6 +392,15 @@ export async function reconcileFeedResearch(deps: {
     }
     const failed = cycle?.run?.status === "failed";
     const interval = DAY / FeedProfileSchema.parse(profile.data).researchChecksPerDay;
+    if (cycle?.run)
+      getLogger().info("background research finished", {
+        "research.id": cycle.id,
+        kind: cycle.kind,
+        status: cycle.run.status,
+        findings: cycle.findings.length,
+        delivered,
+        ...(failed && cycle.run.error ? { error: cycle.run.error.slice(0, 300) } : {}),
+      });
     await prisma.feedProfile.updateMany({
       where: {
         spaceId: profile.spaceId,
@@ -464,7 +474,13 @@ export async function reconcileFeedResearch(deps: {
         });
         return null;
       }
-      if (await tx.run.findFirst({ where: { botId: bot.id, status: { notIn: TERMINAL } } }))
+      // Wait only for runs that are executing. A chat parked on waiting_input or
+      // waiting_takeover can sit for days and must not silence background checks.
+      if (
+        await tx.run.findFirst({
+          where: { botId: bot.id, status: { in: ["queued", "leased", "running"] } },
+        })
+      )
         return null;
       // The profile lock also serializes first creation of the internal thread.
       const thread = await tx.thread.upsert({
@@ -516,7 +532,10 @@ export async function reconcileFeedResearch(deps: {
       });
       return run.id;
     });
-    if (claimed) await jobs.enqueue(runContinueJob(claimed));
+    if (claimed) {
+      getLogger().info("background research claimed", { "run.id": claimed });
+      await jobs.enqueue(runContinueJob(claimed));
+    }
   }
 }
 
