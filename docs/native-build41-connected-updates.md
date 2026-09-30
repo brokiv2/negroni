@@ -29,13 +29,15 @@ The service/account hierarchy follows [ChatGPT's connected-account documentation
 ## Verification
 
 - 62 focused adapter and web component tests passed.
-- 31 isolated PostgreSQL tests passed sequentially, including evidence validation, source revocation, deduplication and urgent delivery limits.
+- 32 isolated PostgreSQL tests passed sequentially, including evidence validation, source revocation, deduplication and urgent delivery limits.
 - 14 native core tests passed. Adapter, API, worker and web type checks passed.
 - Native simulator build and production web build passed.
 - In the iPhone simulator, saved apps grouped correctly, account identity was visible, a feed image loaded, Discuss opened the item conversation and an injected failed run displayed its error in the timeline.
 - A harmless live model probe exercised the configured runtime, one local fixture tool and the final response. It did not post to a real conversation or send email.
 
 Live Gmail verification resolved identity for three active connections and successfully read bounded message previews. A fourth stored connection was no longer active at the provider and was excluded from monitoring. Live response inspection caught a nested preview shape that the fixture alone had not covered; the parser and regression fixture now cover it.
+
+An end-to-end live background cycle completed, recorded ten source fingerprints and produced no finding worth surfacing. A regression test covers graceful exhaustion of the finding allowance: valid work is retained rather than failing the whole cycle.
 
 Physical-device animation quality remains a separate check. Release processing is recorded after verification.
 

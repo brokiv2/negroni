@@ -235,6 +235,21 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
     await s.finish();
     expect(await prisma.feedItem.count({ where: s.owner })).toBe(1);
   });
+  it("stops accepting findings at the allowance without failing useful work", async () => {
+    const s = await setup();
+    await s.run(
+      Array.from({ length: 6 }, (_, i) => ({
+        type: "tool" as const,
+        executionId: `attempt-${i}`,
+        name: "save_opportunity",
+        args: s.candidate,
+      })),
+    );
+    await s.finish();
+    expect(await prisma.feedItem.count({ where: s.owner })).toBe(1);
+    await s.next();
+    expect(await s.run()).not.toHaveBeenCalled();
+  });
   it("a useful empty evaluation still remembers the source fingerprint", async () => {
     const s = await setup();
     await s.run([]);

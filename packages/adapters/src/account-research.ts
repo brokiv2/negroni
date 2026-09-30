@@ -187,8 +187,9 @@ export async function executeAccountResearch(input: {
   const executeTool = async (name: string, args: Record<string, unknown>) => {
     try {
       await check();
-      if (name !== "save_opportunity" || ++calls > profile.maxItems)
-        throw new Error("Research tool is unavailable or allowance reached.");
+      if (name !== "save_opportunity") throw new Error("Research tool is unavailable.");
+      if (++calls > profile.maxItems)
+        return { saved: false, reason: "Allowance reached. Finish silently." };
       const candidate = Candidate.parse(args);
       const source = selected.find((s) => s.id === candidate.sourceId);
       if (!source || !source.text.includes(candidate.evidence))
@@ -223,7 +224,7 @@ export async function executeAccountResearch(input: {
       });
       return { saved: true };
     } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
+      failure ??= error instanceof Error ? error : new Error(String(error));
       throw failure;
     }
   };
@@ -246,6 +247,7 @@ export async function executeAccountResearch(input: {
         ],
         prompt: JSON.stringify({
           now: new Date().toISOString(),
+          maximumFindings: profile.maxItems,
           sources: selected.map(({ id, title, text }) => ({ id, title, text })),
           memory: recall
             .slice(0, 5)
