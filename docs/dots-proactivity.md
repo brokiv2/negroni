@@ -215,3 +215,24 @@ This audit distinguishes deterministic implementation checks from behavior that 
 | 14. Tool success is not completion | Lifecycle tests leave work requiring attention when an execution ends without a saved verified outcome. |
 
 The bounded implementation is released. Native interaction remains an outstanding acceptance check. One live model scenario now verifies search, original-page reading, quotation validation and silent card publication in an isolated profile; this is evidence for that scenario, not a broad relevance evaluation. See the build 35 live follow-up record. Supported source-event subscriptions, signed-in research adapters, semantic story clustering and a combined stop-all control are extensions rather than capabilities claimed by this release.
+
+## September 30: anticipation and Muse comparison
+
+[Meta's product design account](https://introducing.muse.ai/) describes scheduled and event-driven work followed by a decision about whether a result warrants an interruption. It also describes ideas derived from conversations, observed patterns and goals. [Meta's technical account](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse) identifies a persistent agent daemon, concurrent subagents, cron jobs and durable Postgres state. These sources do not disclose the exact anticipation prompts, ranking model or wake cadence.
+
+[OpenAI's proactive research description](https://openai.com/index/how-we-build-safety-security-and-privacy-into-dots/) separates read-only researchers returning private findings from the main assistant deciding what to do. [ChatGPT memory dreaming](https://openai.com/index/chatgpt-memory-dreaming/) describes background synthesis of conversation history into current, relevant memory; it is not evidence that Dots uses exactly the same private memory pipeline.
+
+### Proposed next Negroni increment — not shipped in build 36
+
+Keep the existing Mac runtime and selected model connections. Add a bounded observation-to-opportunity loop around them:
+
+1. Ingest changes from explicitly selected account sources. Prefer supported source events; otherwise poll incrementally with stored cursors. The current public-web research mode must not silently acquire signed-in account access.
+2. Retrieve relevant conversation/project memory for those changes. Store model hypotheses separately from user-stated facts and accepted responsibilities, with source references, confidence and expiry.
+3. Assess what became newly useful: a missing preparation step, changed constraint, relevant material or deadline. The first pass uses a configured fast model; difficult candidates can use the configured reasoning model. Skip repeated or unchanged input before inference.
+4. Collect evidence or prepare a private draft within the allowed scope. A detected opportunity does not automatically create an obligation, a schedule or an outgoing message.
+5. Choose delivery: discard, retain for later, add a For you card, or notify for time-sensitive useful change. Require a reason for interrupting now, evidence and a concrete next step. Apply quiet hours, per-topic cooldowns, novelty checks and active-chat presence.
+6. Learn from explicit feedback. “Not relevant”, “stop tracking” and corrected facts invalidate matching candidates. Opening a card is a weak relevance signal and never authorization for external action.
+
+Candidate records need the source event/version, related memory/work IDs, proposed next step, evidence references, expiry, disposition and last delivery key. Existing research findings and ongoing-work records provide primitives, but private-source observations and the coordinator/delivery selector are additional implementation work.
+
+Evaluate usefulness as well as technical completion: accepted vs dismissed suggestions, repeated-topic rate, time saved, missed useful changes and notification frequency. Regression scenarios must include duplicate events, revoked sources, corrected memory, stopped work, expired deadlines, ignored suggestions and foreground chat delivery. A Mac outage pauses this local loop; recovery should merge missed changes into one bounded catch-up.
