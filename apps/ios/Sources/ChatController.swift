@@ -23,6 +23,13 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private let workingIndicator = ChatWorkingView()
   private let toolActivity = ToolActivityView()
   private let activityFooter = UIStackView()
+  private let activityCell = UITableViewCell()
+  private var hasActivity = false
+  private var followsLatest = true
+  private var adjustingScroll = false
+  private var renderedActions: [JSON] = []
+  private var renderedWorking = false
+  private var answering = Set<String>()
   private var activities: [JSON] = []
   private var activityTask: Task<Void, Never>?
 
@@ -78,6 +85,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     composer.onVoiceSettings = { [weak self] in
       self?.navigationController?.pushViewController(VoiceSettingsController(), animated: true)
     }
+    activityCell.backgroundColor = .clear
+    activityCell.selectionStyle = .none
+    activityCell.contentView.addSubview(activityFooter)
+    activityFooter.pin(to: activityCell.contentView)
     activityFooter.axis = .vertical
     let workingHeight = workingIndicator.heightAnchor.constraint(equalToConstant: 64)
     workingHeight.priority = .init(999)
@@ -266,7 +277,11 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
   private func render(_ next: JSON) {
-    let nearBottom = table.contentSize.height - table.contentOffset.y - table.bounds.height < 120
+    let nearBottom = followsLatest && !table.isDragging && !table.isDecelerating
+    let hadActivity = hasActivity
+    let wasAdjusting = adjustingScroll
+    adjustingScroll = true
+    defer { adjustingScroll = wasAdjusting }
     let first = messages.isEmpty
     snapshot = next
     let latest = next["messages"].array.filter { !ThreadLogic.visibleBlocks($0).isEmpty }
@@ -280,22 +295,15 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       name: title ?? "Assistant", color: bot["color"].string,
       main: target["threadKind"].string == "personal")
     let currentRun = next["run"]["id"].string
-    let activityRun = currentRun.isEmpty ? activities.last?["runId"].string ?? "" : currentRun
+    let activityRun = currentRun.isEmpty ? latest.last?["runId"].string ?? "" : currentRun
     let actions = activities.filter { $0["runId"].string == activityRun }
     toolActivity.isHidden = actions.isEmpty || !outgoing.isEmpty
     workingIndicator.isHidden = !working
+    let activityChanged = actions != renderedActions || working != renderedWorking
+    renderedActions = actions
+    renderedWorking = working
     toolActivity.configure(actions)
-    let footerHeight: CGFloat =
-      (toolActivity.isHidden ? 0 : toolActivity.measuredHeight(width: table.bounds.width))
-      + (working ? 64 : 0)
-    if footerHeight > 0 {
-      let needsLayout =
-        table.tableFooterView !== activityFooter || activityFooter.frame.height != footerHeight
-      activityFooter.frame = CGRect(x: 0, y: 0, width: table.bounds.width, height: footerHeight)
-      if needsLayout { table.tableFooterView = activityFooter }
-    } else {
-      table.tableFooterView = nil
-    }
+    hasActivity = !toolActivity.isHidden || working
     if rows.isEmpty {
       let empty = UIView()
       let welcome = Theme.stack(spacing: 18)
@@ -315,8 +323,15 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     } else {
       table.backgroundView = nil
     }
-    guard rows != messages else {
-      if nearBottom { scrollToEnd(animated: false) }
+    guard rows != messages || hasActivity != hadActivity else {
+      if activityChanged {
+        // Tool text can change height without changing any chat message.
+        UIView.performWithoutAnimation {
+          table.performBatchUpdates(nil) { [weak self] _ in
+            if nearBottom { self?.scrollToEnd(animated: false) }
+          }
+        }
+      }
       return
     }
     let previous = messages
@@ -328,8 +343,18 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       let inserted = (previous.count..<rows.count).map { IndexPath(row: $0, section: 0) }
       UIView.performWithoutAnimation {
         table.performBatchUpdates {
+          if hasActivity != hadActivity {
+            let path = IndexPath(row: 0, section: 1)
+            if hasActivity {
+              table.insertRows(at: [path], with: .none)
+            } else {
+              table.deleteRows(at: [path], with: .none)
+            }
+          }
           if !changed.isEmpty { table.reloadRows(at: changed, with: .none) }
           if !inserted.isEmpty { table.insertRows(at: inserted, with: .none) }
+        } completion: { [weak self] _ in
+          if nearBottom || first { self?.scrollToEnd(animated: false) }
         }
       }
     } else {
@@ -342,14 +367,16 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     super.viewDidLayoutSubviews()
     let height = table.bounds.height
     if previousViewportHeight > 0, abs(height - previousViewportHeight) > 1,
-      !table.isDragging, !table.isDecelerating,
-      table.contentSize.height - table.contentOffset.y - previousViewportHeight < 120
+      followsLatest, !table.isDragging, !table.isDecelerating
     {
       scrollToEnd(animated: false)
     }
     previousViewportHeight = height
   }
   private func scrollToEnd(animated: Bool) {
+    let wasAdjusting = adjustingScroll
+    adjustingScroll = true
+    defer { adjustingScroll = wasAdjusting }
     if !messages.isEmpty {
       table.layoutIfNeeded()
       let bottom = max(
@@ -526,6 +553,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
   private func send(_ text: String) {
+    followsLatest = true
     guard composer.ready, !composer.sending, !composer.uploading,
       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     else { return }
@@ -640,7 +668,33 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       } catch { showError(error) }
     }
   }
-  private func answer(_ message: JSON, _ block: JSON) {
+  private func answer(_ message: JSON, _ block: JSON, value: String? = nil) {
+    if let value {
+      submitAnswer(message, value: value)
+      return
+    }
+    if !block["emailDraft"].isNull {
+      let editor = EmailDraftController(block["emailDraft"])
+      editor.onSubmit = { [weak self] answer in
+        guard let self else { return }
+        _ = try await API.shared.rpc(
+          "threads/answer",
+          self.target.merging([
+            "runId": message["runId"], "messageId": message["id"], "answer": .string(answer),
+          ]))
+        self.followsLatest = true
+        try? await self.refresh()
+      }
+      let nav = UINavigationController(rootViewController: editor)
+      nav.isModalInPresentation = true
+      nav.modalPresentationStyle = .pageSheet
+      nav.sheetPresentationController?.detents = [.large()]
+      present(nav, animated: true)
+      return
+    }
+    if block["input"].string != "secret" {
+      return
+    }
     let actions = block["kind"].string == "choice" ? block["options"].array : block["actions"].array
     let alert = UIAlertController(
       title: block["text"].string.isEmpty ? block["question"].string : block["text"].string,
@@ -649,17 +703,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let login =
       block["input"].string == "secret" && block["credential"]["auth"]["type"].string == "login"
     let submit: (String, String?) -> Void = { [weak self] value, username in
-      guard let self else { return }
-      Task {
-        do {
-          var input = self.target.merging([
-            "runId": message["runId"], "messageId": message["id"], "answer": .string(value),
-          ])
-          if let username { input["username"] = .string(username) }
-          _ = try await API.shared.rpc("threads/answer", input)
-          try await self.refresh()
-        } catch { self.showError(error) }
-      }
+      self?.submitAnswer(message, value: value, username: username)
     }
     if actions.isEmpty {
       if login {
@@ -689,6 +733,28 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
     alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
     present(alert, animated: true)
+  }
+  private func submitAnswer(_ message: JSON, value: String, username: String? = nil) {
+    let id = message["id"].string
+    guard !composer.sending, answering.insert(id).inserted else { return }
+    composer.sending = true
+    render(snapshot)
+    Task {
+      defer {
+        answering.remove(id)
+        composer.sending = false
+        render(snapshot)
+      }
+      do {
+        var input = target.merging([
+          "runId": message["runId"], "messageId": message["id"], "answer": .string(value),
+        ])
+        if let username { input["username"] = .string(username) }
+        _ = try await API.shared.rpc("threads/answer", input)
+        followsLatest = true
+        try? await refresh()
+      } catch { showError(error) }
+    }
   }
   private func attachFile() {
     let menu = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
@@ -779,25 +845,39 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       } catch { showError(error) }
     }
   }
+  func numberOfSections(in tableView: UITableView) -> Int { 2 }
+  func scrollViewDidScroll(_ scrollView: UIScrollView) {
+    guard !adjustingScroll, abs(scrollView.bounds.height - previousViewportHeight) < 1 else {
+      return
+    }
+    followsLatest =
+      scrollView.contentSize.height - scrollView.contentOffset.y
+      - scrollView.bounds.height + scrollView.adjustedContentInset.bottom < 80
+  }
   func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-    messages.count
+    section == 0 ? messages.count : (hasActivity ? 1 : 0)
   }
   func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    if indexPath.section == 1 { return activityCell }
     let message = messages[indexPath.row]
     let cell =
       tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
     cell.configure(
       message, target: target, connections: connectedApps,
+      canAnswer: (snapshot["activeRuns"].array + [snapshot["run"]]).contains {
+        $0["id"] == message["runId"] && $0["status"].string == "waiting_input"
+      } && !answering.contains(message["id"].string),
       open: { [weak self] block in
         self?.navigationController?.pushViewController(
           AttachmentController(target: self?.target ?? [:], block: block), animated: true)
-      }, answer: { [weak self] block in self?.answer(message, block) },
+      }, answer: { [weak self] block, value in self?.answer(message, block, value: value) },
       connect: { [weak self] block in self?.connectApp(message: message, block: block) })
     return cell
   }
   func tableView(
     _ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint
   ) -> UIContextMenuConfiguration? {
+    guard indexPath.section == 0 else { return nil }
     let text = ThreadLogic.plainText(messages[indexPath.row])
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
       UIMenu(children: [
@@ -837,8 +917,9 @@ final class MessageCell: UITableViewCell {
     imageTasks = []
   }
   func configure(
-    _ message: JSON, target: JSON, connections: [JSON], open: @escaping (JSON) -> Void,
-    answer: @escaping (JSON) -> Void,
+    _ message: JSON, target: JSON, connections: [JSON], canAnswer: Bool,
+    open: @escaping (JSON) -> Void,
+    answer: @escaping (JSON, String?) -> Void,
     connect: @escaping (JSON) -> Void
   ) {
     imageTasks.forEach { $0.cancel() }
@@ -853,7 +934,24 @@ final class MessageCell: UITableViewCell {
     leading.constant = user ? 48 : 16
     trailing.constant = -16
     for block in ThreadLogic.visibleBlocks(message) {
+      if block["kind"].string == "ask", !block["emailDraft"].isNull {
+        let card = EmailDraftCardView(block) { answer(block, nil) }
+        card.isUserInteractionEnabled = canAnswer
+        stack.addArrangedSubview(card)
+        continue
+      }
       switch block["kind"].string {
+      case "card":
+        if !block["weather"].isNull {
+          stack.addArrangedSubview(WeatherCardView(block["weather"]))
+        } else {
+          if !block["title"].string.isEmpty {
+            stack.addArrangedSubview(Theme.label(block["title"].string, style: .headline))
+          }
+          for line in block["lines"].array {
+            stack.addArrangedSubview(Theme.label("\(line["k"].string): \(line["v"].string)"))
+          }
+        }
       case "text", "progress", "ask", "channel_message":
         let text = UITextView()
         text.isEditable = false
@@ -866,8 +964,8 @@ final class MessageCell: UITableViewCell {
         text.adjustsFontForContentSizeCategory = true
         text.linkTextAttributes = [.foregroundColor: UIColor.link]
         stack.addArrangedSubview(text)
-        if block["kind"].string == "ask" && block["status"].string != "answered" {
-          stack.addArrangedSubview(Theme.button("Reply", action: { answer(block) }))
+        if block["kind"].string == "ask" && block["status"].string != "answered" && canAnswer {
+          addAnswers(block, actions: block["actions"].array, answer: answer)
         }
       case "app_connect":
         let row = Theme.stack(.horizontal, spacing: 10)
@@ -912,8 +1010,8 @@ final class MessageCell: UITableViewCell {
         stack.addArrangedSubview(Theme.label(detail, style: .callout, color: Theme.muted))
       case "choice":
         stack.addArrangedSubview(Theme.label(block["question"].string))
-        if block["answerId"].string.isEmpty {
-          stack.addArrangedSubview(Theme.button("Choose", action: { answer(block) }))
+        if block["answerId"].string.isEmpty && canAnswer {
+          addAnswers(block, actions: block["options"].array, answer: answer)
         }
       case "file", "image":
         if block["kind"].string == "image" {
@@ -954,6 +1052,34 @@ final class MessageCell: UITableViewCell {
     }
 
   }
+  private func addAnswers(_ block: JSON, actions: [JSON], answer: @escaping (JSON, String?) -> Void)
+  {
+    if actions.isEmpty {
+      // Ordinary free text is answered in the existing composer, without a duplicate Reply control.
+      if block["input"].string == "secret" {
+        stack.addArrangedSubview(
+          Theme.button("Enter securely", symbol: "lock", action: { answer(block, nil) }))
+      }
+      return
+    }
+    for action in actions {
+      let button = UIButton(type: .system)
+      var config = UIButton.Configuration.tinted()
+      config.title = action["label"].string
+      config.baseForegroundColor = Theme.ink
+      config.baseBackgroundColor = Theme.userBubble
+      config.cornerStyle = .large
+      config.contentInsets = .init(top: 12, leading: 14, bottom: 12, trailing: 14)
+      config.titleAlignment = .leading
+      button.configuration = config
+      button.contentHorizontalAlignment = .leading
+      button.titleLabel?.numberOfLines = 0
+      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+      button.addAction(UIAction { _ in answer(block, action["id"].string) }, for: .touchUpInside)
+      stack.addArrangedSubview(button)
+    }
+  }
+
 }
 
 enum Markdown {

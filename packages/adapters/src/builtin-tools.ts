@@ -4,9 +4,11 @@ import {
   botSecretDestinationSchema,
   ControlAssistantWorkInput,
   CreateAssistantWorkInput,
+  EmailDraftWidget,
   SecretAskPurpose,
   SecretHttpRequest,
   UpdateAssistantWorkInput,
+  WeatherWidget,
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
@@ -351,6 +353,18 @@ export const builtinAgentTools: ConnectorTool[] = [
       properties: { reason: { type: "string" } },
       required: ["reason"],
     },
+  },
+  {
+    name: "show_weather",
+    description:
+      "Display a native weather card in the conversation. First fetch real current weather/forecast through web or a connected weather tool; copy only measured values and the actual HTTPS source. Never invent weather. Use this instead of a Markdown weather table. observedAt must be the observation time, not an invented current timestamp.",
+    inputSchema: z.toJSONSchema(WeatherWidget),
+  },
+  {
+    name: "review_email",
+    description:
+      "Show an editable email draft with recipient, subject, body and Send action, then wait. Use when the user asks to draft or review email. account identifies the connected sending account. This does not send anything or create a provider draft. After the user presses Send, use the connected mail tool to send exactly the reviewed content once, then report the actual result. Do not call again after approval. If cancelled, do not send.",
+    inputSchema: z.toJSONSchema(EmailDraftWidget),
   },
   {
     name: "ask_user",

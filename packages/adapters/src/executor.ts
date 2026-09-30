@@ -35,10 +35,12 @@ import {
   BOT_TITLE_MAX_LENGTH,
   BotSecretName,
   botSecretSubmissionSchema,
+  EmailDraftWidget,
   isAttachmentImageMimeType,
   ModelRoutingSchema,
   modelRouteKey,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  WeatherWidget,
 } from "@rakazo/contracts";
 import {
   type ActionApprovalRule,
@@ -108,6 +110,7 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
+import { executeAccountResearch } from "./account-research.js";
 import {
   connectAgent,
   messageConnectedAgent,
@@ -223,7 +226,6 @@ import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safe
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { feedProfileInstruction, getFeedProfile, learnFeedInterest } from "./feed-profile.js";
-import { executeAccountResearch } from "./account-research.js";
 import { executeFeedResearch, researchRunAllowed } from "./feed-research.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
@@ -353,6 +355,8 @@ import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
 
 const modelCredentialLocks = new Map<string, Promise<void>>();
 const READ_ONLY_AGENT_TOOLS = new Set([
+  "show_weather",
+  "review_email",
   "search_apps",
   "request_app_connection",
   "computer_observe",
@@ -3825,6 +3829,63 @@ export function createRunExecutor(deps: ExecutorDeps) {
               avatar: updated.color.startsWith("data:image/") ? "image" : updated.color,
               notifyOnFinish: updated.notifyOnFinish,
             });
+          }
+          if (name === "show_weather") {
+            const weather = WeatherWidget.parse(redactToolArgsForReview(args, runSecrets));
+            await flushProgress();
+            await publishMidTurnNarration();
+            await publishMessage(
+              deps,
+              run,
+              "bot",
+              [
+                {
+                  kind: "card",
+                  weather,
+                  title: weather.location,
+                  subtitle: weather.description,
+                  lines: [
+                    { k: weather.description, v: `${weather.temperature}°${weather.unit}` },
+                    ...weather.forecast.map((item) => ({
+                      k: item.label,
+                      v: `${item.temperature}°${weather.unit}`,
+                    })),
+                  ],
+                },
+              ],
+              false,
+              `weather:${runId}:${effectKey}`,
+            );
+            publishedMidTurnUserMessage = true;
+            return finish({
+              ok: true,
+              instruction: "Weather card is visible. Do not repeat the forecast as a text table.",
+            });
+          }
+          if (name === "review_email") {
+            const emailDraft = EmailDraftWidget.parse(redactToolArgsForReview(args, runSecrets));
+            if (!(await renewRunLease(deps, runId, workerId, fence))) return pauseForApproval();
+            await workspaceCheckpoint.flush();
+            const paused = await deps.events.pauseRunForInput({
+              spaceId: run.spaceId,
+              threadId: run.threadId,
+              botId: run.botId,
+              runId,
+              attemptId: attempt.id,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              blocks: [
+                {
+                  kind: "ask",
+                  text: emailDraft.subject,
+                  detail: emailDraft.body,
+                  emailDraft,
+                  status: "pending",
+                },
+              ],
+            });
+            if (!paused) throw new Error("Could not save the email for review");
+            return pauseForApproval();
           }
           if (name === "message_user") {
             const rawMessage = redactSecrets(String(args.message ?? ""), runSecrets);

@@ -6,6 +6,7 @@ import {
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
   type ProductEvent,
+  parseEmailDraftReview,
 } from "@rakazo/contracts";
 import {
   blocksToAgentHistoryText,
@@ -596,6 +597,16 @@ async function commitAnswerRunInput(
     (block) => block.kind === "ask" && block.status !== "answered",
   );
   if (pendingAsk?.kind !== "ask") return null;
+  const review = pendingAsk.emailDraft ? parseEmailDraftReview(input.answer) : undefined;
+  if (review && !review.success && input.answer.trim().startsWith("{")) return null;
+  // A structured review must remain bound to the sending account on this card.
+  if (review?.success && review.data.draft.account !== pendingAsk.emailDraft?.account) return null;
+  const reviewed = review?.success ? review.data : undefined;
+  const resumeAnswer = reviewed
+    ? reviewed.action === "cancel"
+      ? "The user cancelled this email. Do not send it."
+      : `The user pressed Send after reviewing this exact email. Send it once through the connected account, preserving recipients, subject and body. Report the actual provider result; do not ask for the same approval again.\n${JSON.stringify(reviewed.draft)}`
+    : input.answer;
   const approvalAsk = isApprovalAskBlock(pendingAsk);
   const secretAsk = isSecretAskBlock(pendingAsk);
   const choiceAsk = !approvalAsk && !secretAsk && Boolean(pendingAsk.actions?.length);
@@ -703,7 +714,7 @@ async function commitAnswerRunInput(
       data: {
         prompt: selectedChoice
           ? `Selected choice ${selectedChoice.id}: ${resumeLabel}`
-          : input.answer,
+          : resumeAnswer,
       },
     });
     if (task.count !== 1) throw new Error("Run task was not available to answer");
@@ -714,7 +725,8 @@ async function commitAnswerRunInput(
       ? {
           ...block,
           status: "answered" as const,
-          answer: recordedAnswer,
+          answer: reviewed ? reviewed.action : recordedAnswer,
+          ...(reviewed ? { emailDraft: reviewed.draft } : {}),
         }
       : block,
   );

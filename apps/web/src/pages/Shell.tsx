@@ -1,3 +1,4 @@
+import { EmailDraftCard, WeatherCard } from "../components/ChatWidgets";
 import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
@@ -6635,6 +6636,7 @@ const MessageView = memo(function MessageView({
           );
         }
         if (block.kind === "card") {
+          if (block.weather) return <WeatherCard key={i} weather={block.weather} />;
           return (
             <div key={i} className="flex justify-start">
               <div className="flex flex-col gap-2 rounded-[20px] bg-muted px-5 py-4">
@@ -6651,6 +6653,7 @@ const MessageView = memo(function MessageView({
           );
         }
         if (block.kind === "ask") {
+          if (block.emailDraft) return <EmailDraftCard key={i} draft={block.emailDraft} status={block.status} answer={block.answer} canAnswer={canAnswer} onAnswer={(answer) => onAnswer(message, answer)} />;
           return (
             <AskCard
               key={i}

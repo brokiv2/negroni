@@ -185,7 +185,7 @@ public enum ThreadLogic {
       case "progress":
         return !block["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           && block["pendingToolNames"].array.isEmpty && !block["text"].string.hasPrefix("Using ")
-      case "ask", "choice", "file", "image", "app_connect": return true
+      case "ask", "choice", "file", "image", "app_connect", "card": return true
       case "subagent", "child_bot", "cloud_agent":
         return ["name", "title", "result", "progress", "status"].contains {
           !block[$0].string.isEmpty

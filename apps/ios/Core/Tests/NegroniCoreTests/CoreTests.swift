@@ -72,6 +72,11 @@ final class CoreTests: XCTestCase {
     XCTAssertEqual(ThreadLogic.unconfirmed([acknowledged], in: [fresh]).count, 1)
     XCTAssertTrue(ThreadLogic.unconfirmed([acknowledged], in: [fresh.merging(["seq": 6])]).isEmpty)
   }
+  func testRichWidgetsRemainVisibleWithoutSummaryText() {
+    let card: JSON = ["kind": "card", "weather": ["location": "Lisbon"]]
+    let draft: JSON = ["kind": "ask", "emailDraft": ["subject": "Agenda"]]
+    XCTAssertEqual(ThreadLogic.visibleBlocks(["blocks": .array([card, draft])]), [card, draft])
+  }
   func testWorkingIndicatorStopsForCompletionAndWaitingForUser() {
     XCTAssertTrue(ThreadLogic.working(["run": ["status": "queued"]]))
     XCTAssertTrue(ThreadLogic.working(["activeRuns": [["status": "leased"]]]))

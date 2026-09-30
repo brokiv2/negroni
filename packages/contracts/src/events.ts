@@ -1,6 +1,7 @@
 import * as z from "zod";
 import { ARTIFACT_NAME_MAX_LENGTH } from "./attachments.js";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
+import { EmailDraftWidget, WeatherWidget } from "./chat-widgets.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
 
@@ -200,6 +201,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({
     kind: z.literal("card"),
+    weather: WeatherWidget.optional(),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),
     /** Optional heading above the rows. Older emitters omit both; a renderer
         must still lay out a bare `lines` list. */
@@ -208,6 +210,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("ask"),
+    emailDraft: EmailDraftWidget.optional(),
     text: z.string(),
     approvalEffectId: Id.optional(),
     detail: z.string().optional(),

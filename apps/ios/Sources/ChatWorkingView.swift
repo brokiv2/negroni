@@ -27,6 +27,9 @@ final class ChatWorkingView: UIView {
     isAccessibilityElement = true
     NotificationCenter.default.addObserver(
       self, selector: #selector(updateMotion),
+      name: UIApplication.didBecomeActiveNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(updateMotion),
       name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
   }
   required init?(coder: NSCoder) { fatalError() }

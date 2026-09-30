@@ -1,7 +1,9 @@
 export * from "./ai-consent.js";
+export * from "./assistant-work.js";
 export * from "./attachments.js";
 export * from "./bot-avatar.js";
 export * from "./bot-secrets.js";
+export * from "./chat-widgets.js";
 export * from "./desktop.js";
 export * from "./domain.js";
 export * from "./events.js";
@@ -11,11 +13,9 @@ export * from "./local-settings.js";
 export * from "./markdown-text.js";
 export * from "./mcp.js";
 export * from "./model-routing.js";
-export * from "./personal-feed.js";
 export * from "./openai-compatible-ui.js";
+export * from "./personal-feed.js";
 export * from "./reactions.js";
 export * from "./rpc.js";
 export * from "./runs.js";
 export * from "./search.js";
-
-export * from "./assistant-work.js";

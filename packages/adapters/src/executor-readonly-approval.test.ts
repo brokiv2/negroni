@@ -158,6 +158,7 @@ function fixture({
     message: { findMany: vi.fn(async () => []) },
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt })) },
     connection: { findMany: vi.fn(async () => []) },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },
     deploymentSettings: {
@@ -167,6 +168,9 @@ function fixture({
       })),
     },
     taughtSkill: { findMany: vi.fn(async () => []) },
+    feedProfile: { findUnique: vi.fn(async () => null) },
+    feedItem: { findFirst: vi.fn(async () => null) },
+    secret: { findFirst: vi.fn(async () => null) },
     agentSecret: { findMany: vi.fn(async () => []) },
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
@@ -182,7 +186,9 @@ function fixture({
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
   });
-  let calls = [{ args: { id: "item-1" }, executionId: "call-1" }];
+  let calls: Array<{ args: Record<string, unknown>; executionId: string }> = [
+    { args: { id: "item-1" }, executionId: "call-1" },
+  ];
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(
@@ -489,5 +495,27 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("email draft review", () => {
+  it("pauses with an editable draft and never invokes a mail connector before review", async () => {
+    const f = fixture({ name: "review_email" });
+    const draft = {
+      account: "Demo mail",
+      to: ["test@example.test"],
+      cc: [],
+      subject: "Agenda",
+      body: "Hello",
+    };
+    f.setCalls([{ args: draft, executionId: "draft-review" }]);
+    await f.run();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blocks: [expect.objectContaining({ kind: "ask", status: "pending", emailDraft: draft })],
+      }),
+    );
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
   });
 });

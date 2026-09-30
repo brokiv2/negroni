@@ -107,6 +107,17 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
   return blocks
     .map((block) => {
       if (block.kind === "text") return block.text;
+      if (block.kind === "card")
+        return [
+          block.title,
+          block.subtitle,
+          ...block.lines.map((line) => `${line.k}: ${line.v}`),
+          block.weather?.sourceUrl,
+        ]
+          .filter(Boolean)
+          .join("\n");
+      if (block.kind === "ask" && block.emailDraft)
+        return `[email draft, ${block.status ?? "pending"}${block.answer ? `, ${block.answer}` : ""}] ${JSON.stringify(block.emailDraft)}`;
       if (block.kind === "chart") return `[chart: ${block.name}]`;
       if (block.kind === "image") return `[image: ${block.name}]`;
       if (block.kind === "file") {
