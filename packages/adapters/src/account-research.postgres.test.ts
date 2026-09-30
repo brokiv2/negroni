@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AgentRunRequest,
   AgentRuntimeEvent,
   BackgroundJob,
   ManagedConnectorProvider,
@@ -91,7 +92,9 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
     });
     await mutateFeedProfile(prisma, owner, (p) => ({ ...p, accountResearchIds: [account.id] }));
     const evidence = "Prepare a prototype for the follow-up meeting tomorrow.";
-    const observe = vi.fn(async () => [{ id: "meeting", title: "Prototype", text: evidence }]);
+    const observe = vi.fn(async (_request?: { connectionId: string }) => [
+      { id: "meeting", title: "Prototype", text: evidence },
+    ]);
     const provider = { canObserve: () => true, observe } as unknown as ManagedConnectorProvider;
     const registry = { managed: () => provider };
     const memory = {
@@ -113,10 +116,17 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
       events: AgentRuntimeEvent[] = [
         { type: "tool", executionId: "test-call", name: "save_opportunity", args: candidate },
       ],
+      triageText?: string,
     ) => {
       const cycle = await active();
       const runtime = new ScriptedAgentRuntime();
-      runtime.run = async function* () {
+      const triageRequests: AgentRunRequest[] = [];
+      runtime.run = async function* (request) {
+        if (request.runId.endsWith(":triage")) {
+          triageRequests.push(request);
+          yield { type: "text", text: triageText ?? "" };
+          return;
+        }
         yield* events;
       };
       const spy = vi.spyOn(runtime, "run");
@@ -125,6 +135,9 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
         runtime,
         registry,
         memory,
+        ...(triageText === undefined
+          ? {}
+          : { triage: { model: { provider: "scripted", id: "cheap", thinkingLevel: "off" } } }),
         researchId: cycle.id,
         context: {
           ...owner,
@@ -140,7 +153,8 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
           model: { provider: "scripted", id: "scripted" },
         },
       });
-      return spy;
+      // Evaluator calls only; the cheap pass is reported separately.
+      return Object.assign(spy, { triageRequests });
     };
     const finish = async () => {
       const cycle = await active();
@@ -287,40 +301,147 @@ suite("connected-source anticipation (PostgreSQL, offline)", () => {
     expect(await prisma.feedItem.count({ where: s.owner })).toBe(1);
     expect((await prisma.feedItem.findFirstOrThrow({ where: s.owner })).hidden).toBe(true);
   });
+  const observations = (s: { account: { id: string } }) =>
+    prisma.accountObservation.count({ where: { connectionId: s.account.id } });
+  const findings = async (s: { active: () => Promise<{ id: string }> }) =>
+    prisma.feedFinding.count({ where: { researchId: (await s.active()).id } });
   it.each(["send_message", "web_search", "work_create"])(
-    "rejects %s outside isolated tools",
+    "refuses %s outside isolated tools without failing the cycle",
     async (name) => {
       const s = await setup();
-      await expect(
-        s.run([{ type: "tool", executionId: "test-call", name, args: {} }]),
-      ).rejects.toThrow("unavailable");
-      expect(await prisma.accountObservation.count({ where: { connectionId: s.account.id } })).toBe(
-        0,
-      );
+      await s.run([{ type: "tool", executionId: "test-call", name, args: {} }]);
+      expect(await findings(s)).toBe(0);
+      // The source is marked seen so the same hostile email is not re-evaluated forever.
+      expect(await observations(s)).toBe(1);
     },
   );
-  it("rejects invented evidence and expired opportunities", async () => {
+  it("refuses invented evidence and expired opportunities without saving or failing", async () => {
     const s = await setup();
-    await expect(
-      s.run([
-        {
-          type: "tool",
-          executionId: "test-call",
-          name: "save_opportunity",
-          args: { ...s.candidate, evidence: "This sentence never appeared in the source." },
+    await s.run([
+      {
+        type: "tool",
+        executionId: "invented",
+        name: "save_opportunity",
+        args: { ...s.candidate, evidence: "This sentence never appeared in the source." },
+      },
+      {
+        type: "tool",
+        executionId: "expired",
+        name: "save_opportunity",
+        args: { ...s.candidate, expiresAt: new Date(0).toISOString() },
+      },
+    ]);
+    expect(await findings(s)).toBe(0);
+    expect(await observations(s)).toBe(1);
+  });
+  it("skips a low-confidence candidate instead of failing on the schema (zod minimum 0.85)", async () => {
+    const s = await setup();
+    await s.run([
+      {
+        type: "tool",
+        executionId: "weak",
+        name: "save_opportunity",
+        args: { ...s.candidate, confidence: 0.6 },
+      },
+    ]);
+    expect(await findings(s)).toBe(0);
+    expect(await observations(s)).toBe(1);
+  });
+  it("normalizes recoverable model output: percent confidence, typographic quote, far expiry", async () => {
+    const s = await setup();
+    await s.run([
+      {
+        type: "tool",
+        executionId: "sloppy",
+        name: "save_opportunity",
+        args: {
+          ...s.candidate,
+          confidence: 92,
+          urgency: "urgent",
+          evidence: "Prepare a  prototype for the follow-up meeting tomorrow.",
+          expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
         },
-      ]),
-    ).rejects.toThrow("exact source quote");
-    await expect(
-      s.run([
-        {
-          type: "tool",
-          executionId: "test-call",
-          name: "save_opportunity",
-          args: { ...s.candidate, expiresAt: new Date(0).toISOString() },
-        },
-      ]),
-    ).rejects.toThrow("expiry");
+      },
+    ]);
+    const saved = await prisma.feedFinding.findFirstOrThrow({
+      where: { researchId: (await s.active()).id },
+    });
+    expect(saved.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 7 * 86400000 + 1000);
+    expect((saved.data as { urgency: string; confidence: number }).urgency).toBe("quiet");
+    expect((saved.data as { confidence: number }).confidence).toBeCloseTo(0.92);
+  });
+  it("stops quietly after repeated invalid calls and keeps the cycle", async () => {
+    const s = await setup();
+    const spam = Array.from({ length: 10 }, (_, i) => ({
+      type: "tool" as const,
+      executionId: `bad-${i}`,
+      name: "send_message",
+      args: {},
+    }));
+    await s.run(spam);
+    expect(await observations(s)).toBe(1);
+  });
+  it("cheap triage with an empty shortlist skips the escalation model", async () => {
+    const s = await setup();
+    const spy = await s.run(undefined, JSON.stringify({ shortlist: [] }));
+    expect(spy.triageRequests).toHaveLength(1);
+    expect(spy.triageRequests[0]!.tools).toEqual([]);
+    expect(spy.triageRequests[0]!.model.id).toBe("cheap");
+    expect(spy).toHaveBeenCalledTimes(1); // the triage call only
+    expect(await findings(s)).toBe(0);
+    expect(await observations(s)).toBe(1);
+  });
+  it("cheap triage escalates only shortlisted sources", async () => {
+    const s = await setup();
+    s.observe.mockResolvedValue([
+      { id: "meeting", title: "Prototype", text: s.candidate.evidence },
+      { id: "promo", title: "Sale", text: "Everything is 50% off this weekend only." },
+    ]);
+    const spy = await s.run(
+      undefined,
+      "Sure! ```json\n" + JSON.stringify({ shortlist: [`${s.account.id}:meeting`] }) + "\n```",
+    );
+    expect(spy).toHaveBeenCalledTimes(2);
+    const evaluator = JSON.parse(spy.mock.calls[1]![0].prompt) as { sources: { id: string }[] };
+    expect(evaluator.sources.map((x) => x.id)).toEqual([`${s.account.id}:meeting`]);
+    expect(await findings(s)).toBe(1);
+    expect(await observations(s)).toBe(2);
+  });
+  it("a broken cheap pass degrades to the full bounded evaluation", async () => {
+    const s = await setup();
+    const spy = await s.run(undefined, "I cannot help with that.");
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(await findings(s)).toBe(1);
+  });
+  it("one unreadable account does not stop checks of the others", async () => {
+    const s = await setup();
+    const second = await prisma.connection.create({
+      data: {
+        ...s.owner,
+        connectorId: "notes",
+        provider: "meetings",
+        displayName: "Notes 2",
+        status: "connected",
+        providerRef: "remote-account-2",
+      },
+    });
+    await mutateFeedProfile(prisma, s.owner, (p) => ({
+      ...p,
+      accountResearchIds: [second.id, s.account.id],
+    }));
+    await s.reconcile();
+    s.observe.mockImplementation(async (request?: { connectionId: string }) => {
+      if (request?.connectionId === second.id)
+        throw new Error("Mail source is unavailable. Reconnect the account if needed.");
+      return [{ id: "meeting", title: "Prototype", text: s.candidate.evidence }];
+    });
+    await s.run();
+    expect(await findings(s)).toBe(1);
+  });
+  it("fails the cycle when every account is unreadable", async () => {
+    const s = await setup();
+    s.observe.mockRejectedValue(new Error("Mail source is unavailable."));
+    await expect(s.run()).rejects.toThrow("Mail source is unavailable");
   });
   it("rejects an account revoked during source reading before model evaluation", async () => {
     const s = await setup();

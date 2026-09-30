@@ -36,7 +36,9 @@ export async function observeGmail(
         _account: request.connectionId,
         user_id: "me",
         max_results: 20,
-        query: `after:${Math.floor(since / 1000)} -in:spam -in:trash -in:sent -in:drafts`,
+        // Rules pre-filter before any model sees mail: Gmail's own bulk categories are
+        // dropped at the query, so the cheap pass only ranks personal and update mail.
+        query: `after:${Math.floor(since / 1000)} -in:spam -in:trash -in:sent -in:drafts -category:promotions -category:social -category:forums`,
         include_payload: false,
         verbose: false,
       },
