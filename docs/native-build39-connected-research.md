@@ -21,3 +21,7 @@ Validation:
 This is the first connected-source increment. Calendar/mail observations, source-event subscriptions, memory-change-triggered reevaluation, semantic clustering across different meetings, and a coordinator that chooses urgent notifications remain future work. This version deliberately delivers suggestions quietly to For you and does not create new obligations from inferred interests.
 
 Provider contract reference: [Granola MCP toolkit](https://docs.composio.dev/toolkits/granola_mcp).
+
+## Deployment verification
+
+Build 39 is VALID and IN_BETA_TESTING for internal TestFlight testers. Thirteen Swift core tests also pass. The Mac backend migration was applied after a verified database backup; the backend reports healthy with the Codex runtime. The authenticated mobile API exposes the new source settings and capabilities, and the served desktop bundle matches the built artifact. No account source is enabled and no Granola account is connected in the verified installation, so a live private-source evaluation has not occurred.
