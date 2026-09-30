@@ -18,6 +18,7 @@ import {
   withToolkitMetadata,
 } from "./composio-catalog-cache.js";
 import { DestinationEmulator } from "./destination-emulator.js";
+import { observeGranola } from "./granola-observation.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
 type ComposioSession = Awaited<ReturnType<Composio["create"]>>;
@@ -466,6 +467,24 @@ export class ComposioConnector implements ComposioProvider {
 
   async listConnectedExternalIds(context: AdapterContext): Promise<string[]> {
     return this.listConnectedSlugs(context.userId);
+  }
+
+  canObserve(externalId: string) {
+    return externalId.toLowerCase() === "granola_mcp";
+  }
+
+  async observe(
+    request: {
+      externalId: string;
+      connectionId: string;
+      since: string;
+      seenDocumentIds?: string[];
+      beforeRead: () => Promise<void>;
+    },
+    context: AdapterContext,
+  ) {
+    if (!this.canObserve(request.externalId)) throw new Error("Source observation is unavailable.");
+    return observeGranola(this, request, context);
   }
 
   async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {

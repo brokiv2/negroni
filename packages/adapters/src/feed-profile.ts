@@ -53,7 +53,8 @@ export async function mutateFeedProfile(
           ? {
               researchVersion: { increment: 1 },
               activeResearchId: null,
-              nextResearchAt: data.researchEnabled ? new Date() : null,
+              nextResearchAt:
+                data.researchEnabled || data.accountResearchIds.length ? new Date() : null,
               researchError: null,
             }
           : {}),
@@ -144,6 +145,7 @@ export function feedProfileInstruction(profile: FeedProfile, canLearn: boolean) 
 
 export function researchScope(profile: FeedProfile) {
   return JSON.stringify({
+    accounts: [...profile.accountResearchIds].sort(),
     enabled: profile.researchEnabled,
     checks: profile.researchChecksPerDay,
     maxItems: profile.maxItems,

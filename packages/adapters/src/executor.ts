@@ -223,6 +223,7 @@ import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safe
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { feedProfileInstruction, getFeedProfile, learnFeedInterest } from "./feed-profile.js";
+import { executeAccountResearch } from "./account-research.js";
 import { executeFeedResearch, researchRunAllowed } from "./feed-research.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
@@ -1643,7 +1644,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           try {
             if (!run.researchId) throw new Error("Research context is unavailable.");
             if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-            await executeFeedResearch({
+            const researchCycle = await deps.prisma.feedResearch.findUniqueOrThrow({
+              where: { id: run.researchId },
+            });
+            const executeResearch =
+              researchCycle.kind === "accounts" ? executeAccountResearch : executeFeedResearch;
+            await executeResearch({
+              registry: deps.connectors,
+              memory: deps.memory,
               prisma: deps.prisma,
               runtime: deps.runtime,
               web: runWeb,

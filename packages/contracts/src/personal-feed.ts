@@ -66,6 +66,11 @@ export const FeedInterestSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 export const FeedProfileSchema = z.object({
+  accountResearchIds: z
+    .array(z.string().min(1).max(200))
+    .max(5)
+    .refine((ids) => new Set(ids).size === ids.length, "Choose each account once")
+    .default([]),
   researchEnabled: z.boolean().default(false),
   researchChecksPerDay: z.number().int().min(1).max(8).default(3),
   learningEnabled: z.boolean().default(false),
@@ -87,6 +92,7 @@ export const FeedProfileSchema = z.object({
 export type FeedProfile = z.infer<typeof FeedProfileSchema>;
 // Patch fields must not inherit profile defaults: omitted values preserve saved settings.
 export const FeedProfilePatch = z.object({
+  accountResearchIds: FeedProfileSchema.shape.accountResearchIds.removeDefault().optional(),
   researchEnabled: FeedProfileSchema.shape.researchEnabled.removeDefault().optional(),
   researchChecksPerDay: FeedProfileSchema.shape.researchChecksPerDay.removeDefault().optional(),
   learningEnabled: FeedProfileSchema.shape.learningEnabled.removeDefault().optional(),

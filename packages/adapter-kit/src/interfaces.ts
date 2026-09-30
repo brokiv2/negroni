@@ -200,6 +200,18 @@ export interface ManagedConnectorProvider
     connectionRef: string,
   ): Promise<string | undefined>;
   warmDirectory?(): Promise<void>;
+  /** Bounded, read-only source observation. Unsupported sources expose no capability. */
+  canObserve?(externalId: string): boolean | Promise<boolean>;
+  observe?(
+    request: {
+      externalId: string;
+      connectionId: string;
+      since: string;
+      seenDocumentIds?: string[];
+      beforeRead: () => Promise<void>;
+    },
+    context: AdapterContext,
+  ): Promise<Array<{ id: string; title: string; text: string; url?: string }>>;
 }
 
 export interface MemoryStore {

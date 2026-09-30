@@ -819,6 +819,7 @@ model AgentSkill {
 }
 
 model Connection {
+  observations AccountObservation[]
   id          String   @id @default(cuid())
   spaceId     String
   space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1440,6 +1441,7 @@ model AssistantWork {
 }
 
 model FeedResearch {
+  kind String @default("public")
   id String @id @default(cuid())
   spaceId String
   userId String
@@ -1466,4 +1468,15 @@ model FeedFinding {
   createdAt DateTime @default(now())
   @@unique([researchId, url])
   @@map("feed_findings")
+}
+
+// Fingerprints only; source content remains in the connected account.
+model AccountObservation {
+  connectionId String
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  documentId String
+  sourceHash String
+  checkedAt DateTime @default(now())
+  @@id([connectionId, documentId])
+  @@map("account_observations")
 }

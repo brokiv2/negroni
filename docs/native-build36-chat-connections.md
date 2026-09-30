@@ -23,4 +23,4 @@ The web client already renders `app_connect` cards. Automatic continuation in th
 
 Chat authorization reuses an existing connected account for the exact connector/provider pair. Settings deliberately starts a new authorization so users can add another account of the same service. Revoked accounts and matching provider slugs from a different connector cannot satisfy chat authorization.
 
-All 13 Swift core tests pass, including these account-selection cases. The device archive, export and IPA inspection pass for native UIKit build 37. The adapter/API and PostgreSQL workflow checks above remain the applicable backend verification; this follow-up does not change the backend. Apple availability is tracked separately from local validation.
+All 13 Swift core tests pass, including these account-selection cases. The device archive, export and IPA inspection pass for native UIKit build 37. The adapter/API and PostgreSQL workflow checks above remain the applicable backend verification; this follow-up does not change the backend. Build 37 is VALID and IN_BETA_TESTING for internal testers. Physical-device interaction remains unverified.

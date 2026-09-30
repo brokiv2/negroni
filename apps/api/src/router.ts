@@ -51,6 +51,7 @@ import {
   displayBotWorkspacePath,
   enqueueTakeoverContinuation,
   expireComputerControl,
+  validateAccountResearch,
   getFeedProfile,
   getFeedResearchStatus,
   hasActiveComputerControl,
@@ -2940,9 +2941,24 @@ export function createRouter(deps: RouterDeps) {
       profile: authed.feed.profile.handler(({ context }) =>
         getFeedProfile(deps.prisma, context.actor),
       ),
-      configure: authed.feed.configure.handler(({ context, input }) =>
-        mutateFeedProfile(deps.prisma, context.actor, (p) => ({ ...p, ...input })),
-      ),
+      configure: authed.feed.configure.handler(async ({ context, input }) => {
+        if (input.accountResearchIds) {
+          try {
+            const previous = await getFeedProfile(deps.prisma, context.actor);
+            await validateAccountResearch(
+              deps.prisma,
+              deps.connectors,
+              context.actor,
+              input.accountResearchIds.filter((id) => !previous.accountResearchIds.includes(id)),
+            );
+          } catch {
+            throw new ORPCError("BAD_REQUEST", {
+              message: "Choose a connected account that supports background reading.",
+            });
+          }
+        }
+        return mutateFeedProfile(deps.prisma, context.actor, (p) => ({ ...p, ...input }));
+      }),
       interest: authed.feed.interest.handler(({ context, input }) =>
         mutateFeedProfile(deps.prisma, context.actor, (p) =>
           updateFeedInterest(p, input.topic, input.action),
@@ -3845,16 +3861,22 @@ export function createRouter(deps: RouterDeps) {
           where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
           orderBy: { createdAt: "desc" },
         });
-        return rows.map((row) => ({
-          id: row.id,
-          connectorId: row.connectorId,
-          provider: row.provider,
-          displayName: row.displayName,
-          status: row.status as "pending" | "connected" | "revoked" | "error",
-          accountId: row.providerRef,
-          capabilities: [],
-          createdAt: row.createdAt.toISOString(),
-        }));
+        return Promise.all(
+          rows.map(async (row) => ({
+            id: row.id,
+            connectorId: row.connectorId,
+            provider: row.provider,
+            displayName: row.displayName,
+            status: row.status as "pending" | "connected" | "revoked" | "error",
+            accountId: row.providerRef,
+            capabilities:
+              row.status === "connected" &&
+              (await deps.connectors.managed(row.connectorId)?.canObserve?.(row.provider))
+                ? ["background_read"]
+                : [],
+            createdAt: row.createdAt.toISOString(),
+          })),
+        );
       }),
       begin: authed.connections.begin.handler(async ({ context, input }) => {
         const connector =

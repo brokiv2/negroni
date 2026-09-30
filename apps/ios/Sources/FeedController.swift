@@ -238,26 +238,74 @@ final class FeedSettingsController: ListController {
   override func load() async throws {
     profile = try await API.shared.rpc("feed/profile")
     let research = try await API.shared.rpc("feed/research")
+    let accounts = try await API.shared.rpc("connections/list").array
+    let selectedAccounts = profile["accountResearchIds"].array.map(\.string)
+    let observableAccounts = accounts.filter {
+      $0["capabilities"].array.map(\.string).contains("background_read")
+        || selectedAccounts.contains($0["id"].string)
+    }
     let researchState = research["state"].string
     let dateFormatter = ISO8601DateFormatter()
     dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let nextCheck = dateFormatter.date(from: research["nextCheckAt"].string).map { " · Next: " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
-    let researchDetail = researchState == "learning" ? "Add a topic or let interests emerge from conversations."
-      : researchState == "researching" ? "Reading public sources"
-      : researchState == "needs_attention" ? research["error"].string
-      : "\(research["checksUsed"].int) of \(research["checksPerDay"].int) checks in the last 24 hours" + nextCheck
+    let nextCheck =
+      dateFormatter.date(from: research["nextCheckAt"].string).map {
+        " · Next: " + $0.formatted(date: .abbreviated, time: .shortened)
+      } ?? ""
+    let researchDetail =
+      researchState == "learning"
+      ? "Add a topic or let interests emerge from conversations."
+      : researchState == "researching"
+        ? "Checking sources"
+        : researchState == "needs_attention"
+          ? research["error"].string
+          : "\(research["checksUsed"].int) of \(research["checksPerDay"].int) checks in the last 24 hours"
+            + nextCheck
     sections = [
-      ListSection(title: "Discovery", rows: [
-        ListRow(title: "Find articles for me", symbol: "sparkle.magnifyingglass",
-          switchValue: profile["researchEnabled"].bool,
-          onSwitch: { [weak self] value in self?.mutate("feed/configure", ["researchEnabled": .bool(value)]) }),
-        ListRow(title: "Checks per day", detail: "\(profile["researchChecksPerDay"].int)",
-          action: { [weak self] in
-            self?.prompt("Checks per day", value: String(self?.profile["researchChecksPerDay"].int ?? 3)) { [weak self] value in
-              if let count = Int(value) { self?.mutate("feed/configure", ["researchChecksPerDay": .number(Double(count))]) }
-            }
-          }),
-      ], footer: profile["researchEnabled"].bool ? researchDetail : "Reads public sources and adds relevant articles to For you."),
+      ListSection(
+        title: "Discovery",
+        rows: [
+          ListRow(
+            title: "Find articles for me", symbol: "sparkle.magnifyingglass",
+            switchValue: profile["researchEnabled"].bool,
+            onSwitch: { [weak self] value in
+              self?.mutate("feed/configure", ["researchEnabled": .bool(value)])
+            }),
+          ListRow(
+            title: "Checks per day", detail: "\(profile["researchChecksPerDay"].int)",
+            action: { [weak self] in
+              self?.prompt(
+                "Checks per day", value: String(self?.profile["researchChecksPerDay"].int ?? 3)
+              ) { [weak self] value in
+                if let count = Int(value) {
+                  self?.mutate("feed/configure", ["researchChecksPerDay": .number(Double(count))])
+                }
+              }
+            }),
+        ],
+        footer: (profile["researchEnabled"].bool || !selectedAccounts.isEmpty)
+          ? researchDetail : "Reads public sources and adds relevant articles to For you."),
+      ListSection(
+        title: "Connected sources",
+        rows: observableAccounts.map { account in
+          ListRow(
+            title: account["displayName"].string,
+            detail: account["status"].string == "connected" ? "" : "Reconnect in Settings",
+            symbol: "doc.text.magnifyingglass",
+            switchValue: selectedAccounts.contains(account["id"].string),
+            onSwitch: { [weak self] enabled in
+              var ids = selectedAccounts.filter { $0 != account["id"].string }
+              if enabled { ids.append(account["id"].string) }
+              self?.mutate("feed/configure", ["accountResearchIds": .array(ids.map(JSON.string))])
+            })
+        } + [
+          ListRow(
+            title: "Connect app", symbol: "plus",
+            action: { [weak self] in
+              self?.navigationController?.pushViewController(
+                ConnectionsController(), animated: true)
+            })
+        ],
+        footer: "Reads recent meetings and relevant memory. Suggestions appear quietly in For you."),
       ListSection(rows: [
         ListRow(
           title: "Learn interests from conversations",
