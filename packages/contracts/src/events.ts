@@ -242,6 +242,9 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     /** Inline app authorization card (Composio-backed): logo, name, one-line
         description, and an Authorize button that flips to connected. */
     kind: z.literal("app_connect"),
+    /** Run requesting access; absent for onboarding cards. */
+    requestId: z.string().optional(),
+    sourceMessageId: z.string().optional(),
     connectorId: z.string().optional(),
     provider: z.string(),
     name: z.string(),

@@ -3,6 +3,25 @@ import XCTest
 @testable import NegroniCore
 
 final class CoreTests: XCTestCase {
+  func testConnectionCardsAreVisibleAndResumeTheOriginalQuestionOnce() {
+    let block: JSON = [
+      "kind": "app_connect", "requestId": "run", "sourceMessageId": "original",
+      "provider": "granola", "name": "Granola",
+    ]
+    let message: JSON = ["id": "card", "botId": "assistant", "blocks": .array([block])]
+    XCTAssertEqual(ThreadLogic.visibleBlocks(message), [block])
+    let target: JSON = ["groupId": "room"]
+    let input = ConnectionIntent.continuation(message: message, block: block, target: target)!
+    XCTAssertEqual(input["replyToMessageId"].string, "original")
+    XCTAssertEqual(input["mentions"].array, ["assistant"])
+    XCTAssertEqual(input["groupId"].string, "room")
+    XCTAssertEqual(
+      input, ConnectionIntent.continuation(message: message, block: block, target: target))
+    XCTAssertNil(
+      ConnectionIntent.continuation(
+        message: message, block: block.merging(["requestId": .null]), target: target))
+  }
+
   func testLiveToolEventsNeverBecomeBlankBubblesOrInflateTheSendBaseline() {
     let user: JSON = [
       "id": "user", "role": "user", "seq": 36, "blocks": [["kind": "text", "text": "Any update?"]],

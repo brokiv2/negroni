@@ -118,6 +118,7 @@ import {
   formatAgentEnvironmentInstruction,
   redactAgentCommandResult,
 } from "./agent-environment.js";
+import { appConnectionCard, searchConnectableApps } from "./app-connection-tools.js";
 import { buildApprovalAskBlock } from "./approval-ask.js";
 import {
   approvalPausedToolResult,
@@ -351,6 +352,8 @@ import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
 
 const modelCredentialLocks = new Map<string, Promise<void>>();
 const READ_ONLY_AGENT_TOOLS = new Set([
+  "search_apps",
+  "request_app_connection",
   "computer_observe",
   "list_files",
   "read_file",
@@ -586,7 +589,10 @@ export interface ExecutorDeps {
   home: AgentHomeStore;
   artifacts?: ArtifactStore;
   connector?: ConnectorProvider;
-  connectors?: { managed(id: string): ManagedConnectorProvider | undefined };
+  connectors?: {
+    managed(id: string): ManagedConnectorProvider | undefined;
+    managedProviders?(): ManagedConnectorProvider[];
+  };
   secrets: string[];
   secretStore: EncryptedSecretStore;
   deploymentModelKey?: string;
@@ -3014,6 +3020,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 args,
               ),
             );
+          }
+          if (name === "search_apps") {
+            return searchConnectableApps(deps.connectors, context, String(args.query ?? ""));
+          }
+          if (name === "request_app_connection") {
+            const result = await appConnectionCard(
+              deps.connectors,
+              context,
+              String(args.connectorId ?? ""),
+              String(args.provider ?? ""),
+              run.sourceMessageId ?? undefined,
+            );
+            if (result.block) {
+              const clientNonce = `app-connect:${runId}:${result.block.connectorId}:${result.block.provider}`;
+              const existing = await deps.prisma.message.findUnique({
+                where: {
+                  threadId_clientNonce: { threadId: run.threadId, clientNonce },
+                },
+                select: { id: true },
+              });
+              if (!existing) {
+                await publishMessage(deps, run, "bot", [result.block], false, clientNonce).catch(
+                  async (error) => {
+                    // Parallel tool calls can ask for the same app. Only a committed
+                    // card with this exact nonce makes a duplicate harmless.
+                    const committed = await deps.prisma.message.findUnique({
+                      where: {
+                        threadId_clientNonce: {
+                          threadId: run.threadId,
+                          clientNonce,
+                        },
+                      },
+                      select: { id: true },
+                    });
+                    if (!committed) throw error;
+                  },
+                );
+              }
+              publishedMidTurnUserMessage = true;
+              return {
+                status: "awaiting_connection",
+                instruction:
+                  "The Connect card is visible. Wait for authorization; do not retry access or ask for credentials.",
+              };
+            }
+            return result;
           }
           if (name === "task_catalog") {
             return taskCatalogFromTool(deps, {

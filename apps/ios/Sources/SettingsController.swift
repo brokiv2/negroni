@@ -290,12 +290,8 @@ final class VoiceSettingsController: ListController {
   }
 }
 
-final class ConnectionsController: ListController, UISearchResultsUpdating,
-  ASWebAuthenticationPresentationContextProviding
-{
+final class ConnectionsController: ListController, UISearchResultsUpdating {
   private var connections: [JSON] = [], catalog: [JSON] = [], query = "", catalogError = false
-  private var authSession: ASWebAuthenticationSession?
-  private var connecting = false
   private let search = UISearchController(searchResultsController: nil)
   init() { super.init(title: "Connections") }
   required init?(coder: NSCoder) { fatalError() }
@@ -418,39 +414,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
     }
   }
   private func connect(_ app: JSON) {
-    guard !connecting, authSession == nil else { return }
-    connecting = true
-    Task {
-      defer { connecting = false }
-      do {
-        let result = try await API.shared.rpc(
-          "connections/begin",
-          [
-            "connectorId": app["connectorId"], "provider": app["slug"],
-          ])
-        guard let url = URL(string: result["authorizationUrl"].string), url.scheme == "https" else {
-          reloadData()
-          return
-        }
-        authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: "negroni") {
-          [weak self] _, error in
-          Task { @MainActor in
-            guard let self else { return }
-            self.authSession = nil
-            if let error {
-              if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
-                self.showError(error)
-              }
-              return
-            }
-            self.finishConnection(result["connectionId"])
-          }
-        }
-        authSession?.presentationContextProvider = self
-        authSession?.prefersEphemeralWebBrowserSession = false
-        if authSession?.start() != true { authSession = nil }
-      } catch { showError(error) }
-    }
+    presentConnection(app) { [weak self] _ in self?.reloadData() }
   }
   private func finishConnection(_ id: JSON) {
     Task {
@@ -459,9 +423,6 @@ final class ConnectionsController: ListController, UISearchResultsUpdating,
         reloadData()
       } catch { showError(error, retry: { [weak self] in self?.finishConnection(id) }) }
     }
-  }
-  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-    view.window!
   }
 }
 

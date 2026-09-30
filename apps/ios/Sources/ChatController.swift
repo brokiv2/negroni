@@ -32,6 +32,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private var olderCursor: JSON = .null
   private let connection = UIButton(type: .system)
   private let identity = UIButton(type: .system)
+  private var previousViewportHeight: CGFloat = 0
+  private var connectedApps: [JSON] = []
   private var active = false
   var notificationThreadID: String { snapshot["threadId"].string }
   init(target: JSON, title: String? = nil) {
@@ -52,7 +54,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     table.estimatedRowHeight = 140
     table.rowHeight = UITableView.automaticDimension
     table.register(MessageCell.self, forCellReuseIdentifier: "message")
-    table.contentInset = UIEdgeInsets(top: 14, left: 0, bottom: 14, right: 0)
+    table.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
     table.refreshControl = UIRefreshControl()
     table.refreshControl?.addTarget(self, action: #selector(refreshOlder), for: .valueChanged)
     view.addSubview(table)
@@ -163,13 +165,15 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       navigationItem.titleView = titleView
     }
     let menu = UIMenu(children: [
-      UIAction(title: "Ongoing work", image: UIImage(systemName: "clock.arrow.circlepath")) { [weak self] _ in
+      UIAction(title: "Ongoing work", image: UIImage(systemName: "clock.arrow.circlepath")) {
+        [weak self] _ in
         guard let self else { return }
-        self.navigationController?.pushViewController(AssistantWorkController(target: self.target), animated: true)
+        self.navigationController?.pushViewController(
+          AssistantWorkController(target: self.target), animated: true)
       },
       UIAction(title: "Models", image: UIImage(systemName: "cpu")) { [weak self] _ in
         self?.navigationController?.pushViewController(ModelsController(), animated: true)
-      }
+      },
     ])
     navigationItem.rightBarButtonItem = UIBarButtonItem(
       image: UIImage(systemName: "ellipsis"), menu: menu)
@@ -196,6 +200,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       await self?.refreshIdentity()
       await self?.loadModels()
       await self?.refreshComputer()
+      await self?.refreshConnectedApps()
       var ticks = 0
       while !Task.isCancelled {
         try? await Task.sleep(for: .seconds(4))
@@ -206,6 +211,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
         if ticks % 5 == 0 {
           await self?.refreshIdentity()
           await self?.refreshComputer()
+          await self?.refreshConnectedApps()
         }
       }
     }
@@ -331,6 +337,17 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
     table.layoutIfNeeded()
     if nearBottom || first { scrollToEnd(animated: false) }
+  }
+  override func viewDidLayoutSubviews() {
+    super.viewDidLayoutSubviews()
+    let height = table.bounds.height
+    if previousViewportHeight > 0, abs(height - previousViewportHeight) > 1,
+      !table.isDragging, !table.isDecelerating,
+      table.contentSize.height - table.contentOffset.y - previousViewportHeight < 120
+    {
+      scrollToEnd(animated: false)
+    }
+    previousViewportHeight = height
   }
   private func scrollToEnd(animated: Bool) {
     if !messages.isEmpty {
@@ -574,6 +591,37 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
   }
 
+  private func refreshConnectedApps() async {
+    guard let result = try? await API.shared.rpc("connections/list"), !Task.isCancelled else {
+      return
+    }
+    let current = result.array.filter { $0["status"].string == "connected" }
+    if current != connectedApps {
+      connectedApps = current
+      table.reloadData()
+    }
+  }
+  private func connectApp(message: JSON, block: JSON) {
+    let app = block.merging([
+      "connectorId": block["connectorId"].isNull ? "composio" : block["connectorId"]
+    ])
+    presentConnection(app) { [weak self] account in
+      guard let self else { return }
+      connectedApps.removeAll { $0["id"] == account["id"] }
+      connectedApps.append(account)
+      table.reloadData()
+      // The stable nonce makes network retries and repeated taps safe. Preserve any
+      // draft and attachments: authorization is not a composer send.
+      if let continuation = ConnectionIntent.continuation(
+        message: message, block: block, target: target)
+      {
+        _ = try await API.shared.rpc(
+          "threads/send", continuation.merging(threadModel.map { ["model": $0] } ?? [:]))
+      }
+      try await refresh()
+    }
+  }
+
   private func openActivity() {
     let current = snapshot["run"]["id"].string
     let runID = current.isEmpty ? activities.last?["runId"].string ?? "" : current
@@ -739,11 +787,12 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let cell =
       tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
     cell.configure(
-      message, target: target,
+      message, target: target, connections: connectedApps,
       open: { [weak self] block in
         self?.navigationController?.pushViewController(
           AttachmentController(target: self?.target ?? [:], block: block), animated: true)
-      }, answer: { [weak self] block in self?.answer(message, block) })
+      }, answer: { [weak self] block in self?.answer(message, block) },
+      connect: { [weak self] block in self?.connectApp(message: message, block: block) })
     return cell
   }
   func tableView(
@@ -761,7 +810,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
 }
 
 final class MessageCell: UITableViewCell {
-  private let bubble = UIView(), stack = Theme.stack(spacing: 10)
+  private let bubble = UIView(), stack = Theme.stack(spacing: 8)
   private var leading: NSLayoutConstraint!, trailing: NSLayoutConstraint!
   private var imageTasks: [Task<Void, Never>] = []
   override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -772,11 +821,12 @@ final class MessageCell: UITableViewCell {
     contentView.addSubview(bubble)
     bubble.translatesAutoresizingMaskIntoConstraints = false
     bubble.addSubview(stack)
-    stack.pin(to: bubble, inset: 14)
+    stack.isLayoutMarginsRelativeArrangement = true
+    stack.pin(to: bubble)
     leading = bubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16)
     trailing = bubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -32)
     NSLayoutConstraint.activate([
-      leading, trailing, bubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+      leading, trailing, bubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
       bubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
     ])
   }
@@ -787,15 +837,21 @@ final class MessageCell: UITableViewCell {
     imageTasks = []
   }
   func configure(
-    _ message: JSON, target: JSON, open: @escaping (JSON) -> Void, answer: @escaping (JSON) -> Void
+    _ message: JSON, target: JSON, connections: [JSON], open: @escaping (JSON) -> Void,
+    answer: @escaping (JSON) -> Void,
+    connect: @escaping (JSON) -> Void
   ) {
     imageTasks.forEach { $0.cancel() }
     imageTasks = []
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     let user = message["role"].string == "user"
-    bubble.backgroundColor = user ? Theme.userBubble : Theme.secondary
+    bubble.backgroundColor = user ? Theme.userBubble : .clear
+    stack.directionalLayoutMargins =
+      user
+      ? .init(top: 10, leading: 14, bottom: 10, trailing: 14)
+      : .init(top: 8, leading: 0, bottom: 8, trailing: 0)
     leading.constant = user ? 48 : 16
-    trailing.constant = user ? -16 : -32
+    trailing.constant = -16
     for block in ThreadLogic.visibleBlocks(message) {
       switch block["kind"].string {
       case "text", "progress", "ask", "channel_message":
@@ -813,6 +869,41 @@ final class MessageCell: UITableViewCell {
         if block["kind"].string == "ask" && block["status"].string != "answered" {
           stack.addArrangedSubview(Theme.button("Reply", action: { answer(block) }))
         }
+      case "app_connect":
+        let row = Theme.stack(.horizontal, spacing: 10)
+        row.alignment = .center
+        let icon = UIImageView(image: UIImage(systemName: "app"))
+        icon.contentMode = .scaleAspectFit
+        NSLayoutConstraint.activate([
+          icon.widthAnchor.constraint(equalToConstant: 28),
+          icon.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        row.addArrangedSubview(icon)
+        let name = Theme.label(block["name"].string, style: .headline)
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(name)
+        let connected = connections.contains {
+          $0["provider"] == block["provider"]
+            && $0["connectorId"]
+              == (block["connectorId"].isNull ? "composio" : block["connectorId"])
+        }
+        let button = Theme.button(
+          connected ? "Connected" : "Connect",
+          action: { connect(block.merging(["status": connected ? "connected" : "pending"])) })
+        button.isEnabled = !connected || !block["requestId"].string.isEmpty
+        row.addArrangedSubview(button)
+        stack.addArrangedSubview(row)
+        imageTasks.append(
+          Task {
+            let image = await ImageStore.shared.connectionImage(
+              block["logo"].string,
+              request: [
+                "connectorId": block["connectorId"].isNull ? "composio" : block["connectorId"],
+                "provider": block["provider"],
+              ])
+            guard !Task.isCancelled else { return }
+            if let image { icon.image = image }
+          })
       case "subagent", "child_bot", "cloud_agent":
         let detail = [
           block["name"].string, block["title"].string, block["result"].string,
@@ -873,8 +964,8 @@ enum Markdown {
     for block in MarkdownDocument.blocks(value) {
       if result.length > 0 { result.append(NSAttributedString(string: "\n")) }
       let paragraph = NSMutableParagraphStyle()
-      paragraph.lineSpacing = 3
-      paragraph.paragraphSpacing = 9
+      paragraph.lineSpacing = 2
+      paragraph.paragraphSpacing = block.kind == "list" ? 3 : 7
       var font = UIFont.preferredFont(forTextStyle: style)
       if block.kind == "heading" {
         font = UIFont.preferredFont(

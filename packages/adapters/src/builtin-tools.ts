@@ -144,6 +144,32 @@ const scheduleCreateInputSchema = {
 
 export const builtinAgentTools: ConnectorTool[] = [
   {
+    name: "search_apps",
+    description:
+      "Find available app connections by app name (use the canonical app name, e.g. Granola). When the user asks for data in an app and no connected tool is available, search here before asking them to visit Settings. Send only the app name, never the user's private query.",
+    readOnly: true,
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "request_app_connection",
+    description:
+      "Show a native Connect card in this conversation for an app needed for the user's current request. Use exact connectorId and provider slug from search_apps. This only offers authorization; it does not grant access. If pending, stop trying to access that app and wait for the user to connect. Do not send them to Settings or ask for credentials in chat. Use existing connected tools when already connected.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        connectorId: { type: "string" },
+        provider: { type: "string" },
+      },
+      required: ["connectorId", "provider"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "computer_observe",
     description:
       "Capture the current screen of this bot's computer. Returns frame metadata and an image. Observe before coordinate-based actions and whenever another actor may have changed the desktop.",

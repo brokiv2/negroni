@@ -21,7 +21,7 @@ export function filterBuiltinToolsForRun<T extends { name: string }>(
     (tool) =>
       (!(runTrigger === "routine" || runTrigger === "work") || tool.name !== "schedule_create") &&
       (["user", "follow_up"].includes(runTrigger) ||
-        !["work_create", "work_control"].includes(tool.name)),
+        !["work_create", "work_control", "request_app_connection"].includes(tool.name)),
   );
 }
 
