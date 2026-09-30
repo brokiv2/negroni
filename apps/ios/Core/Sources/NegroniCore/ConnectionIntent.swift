@@ -1,6 +1,14 @@
 import Foundation
 
 public enum ConnectionIntent {
+  public static func existingAccount(app: JSON, accounts: [JSON], reuseConnected: Bool) -> JSON? {
+    guard reuseConnected else { return nil }
+    return accounts.first {
+      $0["connectorId"] == app["connectorId"] && $0["provider"] == app["provider"]
+        && $0["status"].string == "connected"
+    }
+  }
+
   /// The original question remains the reply target even after other messages or
   /// pagination. Replaying this receipt never starts a second continuation run.
   public static func continuation(message: JSON, block: JSON, target: JSON) -> JSON? {

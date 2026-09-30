@@ -7,6 +7,7 @@ final class AppConnectionController: UIViewController,
   ASWebAuthenticationPresentationContextProviding
 {
   private let app: JSON
+  private let reuseConnected: Bool
   private let onConnected: (JSON) async throws -> Void
   private let status = Theme.label("", style: .callout, color: Theme.muted)
   private lazy var connectButton = Theme.button("Connect", primary: true) { [weak self] in
@@ -24,8 +25,9 @@ final class AppConnectionController: UIViewController,
       isModalInPresentation = busy
     }
   }
-  init(app: JSON, onConnected: @escaping (JSON) async throws -> Void) {
+  init(app: JSON, reuseConnected: Bool, onConnected: @escaping (JSON) async throws -> Void) {
     self.app = app
+    self.reuseConnected = reuseConnected
     self.onConnected = onConnected
     super.init(nibName: nil, bundle: nil)
   }
@@ -94,10 +96,10 @@ final class AppConnectionController: UIViewController,
           return
         }
         let accounts = try await API.shared.rpc("connections/list").array
-        if let existing = accounts.first(where: {
-          $0["connectorId"] == app["connectorId"] && $0["provider"] == provider
-            && $0["status"].string == "connected"
-        }) {
+        if let existing = ConnectionIntent.existingAccount(
+          app: app.merging(["provider": provider]), accounts: accounts,
+          reuseConnected: reuseConnected)
+        {
           try await finish(existing)
           return
         }
@@ -178,8 +180,11 @@ final class AppConnectionController: UIViewController,
 }
 
 extension UIViewController {
-  func presentConnection(_ app: JSON, onConnected: @escaping (JSON) async throws -> Void) {
-    let controller = AppConnectionController(app: app, onConnected: onConnected)
+  func presentConnection(
+    _ app: JSON, reuseConnected: Bool = true, onConnected: @escaping (JSON) async throws -> Void
+  ) {
+    let controller = AppConnectionController(
+      app: app, reuseConnected: reuseConnected, onConnected: onConnected)
     let navigation = UINavigationController(rootViewController: controller)
     navigation.modalPresentationStyle = .pageSheet
     navigation.sheetPresentationController?.detents = [.medium(), .large()]

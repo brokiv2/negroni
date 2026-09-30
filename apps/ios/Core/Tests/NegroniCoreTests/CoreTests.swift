@@ -3,6 +3,22 @@ import XCTest
 @testable import NegroniCore
 
 final class CoreTests: XCTestCase {
+  func testChatReusesTheExactAccountWhileSettingsCanAddAnother() {
+    let app: JSON = ["connectorId": "catalog", "provider": "notes"]
+    let connected = app.merging(["id": "account", "status": "connected"])
+    XCTAssertEqual(
+      ConnectionIntent.existingAccount(app: app, accounts: [connected], reuseConnected: true),
+      connected)
+    XCTAssertNil(
+      ConnectionIntent.existingAccount(app: app, accounts: [connected], reuseConnected: false))
+    XCTAssertNil(
+      ConnectionIntent.existingAccount(
+        app: app, accounts: [connected.merging(["status": "revoked"])], reuseConnected: true))
+    XCTAssertNil(
+      ConnectionIntent.existingAccount(
+        app: app, accounts: [connected.merging(["connectorId": "other"])], reuseConnected: true))
+  }
+
   func testConnectionCardsAreVisibleAndResumeTheOriginalQuestionOnce() {
     let block: JSON = [
       "kind": "app_connect", "requestId": "run", "sourceMessageId": "original",

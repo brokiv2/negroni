@@ -414,7 +414,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating {
     }
   }
   private func connect(_ app: JSON) {
-    presentConnection(app) { [weak self] _ in self?.reloadData() }
+    presentConnection(app, reuseConnected: false) { [weak self] _ in self?.reloadData() }
   }
   private func finishConnection(_ id: JSON) {
     Task {
