@@ -19,6 +19,7 @@ Scrolling follows new content while reading the latest response, preserves an ol
 - Adapter, database and web type checks passed; production web build succeeded.
 - Visually exercised on an iPhone simulator with an isolated local backend and fake accounts: inline choice selection and continuation; working avatar across refreshes; screen keyboard; scrolling away and returning; weather card; editing email subject/body and submitting the exact edits.
 - Email review tests cover malformed recipients, changed account, cancellation, request failure/retry, and stopping before mail connector execution.
+- An additional executor integration check against isolated PostgreSQL persisted a weather card with a completed run and an email-review card with a waiting-input run; no mail connector was invoked.
 - The approval test fixture was updated for the routing and feed reads added in earlier releases; existing approval cases pass again.
 
 Simulator fixtures establish layout and request/state behavior. Physical-device animation performance, fresh live weather retrieval, model tool selection and real mailbox delivery are separate checks; no real mail was sent during this QA pass.
@@ -31,4 +32,4 @@ Apple reference pages for the native interaction patterns: [progress indicators]
 
 ## Release
 
-Native version 1.0.0 (40). Apple processing and installed-runtime verification are recorded after delivery.
+Native version 1.0.0 (40) was uploaded on 2026-09-30. Apple processing is **VALID** and the internal beta state is **IN_BETA_TESTING**. The installed Mac backend and desktop web bundle were updated and their health/content checks passed. No database schema migration was required; a database backup was verified before the runtime restart.
