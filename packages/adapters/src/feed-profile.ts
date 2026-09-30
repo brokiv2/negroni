@@ -21,6 +21,11 @@ export async function mutateFeedProfile(
   prisma: PrismaClient,
   scope: Scope,
   change: (p: FeedProfile) => FeedProfile,
+  /**
+   * Background learning adds topics while its own research cycle is running. A new topic
+   * does not invalidate that cycle's findings, so it must not cancel it or bump the version.
+   */
+  options: { preserveResearch?: boolean } = {},
 ) {
   scope = { spaceId: scope.spaceId, userId: scope.userId };
   return prisma.$transaction(async (tx) => {
@@ -28,7 +33,8 @@ export async function mutateFeedProfile(
     const row = await tx.feedProfile.findUnique({ where: { spaceId_userId: scope } });
     const previous = FeedProfileSchema.parse(row?.data ?? {});
     const data = FeedProfileSchema.parse(change(previous));
-    const scopeChanged = researchScope(previous) !== researchScope(data);
+    const scopeChanged =
+      !options.preserveResearch && researchScope(previous) !== researchScope(data);
     if (scopeChanged && row?.activeResearchId) {
       const run = await tx.run.findFirst({
         where: {

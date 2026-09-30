@@ -240,6 +240,7 @@ import {
   selectCompactedHistory,
   shouldEnqueueCompaction,
 } from "./history-compaction.js";
+import { learnInterestsInBackground } from "./interest-learning.js";
 import {
   assertConnectorToolArgs,
   CATALOG_EXECUTE,
@@ -1685,7 +1686,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               });
             };
-            // The first pass (triage) runs on the cheapest connected model;
+            // The first pass (triage, interest learning) runs on the cheapest connected model;
             // only its shortlist reaches the conversation model selected above.
             const triageModel = await resolveBackgroundModel({
               routing,
@@ -1709,6 +1710,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
               runId,
               workload,
             } as const;
+            try {
+              await learnInterestsInBackground({
+                prisma: deps.prisma,
+                runtime: deps.runtime,
+                researchId: run.researchId,
+                model: triageModel,
+                request: researchRequest,
+                context,
+                onUsage: recordUsage,
+              });
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              getLogger().warn("background interest learning skipped", {
+                error: redactSecrets(
+                  error instanceof Error ? error.message : String(error),
+                  runSecrets,
+                ),
+              });
+            }
             await executeResearch({
               registry: deps.connectors,
               memory: deps.memory,
