@@ -39,7 +39,11 @@ Live Gmail verification resolved identity for three active connections and succe
 
 An end-to-end live background cycle completed, recorded ten source fingerprints and produced no finding worth surfacing. A regression test covers graceful exhaustion of the finding allowance: valid work is retained rather than failing the whole cycle.
 
-Physical-device animation quality remains a separate check. Release processing is recorded after verification.
+Physical-device animation quality remains a separate check.
+
+## Release
+
+Native version 1.0.0 (41) is **VALID** and **IN_BETA_TESTING** in App Store Connect, with export compliance complete. The installed Mac backend and desktop bundle were updated; backend health and the served bundle hash matched. Live background checks and interest learning were enabled for verified supported sources. No database schema migration was required.
 
 ## Visible copy
 
