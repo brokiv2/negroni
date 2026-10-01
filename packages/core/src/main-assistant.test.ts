@@ -71,6 +71,16 @@ describe("coordinationInstructionFor", () => {
     expect(prompt).toMatch(/only when a decision or an approval is genuinely needed/);
   });
 
+  it("routes long work through async message_bot and keeps run_subagent for short in-turn work", () => {
+    for (const prompt of [PERSONAL_ASSISTANT_INSTRUCTION, MAIN_ASSISTANT_INSTRUCTION]) {
+      expect(prompt).toMatch(/long[^.]*multi-step[^.]*message_bot/);
+      expect(prompt).toMatch(/end your turn/);
+      expect(prompt).toMatch(/short[^.]*within this reply/);
+      expect(prompt).toMatch(/review[^.]*against the original request/);
+    }
+    expect(PERSONAL_ASSISTANT_INSTRUCTION).toMatch(/status update is progress, not completion/);
+  });
+
   it("keeps the Team roles for chat runs", () => {
     expect(coordinationInstructionFor({ ...base, interactionMode: "chat" })).toBe(
       MAIN_ASSISTANT_INSTRUCTION,

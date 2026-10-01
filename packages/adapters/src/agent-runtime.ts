@@ -38,6 +38,37 @@ export function parseAgentModelRouting(value: unknown): AgentModelRouting {
   return result;
 }
 
+/**
+ * How a conversation run should hand off work, given the tools it actually has. Long
+ * work goes to a teammate asynchronously so this conversation stays free; a temporary
+ * helper blocks the turn, so it is only for short work whose answer is needed now.
+ * A tool that is not available is never suggested.
+ */
+export function delegationRoutingNote(
+  tools: readonly { name: string }[],
+  task: AgentModelRoute,
+): string {
+  const has = (name: string) => tools.some((tool) => tool.name === name);
+  const helper = has("run_subagent")
+    ? `use run_subagent with model_provider=${JSON.stringify(task.provider)} and model_id=${JSON.stringify(task.modelId)}`
+    : "";
+  if (has("message_bot")) {
+    return [
+      "For long-running or multi-step work, hand a focused task to a relevant teammate with message_bot, tell the user briefly what you started, and end your turn; the result wakes you here for review.",
+      helper
+        ? `Only for a short piece of analysis whose answer you need within this reply, ${helper}.`
+        : "",
+      "Keep brief conversation and the final synthesis here.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (helper) {
+    return `For a short focused piece of analysis inside this reply, ${helper}. Keep brief conversation and the final synthesis here.`;
+  }
+  return "";
+}
+
 /** Credentials are always resolved in the active user/space, never in the routing file. */
 export class RoutedAgentRuntime implements AgentRuntime {
   constructor(
@@ -64,11 +95,13 @@ export class RoutedAgentRuntime implements AgentRuntime {
     };
     const route = request.workload === "conversation" ? routes.conversation : routes.task;
     const model = request.modelRoutingApplied ? request.model : await resolve(route);
-    const task = routes.task;
-    const instructions =
-      task && request.workload === "conversation"
-        ? `${request.instructions}\nFor complex analysis, implementation or multi-step work, delegate a focused task with run_subagent using model_provider=${JSON.stringify(task.provider)} and model_id=${JSON.stringify(task.modelId)}. Keep brief conversation and the final synthesis here. Reuse a lasting specialist for recurring project work.`
-        : request.instructions;
+    const routingNote =
+      routes.task && request.workload === "conversation"
+        ? delegationRoutingNote(request.tools, routes.task)
+        : "";
+    const instructions = routingNote
+      ? `${request.instructions}\n${routingNote}`
+      : request.instructions;
     yield* this.runtime.run(
       {
         ...request,
