@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import json, os, pathlib, plistlib, subprocess, sys, tempfile, urllib.parse, zipfile
-ipa, build = sys.argv[1:]
+ipa, build, version = sys.argv[1:]
 with zipfile.ZipFile(ipa) as archive:
     roots={name.split('/')[1] for name in archive.namelist() if name.startswith('Payload/') and '.app/' in name}
     assert len(roots)==1, 'Expected one application'
@@ -9,6 +9,7 @@ with zipfile.ZipFile(ipa) as archive:
     config=plistlib.loads(archive.read(root+'ClientConfiguration.plist'))
     assert info['CFBundleIdentifier']=='com.artempaskov.aisy'
     assert info['CFBundleVersion']==build
+    assert info['CFBundleShortVersionString']==version, 'Bundled version differs from the release version'
     assert info['ITSAppUsesNonExemptEncryption'] is False
     assert info.get('CFBundleIcons',{}).get('CFBundlePrimaryIcon',{}).get('CFBundleIconName')=='AppIcon'
     assert config['APIBaseURL']==os.environ['NEGRONI_API_URL'].strip().rstrip('/'), 'Bundled gateway differs from the release configuration'
@@ -26,4 +27,4 @@ with zipfile.ZipFile(ipa) as archive:
         assert entitlements.get('get-task-allow') is False
         assert entitlements.get('aps-environment')=='production'
         assert entitlements.get('com.apple.developer.applesignin')==['Default']
-    print(json.dumps({'bundle':info['CFBundleIdentifier'],'version':info['CFBundleShortVersionString'],'build':build,'nativeUIKit':True,'productionGateway':True,'storeProfile':True,'encryptionCompliance':True,'ipaBytes':os.path.getsize(ipa)}))
+    print(json.dumps({'bundle':info['CFBundleIdentifier'],'version':version,'build':build,'nativeUIKit':True,'productionGateway':True,'storeProfile':True,'encryptionCompliance':True,'ipaBytes':os.path.getsize(ipa)}))

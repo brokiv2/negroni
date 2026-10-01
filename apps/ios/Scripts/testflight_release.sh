@@ -25,7 +25,9 @@ TEAM_ID="${TEAM_ID:-$(sed -n 's/.*DEVELOPMENT_TEAM = \([^;]*\);/\1/p' "$IOS_DIR/
 : "${ASC_ISSUER_ID:?Set ASC_ISSUER_ID}"
 ASC_KEY_PATH="${ASC_KEY_PATH:-$HOME/Downloads/AuthKey_${ASC_KEY_ID}.p8}"
 [[ -f "$ASC_KEY_PATH" ]] || { echo 'App Store Connect signing key is missing'; exit 1; }
-BUILD_NUMBER="${BUILD_NUMBER:-41}"
+BUILD_NUMBER="${BUILD_NUMBER:-42}"
+MARKETING_VERSION="${MARKETING_VERSION:-$(sed -n "s/^ *MARKETING_VERSION: '\(.*\)'/\1/p" "$IOS_DIR/project.yml" | head -n 1)}"
+: "${MARKETING_VERSION:?Set MARKETING_VERSION}"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/Library/Developer/Negroni-Releases/native-build$BUILD_NUMBER}"
 export OUTPUT_DIR
 ARCHIVE="$OUTPUT_DIR/Negroni.xcarchive"
@@ -43,7 +45,7 @@ PY
 archive() {
   [[ ! -e "$ARCHIVE" ]] || { echo 'Archive already exists; choose a new OUTPUT_DIR.'; exit 1; }
   prepare
-  xcodebuild -project "$IOS_DIR/Negroni.xcodeproj" -scheme Negroni -configuration Release -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath "$OUTPUT_DIR/DerivedData" -allowProvisioningUpdates "${AUTH[@]}" DEVELOPMENT_TEAM="$TEAM_ID" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" archive > "$OUTPUT_DIR/archive.log" 2>&1
+  xcodebuild -project "$IOS_DIR/Negroni.xcodeproj" -scheme Negroni -configuration Release -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" -derivedDataPath "$OUTPUT_DIR/DerivedData" -allowProvisioningUpdates "${AUTH[@]}" DEVELOPMENT_TEAM="$TEAM_ID" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="$MARKETING_VERSION" archive > "$OUTPUT_DIR/archive.log" 2>&1
   echo 'Native iOS archive succeeded.'
 }
 export_app() {
@@ -57,7 +59,7 @@ PY
   echo 'IPA exported.'
 }
 inspect() {
-  python3 "$IOS_DIR/Scripts/inspect-release.py" "$IPA" "$BUILD_NUMBER"
+  python3 "$IOS_DIR/Scripts/inspect-release.py" "$IPA" "$BUILD_NUMBER" "$MARKETING_VERSION"
 }
 validate() {
   inspect
