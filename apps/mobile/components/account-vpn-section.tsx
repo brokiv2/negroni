@@ -1,18 +1,22 @@
 import type { HostVpnStatus } from "@rakazo/contracts";
 import { switchHostVpn } from "@rakazo/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Switch, Text, View } from "react-native";
-import { rpc } from "../../../lib/api";
-import { t } from "../../../lib/i18n";
-import { colors, s, vt } from "../theme";
+import { StyleSheet, Switch, Text, View } from "react-native";
+import { rpc } from "../lib/api";
+import { mobileTokens } from "../lib/appearance";
+import { useI18n } from "../lib/i18n";
+import { native, useThemedStyles } from "../lib/native";
 
 const VPN_READ_TIMEOUT_MS = 5_000;
 
 /**
- * The host Mac's WARP switch. Only the deployment owner gets a status back, and
- * a Mac without warp-cli reports `unavailable`; both hide the row.
+ * Settings → Computer: the host Mac's WARP switch. Only the deployment owner
+ * gets a status back, and a Mac without warp-cli reports `unavailable`; both
+ * hide the whole section.
  */
-export function VesperVpnRow() {
+export function AccountVpnSection() {
+  const { t } = useI18n();
+  const styles = useThemedStyles(createStyles);
   const [status, setStatus] = useState<HostVpnStatus | null>(null);
   const [target, setTarget] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +65,7 @@ export function VesperVpnRow() {
         if (!signal.aborted) setTarget(null);
       }
     },
-    [readStatus, target],
+    [readStatus, target, t],
   );
 
   if (!status || (status.state === "unavailable" && target === null)) return null;
@@ -72,22 +76,12 @@ export function VesperVpnRow() {
   const value = target ?? status.state !== "disconnected";
 
   return (
-    <View style={{ gap: 6 }}>
-      <View
-        style={[
-          s.between,
-          {
-            gap: 12,
-            minHeight: vt.size.touchTarget,
-            paddingHorizontal: 14,
-            borderRadius: vt.radius.card,
-            backgroundColor: colors.card,
-          },
-        ]}
-      >
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={[s.text, { fontWeight: "500" }]}>{t("WARP VPN")}</Text>
-          {switching ? <Text style={s.small}>{t("Switching…")}</Text> : null}
+    <View accessibilityLabel={t("Computer")} style={styles.section}>
+      <Text style={styles.title}>{t("Computer")}</Text>
+      <View style={styles.row}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.label}>{t("WARP VPN")}</Text>
+          {switching ? <Text style={styles.detail}>{t("Switching…")}</Text> : null}
         </View>
         <Switch
           accessibilityLabel={t("WARP VPN")}
@@ -97,10 +91,47 @@ export function VesperVpnRow() {
         />
       </View>
       {error ? (
-        <Text accessibilityRole="alert" style={[s.small, { color: colors.danger }]}>
+        <Text accessibilityRole="alert" style={styles.error}>
           {error}
         </Text>
       ) : null}
     </View>
   );
+}
+
+/** Mirrors the Account screen's section card, title and switch row. */
+function createStyles() {
+  const tokens = mobileTokens();
+  return StyleSheet.create({
+    section: {
+      borderRadius: 16,
+      backgroundColor: native.fill,
+      padding: 18,
+      gap: 4,
+    },
+    title: {
+      color: native.label,
+      fontSize: 17,
+      fontWeight: "600",
+    },
+    row: {
+      minHeight: 54,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+    label: {
+      color: native.label,
+      fontSize: 15,
+    },
+    detail: {
+      color: native.secondaryLabel,
+      fontSize: 12.5,
+      marginTop: 2,
+    },
+    error: {
+      color: tokens.destructive,
+      fontSize: 14,
+    },
+  });
 }

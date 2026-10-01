@@ -5,14 +5,11 @@ import { Switch } from "@rakazo/ui-web";
 import { useEffect, useId, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
 
-/**
- * The host Mac's WARP switch for the deployment owner. Hidden when the server
- * refuses the status read or the Mac has no warp-cli.
- */
-export function HostVpnSwitch() {
+/** The host Mac's WARP switch for the deployment owner. Hidden once WARP reports unavailable. */
+export function HostVpnSwitch({ initialStatus }: { initialStatus: HostVpnStatus }) {
   const { t } = useLingui();
   const id = useId();
-  const [status, setStatus] = useState<HostVpnStatus | null>(null);
+  const [status, setStatus] = useState<HostVpnStatus>(initialStatus);
   const [target, setTarget] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -20,12 +17,6 @@ export function HostVpnSwitch() {
   useEffect(() => {
     const controller = new AbortController();
     abortRef.current = controller;
-    rpc.computer
-      .vpnStatus(undefined, { signal: controller.signal })
-      .then((next) => {
-        if (!controller.signal.aborted) setStatus(next);
-      })
-      .catch(() => undefined);
     return () => controller.abort();
   }, []);
 
@@ -55,14 +46,14 @@ export function HostVpnSwitch() {
     }
   }
 
-  if (!status || (status.state === "unavailable" && target === null)) return null;
+  if (status.state === "unavailable" && target === null) return null;
 
   // WARP can sit in "connecting" on a bad network; keep the switch usable so it can be turned off.
   const busy = target !== null || status.switching;
   const switching = busy || status.state === "connecting";
 
   return (
-    <div data-testid="host-vpn" className="mt-4">
+    <div data-testid="host-vpn" className="mt-3">
       <div className="flex items-center justify-between gap-3">
         <label htmlFor={id} className="text-[13.5px] text-foreground">
           <Trans>WARP VPN</Trans>

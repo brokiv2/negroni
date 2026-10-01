@@ -15,6 +15,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { AccountVpnSection } from "../components/account-vpn-section";
 import { useAvatarStyle } from "../components/avatar-style";
 import { BotAvatar } from "../components/bot-avatar";
 import type { MobileBot, MobileMe } from "../lib/api";
@@ -541,6 +542,8 @@ export default function Account() {
           <Text style={styles.settingsTitle}>{t("Voice")}</Text>
           <Text style={styles.chevron}>›</Text>
         </Pressable>
+
+        {me?.isDeploymentOwner ? <AccountVpnSection /> : null}
 
         <Pressable
           accessibilityRole="button"

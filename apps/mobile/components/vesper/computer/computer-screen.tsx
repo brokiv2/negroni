@@ -31,7 +31,6 @@ import {
 import { Button, ErrorNotice, IconButton } from "../kit";
 import { colors, s, vt } from "../theme";
 import { VesperScreenPlaceholder, VesperScreenView } from "./screen-view";
-import { VesperVpnRow } from "./vpn-row";
 import { VesperWorkspaceFiles } from "./workspace-files";
 
 /**
@@ -221,7 +220,6 @@ export function VesperComputerScreen({
       </View>
 
       <View style={{ flex: 1, paddingHorizontal: vt.space.screenPaddingHorizontal, gap: 14 }}>
-        <VesperVpnRow />
         <ErrorNotice error={error} />
         {tab === "screen" ? (
           <>
