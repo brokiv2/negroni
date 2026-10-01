@@ -34,6 +34,7 @@ import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
+  BotMessageIntent,
   BotSecretName,
   botSecretSubmissionSchema,
   EmailDraftWidget,
@@ -56,6 +57,8 @@ import {
   containsSecret,
   coordinationInstructionFor,
   createStreamingRedactor,
+  DELEGATED_NO_RESULT_TEXT,
+  delegationReviewPointer,
   endsSentence,
   expandSkillReferencesInPrompt,
   formatSkillRunPrompt,
@@ -228,6 +231,7 @@ import { observationToolResult, parseComputerActions } from "./computer-tools.js
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
+import { delegationRunGate, enqueueDelegationRun, settleDelegationReview } from "./delegations.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { feedProfileInstruction, getFeedProfile, learnFeedInterest } from "./feed-profile.js";
 import { executeFeedResearch, researchRunAllowed } from "./feed-research.js";
@@ -1459,19 +1463,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
           run.sourceMessageId,
         );
         const turnBlocks = currentTurnMessage?.blocks;
-        const allowSilentPeerMessage = botMessageAllowsSilence(
-          peerMessage?.intent,
-          peerMessage?.repliesToRequest,
-        );
-        const allowSilentEmptyRun =
-          allowSilentPeerMessage || messagingChannelRun || runAllowsSilentEmpty(run.trigger);
-        const emptyResponseText = peerMessage
-          ? peerMessage.intent === "result" ||
+        // A wake carrying another bot's return is answered by this bot's own review or not
+        // at all: padding it with the peer's raw text would show unreviewed content as done.
+        const peerReturn =
+          !!peerMessage &&
+          (peerMessage.intent === "result" ||
+            peerMessage.intent === "blocker" ||
             peerMessage.intent === "status" ||
             peerMessage.intent === "question" ||
-            peerMessage.repliesToRequest
-            ? `Update from ${peerMessage.fromBotName}: ${peerMessage.text}`
-            : "The delegated bot completed its turn without a written summary."
+            peerMessage.repliesToRequest);
+        const reviewPointer =
+          run.trigger === "bot_message" ? delegationReviewPointer(task.delegation) : null;
+        const allowSilentPeerMessage =
+          peerReturn || botMessageAllowsSilence(peerMessage?.intent, peerMessage?.repliesToRequest);
+        const allowSilentEmptyRun =
+          allowSilentPeerMessage || messagingChannelRun || runAllowsSilentEmpty(run.trigger);
+        const emptyResponseText = peerMessage && !peerReturn ? DELEGATED_NO_RESULT_TEXT : undefined;
+        let delegationRetryRunId: string | undefined;
+        const settleReview = reviewPointer
+          ? (reviewText: string | null) => async (tx: Prisma.TransactionClient) => {
+              delegationRetryRunId = (
+                await settleDelegationReview(tx, {
+                  reviewRun: {
+                    id: runId,
+                    spaceId: run.spaceId,
+                    userId: run.userId,
+                    interactionMode: run.interactionMode,
+                  },
+                  pointer: reviewPointer,
+                  reviewText,
+                })
+              ).retryRunId;
+            }
           : undefined;
         const [discovered, currentTurnImages, memoryContext] = await Promise.all([
           discoveredPromise,
@@ -1523,8 +1546,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseFence: fence,
             outcome: "failed",
             error: message,
+            withinTransaction: settleReview?.(null),
           });
           if (!failed) return;
+          await enqueueDelegationRun(deps.jobs, delegationRetryRunId);
           if (failed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(failed.continuationRunId))
@@ -1536,7 +1561,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
               `Could not complete the delegated request: ${message}`,
-              "status",
+              "blocker",
+              { failed: true },
             ).catch((error) => getLogger().error("bot message failure return", error));
           }
           if (run.trigger !== "research" && !failed.continuationRunId) {
@@ -1549,6 +1575,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
         };
+        if (run.trigger === "bot_message") {
+          // Budget, deadline and cancellation are checked before any model call.
+          const gate = await delegationRunGate(deps.prisma, runId);
+          if (!gate.allowed) {
+            getLogger().info("delegated run skipped", { runId, reason: gate.reason });
+            const skipped = await deps.events.finalizeRun({
+              spaceId: run.spaceId,
+              threadId: thread.id,
+              botId: bot.id,
+              runId,
+              taskId: run.taskId,
+              attemptId: attempt.id,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              outcome: "completed",
+              blocks: [],
+            });
+            if (!skipped) return;
+            await deps.prisma.run.updateMany({
+              where: { id: runId, botOutcomeReturnedAt: null },
+              data: { botOutcomeReturnedAt: new Date() },
+            });
+            if (skipped.continuationRunId) {
+              await deps.jobs
+                .enqueue(runContinueJob(skipped.continuationRunId))
+                .catch((error) => getLogger().error("steering continuation enqueue", error));
+            }
+            return;
+          }
+        }
         let routing: ModelRouting | null = null;
         try {
           const member = await deps.prisma.spaceMember.findUnique({
@@ -4011,13 +4067,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 bot_id: args.bot_id ? String(args.bot_id) : undefined,
                 confirm_name: args.confirm_name ? String(args.confirm_name) : undefined,
                 message: redactSecrets(String(args.message ?? ""), runSecrets),
-                intent: args.intent as
-                  | "request"
-                  | "result"
-                  | "question"
-                  | "status"
-                  | "fyi"
-                  | undefined,
+                intent: BotMessageIntent.safeParse(args.intent).success
+                  ? (args.intent as BotMessageIntent)
+                  : undefined,
+                sources: Array.isArray(args.sources)
+                  ? args.sources.map((source) => redactSecrets(String(source), runSecrets))
+                  : undefined,
                 deliveryKey: effectKey,
               },
             );
@@ -4215,15 +4270,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             })
           : history;
         const runtimeHistory = [...historicalContext, ...historyWithImages];
-        // Without a roster a bot only knows the bots it spawned itself.
-        const teammates = thread.groupId
+        // Without a roster a bot only knows the bots it spawned itself. The query includes
+        // this bot so the main-assistant choice sees which root owns the Personal thread.
+        const roster = thread.groupId
           ? []
           : await deps.prisma.bot.findMany({
               where: {
                 spaceId: run.spaceId,
                 userId: run.userId,
                 archivedAt: null,
-                id: { not: bot.id },
                 threads: { some: { kind: "team" } },
               },
               select: {
@@ -4234,10 +4289,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 parentBotId: true,
                 pinned: true,
                 createdAt: true,
+                _count: { select: { threads: { where: { kind: "personal" } } } },
               },
               orderBy: { createdAt: "asc" },
-              take: BOT_DIRECTORY_LIMIT,
+              take: BOT_DIRECTORY_LIMIT + 1,
             });
+        const ownsPersonalThread = (peer: { _count?: { threads: number } }) =>
+          (peer._count?.threads ?? 0) > 0;
+        const teammates = roster.filter((peer) => peer.id !== bot.id).slice(0, BOT_DIRECTORY_LIMIT);
         const botDirectory = thread.groupId ? undefined : renderBotDirectory(teammates);
         const mainAssistantId = thread.groupId
           ? undefined
@@ -4247,12 +4306,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 pinned: bot.pinned,
                 parentBotId: bot.parentBotId,
                 createdAt: isoTimestamp(bot.createdAt),
+                hasPersonalThread:
+                  thread.kind === "personal" ||
+                  roster.some((peer) => peer.id === bot.id && ownsPersonalThread(peer)),
               },
               ...teammates.map((peer) => ({
                 id: peer.id,
                 pinned: peer.pinned,
                 parentBotId: peer.parentBotId,
                 createdAt: isoTimestamp(peer.createdAt),
+                hasPersonalThread: ownsPersonalThread(peer),
               })),
             ])?.id;
         // Runs in the Personal thread take the owner role even when they were
@@ -4682,8 +4745,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   leaseFence: fence,
                   outcome: "completed",
                   blocks: [{ kind: "text", text: stuckText }],
+                  withinTransaction: settleReview?.(null),
                 });
                 if (!stopped) return;
+                await enqueueDelegationRun(deps.jobs, delegationRetryRunId);
                 if (stopped.continuationRunId) {
                   await deps.jobs
                     .enqueue(runContinueJob(stopped.continuationRunId))
@@ -4695,6 +4760,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     { ...run, sourceMessageId: run.sourceMessageId },
                     { id: bot.id, name: bot.name },
                     stuckText,
+                    "blocker",
+                    { failed: true },
                   ).catch((error) => getLogger().error("bot message loop-guard return", error));
                 }
                 runAbortController?.abort();
@@ -4889,9 +4956,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
             throw new Error("refusing to persist a secret in the thread");
           }
           if (!(await renewRunLease(deps, runId, workerId, fence))) return;
+          // Only the model's own words count as a result or a review, never a fallback.
+          const modelText = handedOff
+            ? ""
+            : redactSecrets(
+                completionNotificationBody(silentReply.assembled, silentReply.blocks),
+                runSecrets,
+              );
           const botMessageOutcome =
             run.trigger === "bot_message"
-              ? botMessageOutcomeFromMidTurn(text, midTurnUserTexts)
+              ? botMessageOutcomeFromMidTurn(modelText, midTurnUserTexts)
               : null;
           const completed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
@@ -4905,16 +4979,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
             outcome: "completed",
             blocks,
             markUnread: completionMarksUnread(run.trigger, text),
+            withinTransaction: settleReview?.(modelText),
           });
           if (!completed) return;
+          await enqueueDelegationRun(deps.jobs, delegationRetryRunId);
           if (completed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(completed.continuationRunId))
               .catch((error) => getLogger().error("steering continuation enqueue", error));
           }
           if (botMessageOutcome) {
-            // Prefer the final reply. If the turn only posted mid-turn progress, return that
-            // text explicitly as status. Delivery uses a stable auto-outcome key; mark
+            // Prefer the final reply. Without one the turn returns a blocker, never a
+            // finished result. Delivery uses a stable auto-outcome key; mark
             // botOutcomeReturnedAt only after a successful (or intentionally skipped) return
             // so a crash or failed delivery stays visible to the reconciler.
             await returnBotMessageOutcome(
@@ -4982,8 +5058,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseFence: fence,
             outcome: "failed",
             error: message,
+            withinTransaction: settleReview?.(null),
           });
           if (!failed) return;
+          await enqueueDelegationRun(deps.jobs, delegationRetryRunId);
           if (failed.continuationRunId) {
             await deps.jobs
               .enqueue(runContinueJob(failed.continuationRunId))
@@ -4995,7 +5073,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
               `Could not complete the delegated request: ${message}`,
-              "status",
+              "blocker",
+              { failed: true },
             ).catch((returnError) => getLogger().error("bot message failure return", returnError));
           }
           if (runSendsFinishNotification(run.trigger) && !failed.continuationRunId) {
@@ -5319,7 +5398,7 @@ export function userTurnInstructions(parts: {
     "create_space proposes a new privacy boundary inside the current organization. Use it when the user asks to create a space or separate data between teams or projects. It always pauses for explicit user approval; never claim the space exists before the tool succeeds.",
     "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. Reuse an existing specialist first. Create one for recurring project work, give it durable instructions, and set prompt when it should start an authorized task. Its result returns to this conversation.",
     "update_bot updates this bot's own name (chat header / list label), title, description, avatar, and notifyOnFinish. When the user asks you to rename yourself, change your title or description, change your profile picture, or turn finish notifications on or off, call update_bot — do not claim you changed them without the tool. Pass color for a hex or encoded shape, artifact_id for an image in this space, or use_attached_image when they attached a picture on this message.",
-    "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
+    "run_subagent is a short helper inside this turn only, and this reply waits for it. It is not a bot, has no thread, and does not show in the list. Use it for short parallel work you will summarize here.",
     parts.botDirectory,
     "archive_bot safely archives a bot this bot created, and only that bot. Use it when the user asks to remove that bot or when it is finished and unused. The user can restore it or permanently delete it later. confirm_name must exactly match its name.",
     parts.pluginLine,

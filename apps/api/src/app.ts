@@ -59,6 +59,7 @@ import {
   reconcileAssistantWork,
   reconcileCloudAgents,
   reconcileComputerUpdates,
+  reconcileDelegations,
   reconcileFeedResearch,
   removePiUserSessions,
   SmtpEmailProvider,
@@ -443,6 +444,7 @@ export async function createApp(
         reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
         reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs, notifications }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+        reconcileDelegations: () => reconcileDelegations({ prisma }),
       })
     : undefined;
   reconciler?.start();

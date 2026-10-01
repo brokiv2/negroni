@@ -49,8 +49,40 @@ describe("model profiles", () => {
     await drain(runtime.run({ ...request, workload: "conversation", resolveModel }));
     await drain(runtime.run({ ...request, workload: "task", resolveModel }));
     expect(received.map((r) => r.model.id)).toEqual(["fast", "task"]);
-    expect(received[0]!.instructions).toContain("run_subagent");
     expect((await received[0]!.resolveTaskModel!()).id).toBe("task");
+  });
+  it("sends long work to a teammate asynchronously and keeps helpers for short in-turn work", async () => {
+    const { runtime, received } = fixture();
+    const resolveModel = vi.fn(async (provider: string, id: string) => ({ provider, id }));
+    const tools = [
+      { name: "message_bot", description: "", inputSchema: {} },
+      { name: "run_subagent", description: "", inputSchema: {} },
+    ];
+    await drain(runtime.run({ ...request, workload: "conversation", resolveModel, tools }));
+    const instructions = received[0]!.instructions;
+    expect(instructions).toContain("long-running or multi-step work");
+    expect(instructions).toContain("message_bot");
+    expect(instructions).toContain("end your turn");
+    expect(instructions).toMatch(/Only for a short piece of analysis[^.]*run_subagent/);
+    expect(instructions).toContain('model_id="task"');
+  });
+  it("never suggests a delegation tool the run does not have", async () => {
+    const { runtime, received } = fixture();
+    const resolveModel = vi.fn(async (provider: string, id: string) => ({ provider, id }));
+    await drain(runtime.run({ ...request, workload: "conversation", resolveModel, tools: [] }));
+    await drain(
+      runtime.run({
+        ...request,
+        workload: "conversation",
+        resolveModel,
+        tools: [{ name: "run_subagent", description: "", inputSchema: {} }],
+      }),
+    );
+    await drain(runtime.run({ ...request, workload: "task", resolveModel }));
+    expect(received[0]!.instructions).toBe(request.instructions);
+    expect(received[1]!.instructions).toContain("run_subagent");
+    expect(received[1]!.instructions).not.toContain("message_bot");
+    expect(received[2]!.instructions).toBe(request.instructions);
   });
   it("does not silently fall back when a selected connection is unavailable", async () => {
     const { runtime, received } = fixture();

@@ -1,5 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { isToolActivityBlock } from "@rakazo/core";
+import { isPlaceholderResultText, isToolActivityBlock } from "@rakazo/core";
 
 /** Keep mid-turn progress beats short; prefer a few high-signal updates. */
 export const USER_PROGRESS_MESSAGE_MAX_LENGTH = 500;
@@ -69,14 +69,22 @@ export function finalBlocksAfterMidTurnProgress(
   return blocks;
 }
 
-/** Outcome to return for a bot_message run after mid-turn progress posts. */
+/**
+ * Terminal outcome a delegated run returns. Only a written final answer is a result;
+ * progress beats or a runtime placeholder mean it stopped without one, which is a
+ * blocker the requester must handle, never a finished task.
+ */
 export function botMessageOutcomeFromMidTurn(
   finalText: string,
   midTurnTexts: readonly string[],
-): { text: string; intent: "result" | "status" } | null {
+): { text: string; intent: "result" | "blocker" } {
   const trimmed = finalText.trim();
-  if (trimmed) return { text: trimmed, intent: "result" };
+  if (!isPlaceholderResultText(trimmed)) return { text: trimmed, intent: "result" };
   const midTurn = midTurnTexts.map((part) => part.trim()).filter(Boolean);
-  if (midTurn.length === 0) return null;
-  return { text: midTurn.join("\n\n"), intent: "status" };
+  return {
+    intent: "blocker",
+    text: midTurn.length
+      ? `Ended without a final result. Last progress:\n\n${midTurn.join("\n\n")}`
+      : "Ended without a result.",
+  };
 }

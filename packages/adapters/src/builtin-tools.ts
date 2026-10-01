@@ -912,7 +912,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "run_subagent",
     description:
-      "Run a short-lived helper inside this turn only. It is not a bot: no list entry, no thread, no computer of its own, and it disappears when this turn ends. Never call this because the user asked to create a bot — that is spawn_bot, and spawn_bot alone.",
+      "Run a short-lived helper inside this turn only. This reply waits until the helper finishes, so use it only for short work whose answer you need now; hand long or multi-step work to a teammate with message_bot. It is not a bot: no list entry, no thread, no computer of its own, and it disappears when this turn ends. Never call this because the user asked to create a bot — that is spawn_bot, and spawn_bot alone.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1039,7 +1039,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "message_bot",
     description:
-      'Send a useful update, question, or result to another of the user\'s bots. You must call this tool to actually deliver it — writing the message in your own reply text (e.g. "[to Comms] ...") does not send anything and the recipient never sees it. Delivery is async and does not end your turn. Continue independent work; do not poll or send ack-only messages. Later updates only if they add something new.',
+      'Hand a task to another of the user\'s bots, or send it a useful update, question, result or blocker. You must call this tool to actually deliver it — writing the message in your own reply text (e.g. "[to Comms] ...") does not send anything and the recipient never sees it. Delivery is async: a reply wakes you later as a new message, so do not wait or poll for it. For a request, state the scope, the allowed actions, the expected result and how it will be checked. Do not send ack-only messages. Later updates only if they add something new.',
     inputSchema: {
       type: "object",
       properties: {
@@ -1051,8 +1051,16 @@ export const builtinAgentTools: ConnectorTool[] = [
         message: { type: "string", description: "What to send." },
         intent: {
           type: "string",
-          enum: ["request", "result", "question", "status", "fyi"],
-          description: "What the recipient should do with this message. Defaults to request.",
+          enum: ["request", "result", "question", "status", "fyi", "blocker"],
+          description:
+            "What the recipient should do with this message. Defaults to request. status is progress only and never finishes a task; blocker reports that the task cannot be finished.",
+        },
+        sources: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 20,
+          description:
+            "For a request: exact file paths or URLs the recipient must use. Its result is checked against them.",
         },
       },
       required: ["message"],

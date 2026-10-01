@@ -78,17 +78,26 @@ describe("botMessageOutcomeFromMidTurn", () => {
     });
   });
 
-  it("returns mid-turn progress as status when there is no final reply", () => {
+  it("returns mid-turn progress as a blocker when there is no final reply", () => {
     expect(
       botMessageOutcomeFromMidTurn("", ["Checking calendars…", "Found three free slots."]),
     ).toEqual({
-      text: "Checking calendars…\n\nFound three free slots.",
-      intent: "status",
+      text: "Ended without a final result. Last progress:\n\nChecking calendars…\n\nFound three free slots.",
+      intent: "blocker",
     });
   });
 
-  it("returns null when nothing was posted", () => {
-    expect(botMessageOutcomeFromMidTurn("  ", [])).toBeNull();
+  it("treats an empty turn or a runtime placeholder as a blocker, not a result", () => {
+    expect(botMessageOutcomeFromMidTurn("  ", [])).toEqual({
+      text: "Ended without a result.",
+      intent: "blocker",
+    });
+    expect(
+      botMessageOutcomeFromMidTurn(
+        "The delegated bot completed its turn without a written summary.",
+        [],
+      ).intent,
+    ).toBe("blocker");
   });
 });
 

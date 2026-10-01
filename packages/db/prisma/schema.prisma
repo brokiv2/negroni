@@ -567,6 +567,8 @@ model Task {
   userId    String
   prompt    String
   status    String
+  /// Delegated-task record (state, assignment, budget, stored review) or a review run's pointer to it.
+  delegation Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   runs      Run[]

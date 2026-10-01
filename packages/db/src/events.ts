@@ -116,6 +116,11 @@ interface FinalizeRunBase {
   attemptId: string;
   leaseOwner: string;
   leaseFence: number;
+  /**
+   * Writes that must commit with the terminal state and final message, run only when
+   * this call wins the finalize. It may run again if the transaction is retried.
+   */
+  withinTransaction?: (tx: Prisma.TransactionClient) => Promise<void>;
 }
 
 export type FinalizeRunInput = FinalizeRunBase &
@@ -1161,6 +1166,7 @@ async function finalizeRunOnce(
         });
       }
     }
+    if (input.withinTransaction) await input.withinTransaction(tx);
     const lastEvent = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
       threadId: input.threadId,

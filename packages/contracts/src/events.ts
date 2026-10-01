@@ -52,7 +52,14 @@ export const ProductEventType = z.enum([
 export type ProductEventType = z.infer<typeof ProductEventType>;
 
 export const MessageRole = z.enum(["user", "bot", "system"]);
-export const BotMessageIntent = z.enum(["request", "result", "question", "status", "fyi"]);
+export const BotMessageIntent = z.enum([
+  "request",
+  "result",
+  "question",
+  "status",
+  "fyi",
+  "blocker",
+]);
 export type BotMessageIntent = z.infer<typeof BotMessageIntent>;
 
 export const MAX_CHART_DATA_ROWS = 5_000;

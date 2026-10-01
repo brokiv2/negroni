@@ -5,21 +5,56 @@ import {
   botMessageContext,
   botMessageHopExhausted,
   buildBotMessageWakePrompt,
+  chargeDelegationRun,
   clampBotMessage,
+  createDelegationRecord,
+  type DelegationRecord,
+  type DelegationStopReason,
+  delegationResultChecks,
+  delegationStopReason,
+  isDelegationActive,
   nextBotMessageHop,
+  normalizeSources,
   resolveBotAddress,
   runInteractionModeFor,
+  transitionDelegation,
 } from "@rakazo/core";
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
+  type Prisma,
   type PrismaClient,
   teamThreadOnly,
   teamThreadRows,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import {
+  childReadCount,
+  createReviewRun,
+  lockDelegation,
+  postDelegationNotice,
+  runDelegation,
+  saveDelegation,
+} from "./delegations.js";
 import type { ExecutorDeps } from "./executor.js";
+
+/**
+ * What a delivery does to the delegated task it belongs to. A request opens one; the
+ * child's status, result or blocker moves it; anything for a closed task is dropped so
+ * a late or duplicate return cannot reopen or complete it.
+ */
+type DelegationPlan =
+  | { kind: "none" }
+  | { kind: "ignore"; reason: string }
+  | { kind: "dispatch"; record: DelegationRecord; parentTaskId?: string; parent?: DelegationRecord }
+  | {
+      kind: "return";
+      taskId: string;
+      record: DelegationRecord;
+      wake: boolean;
+      stop?: DelegationStopReason;
+    };
 
 /**
  * The hop the current run sits at, read back from the message that woke this
@@ -79,6 +114,10 @@ export async function messageBot(
     message: string;
     intent?: BotMessageIntent;
     deliveryKey?: string;
+    /** For a request: exact files or URLs the result must use and cite. */
+    sources?: readonly unknown[];
+    /** The child run ended in failure, so this blocker is final. */
+    failed?: boolean;
   },
   options?: { allowTerminalSource?: boolean },
 ) {
@@ -116,7 +155,7 @@ export async function messageBot(
     return { ok: false as const, error: `${target.name} has no chat to deliver to` };
   const returnsToSender =
     options?.allowTerminalSource === true &&
-    (intent === "result" || intent === "status") &&
+    (intent === "result" || intent === "status" || intent === "blocker") &&
     (sourceContext?.intent === undefined ||
       sourceContext.intent === "request" ||
       sourceContext.intent === "question") &&
@@ -151,7 +190,7 @@ export async function messageBot(
       note: `Already sent to ${target.name} in this turn; it was not sent again.`,
     }) as const;
 
-  const wakePrompt = buildBotMessageWakePrompt({ from: sender, text: message, intent });
+  const sources = intent === "request" ? normalizeSources(input.sources ?? []) : [];
   const outboundBlock: MessageBlock = {
     kind: "bot_message_sent",
     toBotId: target.id,
@@ -163,9 +202,13 @@ export async function messageBot(
   let committed:
     | {
         ok: true;
-        runId: string;
+        runId: string | null;
         targetEventSeq: number;
         senderEventSeq: number;
+      }
+    | {
+        ok: true;
+        ignored: string;
       }
     | {
         ok: false;
@@ -219,6 +262,30 @@ export async function messageBot(
         if (!stillAddressable)
           return { ok: false as const, error: `${target.name} is no longer available` };
 
+        const now = new Date();
+        const plan = await planDelegation(tx, {
+          run,
+          targetId: target.id,
+          intent,
+          message,
+          sources,
+          failed: input.failed === true,
+          returnsToRequester: sourceContext?.fromBotId === target.id,
+          now,
+        });
+        if (plan.kind === "ignore") return { ok: true as const, ignored: plan.reason };
+        if (plan.kind === "dispatch" && plan.parent) {
+          const blocked = delegationStopReason(plan.parent, now);
+          if (blocked)
+            return {
+              ok: false as const,
+              error:
+                blocked === "deadline_passed"
+                  ? "This task passed its deadline; tell the user what was found instead of delegating again."
+                  : "This task reached its run limit; tell the user what was found instead of delegating again.",
+            };
+        }
+
         // Echo into the sender's chat in the same transaction so a failed notify
         // cannot leave one side delivered and the other blank.
         const outbound = await createThreadMessageInTransaction(tx, {
@@ -249,37 +316,94 @@ export async function messageBot(
           clientNonce: deliveryKey,
           markUnread: true,
         });
-        const task = await tx.task.create({
-          data: {
-            spaceId: run.spaceId,
-            botId: target.id,
-            threadId: targetThreadId,
-            userId: run.userId,
-            prompt: wakePrompt,
-            status: "queued",
-          },
-        });
-        const nextRun = await tx.run.create({
-          data: {
-            spaceId: run.spaceId,
-            botId: target.id,
-            threadId: targetThreadId,
-            taskId: task.id,
-            userId: run.userId,
-            status: "queued",
-            trigger: "bot_message",
+        let nextRunId: string | null = null;
+        let noticeEventSeq: number | undefined;
+        if (plan.kind === "return") {
+          const outcomeIntent = intent === "status" ? null : (intent as "result" | "blocker");
+          let record = plan.record;
+          if (outcomeIntent && record.outcome) {
+            record = { ...record, outcome: { ...record.outcome, messageId: inbound.id } };
+          }
+          if (plan.wake && outcomeIntent) {
+            const review = await createReviewRun(tx, {
+              spaceId: run.spaceId,
+              userId: run.userId,
+              taskRef: plan.taskId,
+              record,
+              assignee: sender,
+              resultText: message,
+              intent: outcomeIntent,
+              sourceMessageId: inbound.id,
+              interactionMode: targetInteractionMode,
+              attempt: 0,
+            });
+            nextRunId = review.runId;
+            record = {
+              ...chargeDelegationRun(record, now),
+              reviewTaskIds: [...(record.reviewTaskIds ?? []), review.taskId],
+            };
+          } else if (plan.wake) {
+            nextRunId = await createWakeRun(tx, {
+              run,
+              targetId: target.id,
+              targetThreadId,
+              interactionMode: targetInteractionMode,
+              sourceMessageId: inbound.id,
+              prompt: buildBotMessageWakePrompt({
+                from: sender,
+                text: message,
+                intent,
+                delegation: { assignment: record.assignment, sources: record.sources },
+              }),
+            });
+            record = chargeDelegationRun(record, now);
+          }
+          await saveDelegation(tx, plan.taskId, record);
+          if (plan.stop) {
+            noticeEventSeq = (await postDelegationNotice(tx, record, run.spaceId, plan.stop)).seq;
+          }
+        } else {
+          const dispatched =
+            plan.kind === "dispatch"
+              ? {
+                  ...plan.record,
+                  requester: { ...plan.record.requester, requestMessageId: outbound.id },
+                }
+              : undefined;
+          nextRunId = await createWakeRun(tx, {
+            run,
+            targetId: target.id,
+            targetThreadId,
             interactionMode: targetInteractionMode,
             sourceMessageId: inbound.id,
-          },
-          select: { id: true },
-        });
-        await tx.message.update({ where: { id: inbound.id }, data: { runId: nextRun.id } });
+            prompt: buildBotMessageWakePrompt({
+              from: sender,
+              text: message,
+              intent,
+              sources: dispatched?.sources,
+            }),
+            delegation: dispatched,
+          });
+          if (plan.kind === "dispatch" && plan.parent && plan.parentTaskId) {
+            const child = await tx.run.findUniqueOrThrow({
+              where: { id: nextRunId },
+              select: { taskId: true },
+            });
+            await saveDelegation(tx, plan.parentTaskId, {
+              ...transitionDelegation(plan.parent, "superseded", now, "rework_requested"),
+              supersededBy: child.taskId,
+            });
+          }
+        }
+        if (nextRunId) {
+          await tx.message.update({ where: { id: inbound.id }, data: { runId: nextRunId } });
+        }
         const inboundEvent = await appendEventInTransaction(tx, {
           spaceId: run.spaceId,
           threadId: targetThreadId,
           botId: target.id,
           type: "thread.message.created",
-          runId: nextRun.id,
+          runId: nextRunId ?? undefined,
           payload: { messageId: inbound.id, role: "user", blocks: [inboundBlock] },
         });
         const outboundEvent = await appendEventInTransaction(tx, {
@@ -292,8 +416,8 @@ export async function messageBot(
         });
         return {
           ok: true as const,
-          runId: nextRun.id,
-          targetEventSeq: inboundEvent.seq,
+          runId: nextRunId,
+          targetEventSeq: noticeEventSeq ?? inboundEvent.seq,
           senderEventSeq: outboundEvent.seq,
         };
       }),
@@ -312,6 +436,17 @@ export async function messageBot(
   }
   if ("replayed" in committed) return replayed();
   if (!committed.ok) return committed;
+  if ("ignored" in committed) {
+    // A late or duplicate return for a task that already moved on: nothing is delivered.
+    return {
+      ok: true as const,
+      botId: target.id,
+      name: target.name,
+      delivered: message,
+      ignored: true as const,
+      note: `Not delivered: ${committed.ignored}`,
+    };
+  }
 
   await deps.events.notify(targetThreadId, committed.targetEventSeq).catch((error) => {
     getLogger().error("bot message realtime notification", error);
@@ -319,10 +454,12 @@ export async function messageBot(
   await deps.events.notify(run.threadId, committed.senderEventSeq).catch((error) => {
     getLogger().error("bot message sender echo notification", error);
   });
-  await deps.jobs.enqueue(runContinueJob(committed.runId)).catch((error) => {
-    // The queued run is durable; the job reconciler repairs a missed wake.
-    getLogger().error("bot message enqueue", error);
-  });
+  if (committed.runId) {
+    await deps.jobs.enqueue(runContinueJob(committed.runId)).catch((error) => {
+      // The queued run is durable; the job reconciler repairs a missed wake.
+      getLogger().error("bot message enqueue", error);
+    });
+  }
   return {
     ok: true as const,
     botId: target.id,
@@ -330,6 +467,140 @@ export async function messageBot(
     delivered: message,
     note: `Sent to ${target.name}. Delivery is async; a reply wakes you later as a new message. Continue independent work; send another update later only if it adds something new.`,
   };
+}
+
+async function createWakeRun(
+  tx: Prisma.TransactionClient,
+  input: {
+    run: { spaceId: string; userId: string };
+    targetId: string;
+    targetThreadId: string;
+    interactionMode: string;
+    sourceMessageId: string;
+    prompt: string;
+    delegation?: DelegationRecord;
+  },
+): Promise<string> {
+  const task = await tx.task.create({
+    data: {
+      spaceId: input.run.spaceId,
+      botId: input.targetId,
+      threadId: input.targetThreadId,
+      userId: input.run.userId,
+      prompt: input.prompt,
+      status: "queued",
+      ...(input.delegation
+        ? { delegation: input.delegation as unknown as Prisma.InputJsonValue }
+        : {}),
+    },
+  });
+  const nextRun = await tx.run.create({
+    data: {
+      spaceId: input.run.spaceId,
+      botId: input.targetId,
+      threadId: input.targetThreadId,
+      taskId: task.id,
+      userId: input.run.userId,
+      status: "queued",
+      trigger: "bot_message",
+      interactionMode: input.interactionMode,
+      sourceMessageId: input.sourceMessageId,
+    },
+    select: { id: true },
+  });
+  return nextRun.id;
+}
+
+async function planDelegation(
+  tx: Prisma.TransactionClient,
+  input: {
+    run: { id: string; botId: string; threadId: string; sourceMessageId?: string | null };
+    targetId: string;
+    intent: BotMessageIntent;
+    message: string;
+    sources: string[];
+    failed: boolean;
+    returnsToRequester: boolean;
+    now: Date;
+  },
+): Promise<DelegationPlan> {
+  const { intent, now } = input;
+  const own = await runDelegation(tx, input.run.id);
+  if (intent === "request") {
+    const parent = own?.kind === "review" ? await lockDelegation(tx, own.pointer.taskRef) : null;
+    const activeParent = parent && isDelegationActive(parent.record) ? parent : null;
+    return {
+      kind: "dispatch",
+      record: createDelegationRecord({
+        assignment: input.message,
+        sources: input.sources,
+        requester: {
+          botId: input.run.botId,
+          threadId: input.run.threadId,
+          runId: input.run.id,
+          requestMessageId: "",
+          sourceMessageId: input.run.sourceMessageId ?? null,
+        },
+        assigneeBotId: input.targetId,
+        now,
+        parent: activeParent ? { ...activeParent.record, taskRef: activeParent.taskId } : undefined,
+      }),
+      ...(activeParent ? { parentTaskId: activeParent.taskId, parent: activeParent.record } : {}),
+    };
+  }
+  if (intent !== "result" && intent !== "blocker" && intent !== "status") return { kind: "none" };
+  if (own?.kind !== "child" || !input.returnsToRequester) return { kind: "none" };
+  if (own.record.requester.botId !== input.targetId) return { kind: "none" };
+  const locked = await lockDelegation(tx, own.taskId);
+  if (!locked) return { kind: "none" };
+  const record = locked.record;
+  const open =
+    record.state === "queued" || record.state === "working" || record.state === "needs_input";
+  if (!open) return { kind: "ignore", reason: `the task is already ${record.state}` };
+  if (intent === "status") {
+    const updated: DelegationRecord = {
+      ...transitionDelegation(record, "working", now),
+      lastStatus: { text: input.message.slice(0, 2_000), at: now.toISOString() },
+    };
+    // Progress beyond the allowance is kept on the task without waking anyone.
+    return {
+      kind: "return",
+      taskId: locked.taskId,
+      record: updated,
+      wake: !delegationStopReason(updated, now),
+    };
+  }
+  const readCount = await childReadCount(tx, input.run.id);
+  const outcome = {
+    intent,
+    ...(intent === "blocker" && input.failed ? { failed: true } : {}),
+    text: input.message,
+    messageId: "",
+    childRunId: input.run.id,
+    readCount,
+    receivedAt: now.toISOString(),
+  } as const;
+  const reviewing: DelegationRecord = {
+    ...transitionDelegation(record, "reviewing", now),
+    outcome,
+    checks: delegationResultChecks({
+      intent,
+      text: input.message,
+      sources: record.sources,
+      readCount,
+    }),
+  };
+  const stop = delegationStopReason(reviewing, now);
+  if (stop === "budget_exhausted" || stop === "deadline_passed") {
+    return {
+      kind: "return",
+      taskId: locked.taskId,
+      record: transitionDelegation(reviewing, "failed", now, stop),
+      wake: false,
+      stop,
+    };
+  }
+  return { kind: "return", taskId: locked.taskId, record: reviewing, wake: true };
 }
 
 /** The requester's own thread that holds the message a reply should return to. */
@@ -361,7 +632,8 @@ export async function returnBotMessageOutcome(
   },
   sender: { id: string; name: string },
   text: string,
-  intent: "result" | "status" = "result",
+  intent: "result" | "blocker" = "result",
+  options?: { failed?: boolean },
 ) {
   const source = await loadBotMessageContext(deps.prisma, run.sourceMessageId);
   if (!source) {
@@ -370,7 +642,11 @@ export async function returnBotMessageOutcome(
     return true;
   }
   const sourceIntent = source.intent ?? "request";
-  if (sourceIntent !== "request" && sourceIntent !== "question") {
+  // An unanswered question has nothing to return: a blocker would read as a failed task.
+  if (
+    (sourceIntent !== "request" && sourceIntent !== "question") ||
+    (sourceIntent === "question" && intent === "blocker")
+  ) {
     await markBotOutcomeReturned(deps.prisma, run.id);
     return true;
   }
@@ -378,14 +654,14 @@ export async function returnBotMessageOutcome(
     where: { threadId: run.threadId, runId: run.id },
     select: { blocks: true },
   });
-  // Only an explicit result counts as a terminal outcome. Interim message_bot
-  // status updates must not suppress the automatic final return.
+  // Only an explicit result or blocker counts as a terminal outcome. Interim
+  // message_bot status updates must not suppress the automatic final return.
   const alreadyReturned = sent.some((message) =>
     (Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : []).some(
       (block) =>
         block.kind === "bot_message_sent" &&
         block.toBotId === source.fromBotId &&
-        block.intent === "result",
+        (block.intent === "result" || block.intent === "blocker"),
     ),
   );
   if (alreadyReturned) {
@@ -400,7 +676,8 @@ export async function returnBotMessageOutcome(
       bot_id: source.fromBotId,
       message: clampBotMessage(text),
       intent,
-      // One key per run so status vs result (executor vs reconciler) cannot double-deliver.
+      failed: options?.failed,
+      // One key per run so a result vs blocker (executor vs reconciler) cannot double-deliver.
       deliveryKey: `auto-outcome:${run.id}`,
     },
     { allowTerminalSource: true },

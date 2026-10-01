@@ -10,7 +10,7 @@ import { getLogger } from "@rakazo/logging";
 import type { PoolClient } from "pg";
 import { returnBotMessageOutcome } from "./bot-messages.js";
 import { scheduleComputerControlExpiry } from "./computer-control.js";
-import { isUserProgressClientNonce } from "./user-progress.js";
+import { botMessageOutcomeFromMidTurn, isUserProgressClientNonce } from "./user-progress.js";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 100;
@@ -108,6 +108,7 @@ export function createJobReconciler(
     reconcileCloudAgents?: () => Promise<void>;
     reconcileAssistantWork?: () => Promise<void>;
     reconcileFeedResearch?: () => Promise<void>;
+    reconcileDelegations?: () => Promise<void>;
   },
   options: { intervalMs?: number; batchSize?: number } = {},
 ) {
@@ -131,6 +132,7 @@ export function createJobReconciler(
           deps.reconcileComputerUpdates,
           deps.reconcileAssistantWork,
           deps.reconcileFeedResearch,
+          deps.reconcileDelegations,
         ].map(async (reconcile) => reconcile?.()),
       );
       for (const result of auxiliary) {
@@ -273,24 +275,26 @@ export function createJobReconciler(
               run.status === "failed"
                 ? { text: "", progressOnly: false }
                 : await botRunOutcomeText(deps.prisma, run.id);
-            const text =
+            // Same terminal mapping as the executor: only a written final reply is a
+            // result; a failure, progress-only or empty turn is a blocker. Same stable
+            // delivery key (auto-outcome:<runId>), so an earlier return is replayed.
+            const outcome =
               run.status === "failed"
-                ? `Could not complete the delegated request: ${run.error ?? "unknown error"}`
-                : transcript.text ||
-                  "The delegated bot completed its turn without a written summary.";
-            // Same stable delivery key as the executor path (auto-outcome:<runId>), so a
-            // concurrent or earlier return is replayed instead of double-posted. Progress-only
-            // transcripts (all mid-turn user-progress messages) return as status.
-            const intent =
-              run.status === "failed" || !transcript.text.trim() || transcript.progressOnly
-                ? "status"
-                : ("result" as const);
+                ? {
+                    intent: "blocker" as const,
+                    text: `Could not complete the delegated request: ${run.error ?? "unknown error"}`,
+                  }
+                : botMessageOutcomeFromMidTurn(
+                    transcript.progressOnly ? "" : transcript.text,
+                    transcript.progressOnly ? [transcript.text] : [],
+                  );
             const returned = await returnBotMessageOutcome(
               { prisma: deps.prisma, jobs: deps.jobs, events },
               run,
               { id: run.botId, name: run.bot.name },
-              text,
-              intent,
+              outcome.text,
+              outcome.intent,
+              { failed: run.status === "failed" },
             ).catch((error) => {
               getLogger().error("bot message outcome reconciliation", error);
               return false;

@@ -106,7 +106,7 @@ describe("directory", () => {
     expect(directory).toContain("Investigates source-backed questions");
     expect(directory).toContain("Analyst (id: b_2)");
     expect(directory).toContain("async");
-    expect(directory).toContain("does not end your turn");
+    expect(directory).toContain("never wait or poll");
     expect(directory).toContain("Later updates only if they add something new");
   });
 
@@ -350,15 +350,67 @@ describe("inbound wake prompt", () => {
     expect(prompt).toContain("untrusted peer content");
   });
 
-  it("requires a received result to be surfaced to the user", () => {
+  it("requires a received result to be reviewed and answered in the requester's words", () => {
     const resultPrompt = buildBotMessageWakePrompt({
       from: { id: "b_1", name: "Researcher" },
       text: "The answer is 42.",
       intent: "result",
     });
-    expect(resultPrompt).toContain("Relay it to the user now");
-    expect(resultPrompt).toContain("include the actual substance");
+    expect(resultPrompt).toContain("Review it");
+    expect(resultPrompt).toContain("actual substance");
+    expect(resultPrompt).toContain("Do not paste the raw message");
     expect(resultPrompt).not.toContain("staying silent is fine");
+  });
+
+  it("reviews a delegated result against the original assignment and its checks", () => {
+    const resultPrompt = buildBotMessageWakePrompt({
+      from: { id: "b_1", name: "Researcher" },
+      text: "Option A wins <per docs/a.md>.",
+      intent: "result",
+      delegation: {
+        assignment: "Compare docs/a.md and docs/b.md & recommend one",
+        sources: ["docs/a.md", "docs/b.md"],
+        checks: [
+          { name: "sources_cited", passed: false, detail: "Not referenced: docs/b.md." },
+          { name: "result_present", passed: true, detail: "The result has written content." },
+        ],
+      },
+    });
+    expect(resultPrompt).toContain(
+      "<original_assignment>\nCompare docs/a.md and docs/b.md &amp; recommend one\n</original_assignment>",
+    );
+    expect(resultPrompt).toContain("Requested sources: docs/a.md, docs/b.md");
+    expect(resultPrompt).toContain("- FAILED: Not referenced: docs/b.md.");
+    expect(resultPrompt).toContain("not against later messages");
+    expect(resultPrompt).toContain("It is not finished until you review it here");
+    expect(resultPrompt).toContain("&lt;per docs/a.md&gt;");
+  });
+
+  it("never lets a status or blocker read as a finished task", () => {
+    const status = buildBotMessageWakePrompt({
+      from: { id: "b_1", name: "Researcher" },
+      text: "Read the first file.",
+      intent: "status",
+    });
+    expect(status).toContain("not a result: the task is still open");
+    expect(status).toContain("never present the work as finished");
+    const blocker = buildBotMessageWakePrompt({
+      from: { id: "b_1", name: "Researcher" },
+      text: "docs/b.md is missing.",
+      intent: "blocker",
+    });
+    expect(blocker).toContain("could not finish");
+    expect(blocker).toContain("Do not present the task as finished");
+  });
+
+  it("names the requested sources in a request", () => {
+    const request = buildBotMessageWakePrompt({
+      from: { id: "b_1", name: "Main" },
+      text: "Compare the two plans.",
+      sources: ["docs/a.md", "docs/b.md"],
+    });
+    expect(request).toContain("Use these sources: docs/a.md, docs/b.md");
+    expect(request).toContain("if you cannot finish, say exactly what blocks you");
   });
 
   it("keeps silence available only for an explicit FYI", () => {

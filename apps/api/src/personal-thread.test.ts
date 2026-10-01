@@ -44,6 +44,27 @@ function prismaFor(options: { existing?: boolean; raceLost?: boolean } = {}) {
 }
 
 describe("resolvePersonalThread", () => {
+  it("keeps the root that already owns the Personal thread when another root is pinned", async () => {
+    const { prisma } = prismaFor({ existing: true });
+    vi.mocked(prisma.bot.findMany).mockResolvedValueOnce([
+      {
+        id: "first",
+        pinned: false,
+        parentBotId: null,
+        createdAt: new Date("2026-01-01"),
+        _count: { threads: 1 },
+      },
+      {
+        id: "pinned",
+        pinned: true,
+        parentBotId: null,
+        createdAt: new Date("2026-02-01"),
+        _count: { threads: 0 },
+      },
+    ] as never);
+    await expect(resolvePersonalThread(prisma, actor)).resolves.toMatchObject({ botId: "first" });
+  });
+
   it("creates the main assistant's Personal thread on first use", async () => {
     const { prisma, thread } = prismaFor();
     await expect(resolvePersonalThread(prisma, actor)).resolves.toEqual({

@@ -27,12 +27,12 @@ export function isPeerReceiptBlocks(blocks: readonly MessageBlock[]): boolean {
   );
 }
 
-/** A delegated result/status wakes the coordinator to report back to the user. */
+/** A delegated result, status or blocker wakes the coordinator to report back to the user. */
 export function peerMessageReportsToUser(blocks: readonly MessageBlock[]): boolean {
   return blocks.some(
     (block) =>
       block.kind === "bot_message_received" &&
-      (block.intent === "result" || block.intent === "status"),
+      (block.intent === "result" || block.intent === "status" || block.intent === "blocker"),
   );
 }
 
