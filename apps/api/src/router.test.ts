@@ -2172,3 +2172,92 @@ describe("connections.remove", () => {
     },
   );
 });
+
+describe("host VPN", () => {
+  function vpnHandler(isDeploymentOwner: boolean) {
+    const hostVpn = {
+      status: vi.fn().mockResolvedValue({ state: "connected", switching: false }),
+      set: vi.fn().mockResolvedValue({ accepted: true }),
+    };
+    const deps = {
+      prisma: {} as PrismaClient,
+      hostVpn,
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "http://127.0.0.1:5173",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@rakazo.test",
+      isDeploymentOwner,
+    } satisfies Actor;
+    const handler = new RPCHandler(createRouter(deps));
+    const call = (path: string, json?: unknown) =>
+      handler.handle(
+        new Request(`http://127.0.0.1/rpc/computer/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(json === undefined ? {} : { json }),
+        }),
+        { prefix: "/rpc", context: { actor } },
+      );
+    return { hostVpn, call };
+  }
+
+  it("lets the deployment owner read and switch the VPN", async () => {
+    const { hostVpn, call } = vpnHandler(true);
+
+    const status = await call("vpnStatus");
+    expect(status.response?.status).toBe(200);
+    await expect(status.response?.json()).resolves.toEqual({
+      json: { state: "connected", switching: false },
+    });
+
+    const set = await call("setVpn", { enabled: false });
+    expect(set.response?.status).toBe(200);
+    await expect(set.response?.json()).resolves.toEqual({ json: { accepted: true } });
+    expect(hostVpn.set).toHaveBeenCalledWith(false);
+  });
+
+  it("refuses everyone else without touching the host", async () => {
+    const { hostVpn, call } = vpnHandler(false);
+
+    expect((await call("vpnStatus")).response?.status).toBe(403);
+    expect((await call("setVpn", { enabled: true })).response?.status).toBe(403);
+    expect(hostVpn.status).not.toHaveBeenCalled();
+    expect(hostVpn.set).not.toHaveBeenCalled();
+  });
+
+  it("rejects input that is not a boolean", async () => {
+    const { hostVpn, call } = vpnHandler(true);
+
+    expect((await call("setVpn", { enabled: "yes" })).response?.status).toBe(400);
+    expect(hostVpn.set).not.toHaveBeenCalled();
+  });
+
+  it("requires a signed-in actor", async () => {
+    const { hostVpn } = vpnHandler(true);
+    const deps = {
+      prisma: {} as PrismaClient,
+      hostVpn,
+      env: { screenProxySecret: "fake-test-secret", sandboxProvider: "fake" },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const { response } = await new RPCHandler(createRouter(deps)).handle(
+      new Request("http://127.0.0.1/rpc/computer/vpnStatus", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+      { prefix: "/rpc", context: { actor: null } },
+    );
+    expect(response?.status).toBe(401);
+    expect(hostVpn.status).not.toHaveBeenCalled();
+  });
+});

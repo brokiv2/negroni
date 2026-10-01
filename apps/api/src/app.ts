@@ -97,6 +97,7 @@ import {
 } from "./connection-callback.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
+import { createHostVpn } from "./host-vpn.js";
 import { mountLocalSettings } from "./local-settings.js";
 import {
   createMessagingInboundHandler,
@@ -465,6 +466,7 @@ export async function createApp(
     connectors: stack.connector,
     remoteConnectors,
     artifacts,
+    hostVpn: createHostVpn({ cliPath: env.warpCliPath }),
     dataDir: env.dataDir,
     messaging: {
       enabled: Boolean(messaging),

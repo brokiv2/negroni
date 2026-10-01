@@ -98,6 +98,8 @@ export interface AppEnv {
   updaterToken: string | undefined;
   /** Current application image tag; used for compose manual-upgrade command selection. */
   imageTag: string | undefined;
+  /** Absolute path to the host's Cloudflare WARP CLI (NEGRONI_WARP_CLI_PATH). */
+  warpCliPath: string | undefined;
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
@@ -191,6 +193,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     updaterUrl,
     updaterToken,
     imageTag: optional(source.RAKAZO_IMAGE_TAG),
+    warpCliPath: optional(source.NEGRONI_WARP_CLI_PATH),
   };
 }
 
