@@ -16,6 +16,7 @@ struct ListRow {
   var deleteAction: (() -> Void)? = nil
   var deleteTitle: String = "Delete"
   var switchValue: Bool? = nil
+  var switchEnabled: Bool = true
   var onSwitch: ((Bool) -> Void)? = nil
 }
 struct ListSection {
@@ -115,6 +116,7 @@ class ListController: UITableViewController {
     if let value = row.switchValue {
       let toggle = UISwitch()
       toggle.isOn = value
+      toggle.isEnabled = row.switchEnabled
       toggle.accessibilityLabel = row.title
       toggle.addAction(UIAction { [weak toggle] _ in
         guard let toggle else { return }

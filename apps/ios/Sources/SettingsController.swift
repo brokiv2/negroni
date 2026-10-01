@@ -5,13 +5,32 @@ import UIKit
 
 final class SettingsController: ListController {
   let botID: String
+  // Settings → Computer: the host Mac's WARP switch, shown to the deployment owner only.
+  private var vpnStatus: HostVpnStatus?
+  private var vpnTarget: Bool?
+  private var vpnError: String?
+  private static let vpnReadTimeout: TimeInterval = 5
   init(botID: String) {
     self.botID = botID
     super.init(title: "Settings")
   }
   required init?(coder: NSCoder) { fatalError() }
   override func load() async throws {
-    sections = [
+    render()
+    // A running switch owns the status; its reads go through a tunnel that is reconnecting.
+    guard vpnTarget == nil else { return }
+    do {
+      vpnStatus = HostVpnStatus(
+        try await API.shared.rpc("computer/vpnStatus", timeout: Self.vpnReadTimeout))
+    } catch let error as APIError where (400..<500).contains(error.status) {
+      vpnStatus = nil  // FORBIDDEN for everyone but the deployment owner.
+    } catch {
+      return  // Transient: keep the last known state.
+    }
+    render()
+  }
+  private func render() {
+    var result = [
       ListSection(rows: [
         ListRow(
           title: "Assistant", detail: "Name, personality and memory", symbol: "face.smiling",
@@ -36,14 +55,56 @@ final class SettingsController: ListController {
             guard let self else { return }
             self.push(ComputerController(botID: self.botID))
           }, accessory: .disclosureIndicator),
-      ]),
+      ])
+    ]
+    if let vpn = HostVpn.row(status: vpnStatus, target: vpnTarget) {
+      result.append(
+        ListSection(
+          title: "Computer",
+          rows: [
+            ListRow(
+              title: "WARP VPN", detail: vpn.switching ? "Switching…" : "",
+              symbol: "lock.shield", switchValue: vpn.isOn, switchEnabled: vpn.enabled,
+              onSwitch: { [weak self] enabled in self?.switchVpn(enabled) })
+          ], footer: vpnError))
+    }
+    result.append(
       ListSection(rows: [
         ListRow(
           title: "Account", symbol: "person.crop.circle",
           action: { [weak self] in self?.push(AccountController()) },
           accessory: .disclosureIndicator)
-      ]),
-    ]
+      ]))
+    sections = result
+  }
+  private func switchVpn(_ enabled: Bool) {
+    guard vpnTarget == nil else { return }
+    vpnTarget = enabled
+    vpnError = nil
+    render()
+    Task { [weak self] in
+      var failure: String?
+      do {
+        let settled = try await HostVpn.switchVpn(
+          enabled: enabled,
+          setVpn: { try await API.shared.rpc("computer/setVpn", ["enabled": .bool($0)])["accepted"].bool },
+          readStatus: {
+            HostVpnStatus(
+              try await API.shared.rpc("computer/vpnStatus", timeout: Self.vpnReadTimeout))
+          },
+          onStatus: { [weak self] status in
+            self?.vpnStatus = status
+            self?.render()
+          })
+        if HostVpn.failed(settled, enabled: enabled) { failure = "Could not switch the VPN" }
+      } catch {
+        failure = error.localizedDescription.isEmpty ? "Could not switch the VPN" : error.localizedDescription
+      }
+      guard let self, !Task.isCancelled else { return }
+      self.vpnTarget = nil
+      self.vpnError = failure
+      self.render()
+    }
   }
 }
 final class AccountController: ListController {

@@ -129,9 +129,9 @@ enum Keychain {
     }
     return (json, response)
   }
-  func rpc(_ procedure: String, _ body: JSON = [:], requireConsent: Bool = true) async throws
-    -> JSON
-  {
+  func rpc(
+    _ procedure: String, _ body: JSON = [:], requireConsent: Bool = true, timeout: TimeInterval = 30
+  ) async throws -> JSON {
     let context = base
     let contextToken = token
     let contextSpace = spaceID
@@ -148,7 +148,8 @@ enum Keychain {
       throw CancellationError()
     }
     do {
-      let (response, _) = try await perform(request(path: "rpc/" + procedure, body: ["json": body]))
+      let (response, _) = try await perform(
+        request(path: "rpc/" + procedure, body: ["json": body], timeout: timeout))
       guard base == context, token == contextToken, spaceID == contextSpace else {
         throw CancellationError()
       }
