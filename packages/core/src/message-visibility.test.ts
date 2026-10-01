@@ -89,7 +89,7 @@ describe("user-visible messages", () => {
 });
 
 describe("delegated result summaries", () => {
-  it.each(["result", "status"] as const)(
+  it.each(["result", "status", "blocker"] as const)(
     "shows the coordinator's %s follow-up on web and mobile",
     (intent) => {
       const rows = [

@@ -422,6 +422,7 @@ describe("createJobReconciler", () => {
       { id: "bot-1", name: "Researcher" },
       "Finished.",
       "result",
+      { failed: false },
     );
     expect(prisma.run.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -480,6 +481,7 @@ describe("createJobReconciler", () => {
       { id: "bot-1", name: "Researcher" },
       "Tuesday afternoon works.",
       "result",
+      { failed: false },
     );
   });
 
@@ -531,10 +533,11 @@ describe("createJobReconciler", () => {
       { id: "bot-1", name: "Researcher" },
       "Tuesday afternoon works.",
       "result",
+      { failed: false },
     );
   });
 
-  it("returns progress-only transcripts as status", async () => {
+  it("returns progress-only transcripts as a blocker, never a finished result", async () => {
     const terminalRun = {
       id: "run-progress",
       spaceId: "workspace-1",
@@ -576,8 +579,9 @@ describe("createJobReconciler", () => {
       { prisma, jobs, events },
       terminalRun,
       { id: "bot-1", name: "Researcher" },
-      "Checking calendars…",
-      "status",
+      "Ended without a final result. Last progress:\n\nChecking calendars…",
+      "blocker",
+      { failed: false },
     );
   });
 });

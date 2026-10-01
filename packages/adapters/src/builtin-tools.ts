@@ -1051,8 +1051,16 @@ export const builtinAgentTools: ConnectorTool[] = [
         message: { type: "string", description: "What to send." },
         intent: {
           type: "string",
-          enum: ["request", "result", "question", "status", "fyi"],
-          description: "What the recipient should do with this message. Defaults to request.",
+          enum: ["request", "result", "question", "status", "fyi", "blocker"],
+          description:
+            "What the recipient should do with this message. Defaults to request. status is progress only and never finishes a task; blocker reports that the task cannot be finished.",
+        },
+        sources: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 20,
+          description:
+            "For a request: exact file paths or URLs the recipient must use. Its result is checked against them.",
         },
       },
       required: ["message"],

@@ -40,6 +40,7 @@ import {
   reconcileAssistantWork,
   reconcileCloudAgents,
   reconcileComputerUpdates,
+  reconcileDelegations,
   reconcileFeedResearch,
   resolveDeploymentModel,
   resolvePiSessionRoot,
@@ -253,6 +254,7 @@ async function main() {
         notifications: new ExpoPushProvider(dataDir, { apns: apnsConfigFromEnv(process.env) }),
       }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileDelegations: () => reconcileDelegations({ prisma }),
   });
   reconciler.start();
 

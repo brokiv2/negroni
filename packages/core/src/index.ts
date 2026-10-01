@@ -19,6 +19,7 @@ export * from "./composer-slash.js";
 export * from "./computer-updates.js";
 export * from "./connector-catalog.js";
 export * from "./cron.js";
+export * from "./delegation.js";
 export * from "./events.js";
 export * from "./featured-connectors.js";
 export * from "./group-mentions.js";
