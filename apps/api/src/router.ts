@@ -186,6 +186,8 @@ import {
 } from "./computer-status.js";
 import { resolveConnectionCallbackUrl } from "./connection-callback.js";
 import { listSpaceEffects } from "./effects.js";
+import type { HostVpn } from "./host-vpn.js";
+import { createHostVpn, HostVpnUnavailableError } from "./host-vpn.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
 import { buildMcpUpdateMaterial } from "./mcp-material.js";
 import {
@@ -492,6 +494,8 @@ export interface RouterDeps {
   connectors: ConnectorRegistry;
   remoteConnectors?: RemoteConnectorDependencies;
   artifacts: ArtifactStore;
+  /** Host VPN control; defaults to warp-cli at its standard path. */
+  hostVpn?: HostVpn;
   dataDir: string;
   /** Present when the external messaging surface is enabled. */
   messaging?: { enabled: boolean; providers: string[]; openSignup: boolean };
@@ -592,6 +596,7 @@ export function createRouter(deps: RouterDeps) {
   const repos = createRepos(deps.prisma);
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
+  const hostVpn = deps.hostVpn ?? createHostVpn();
   const groupRepos = createGroupRepos(deps.prisma);
   const taughtSkills = createTaughtSkillsService({
     prisma: deps.prisma,
@@ -2598,6 +2603,21 @@ export function createRouter(deps: RouterDeps) {
           ).catch(() => undefined);
         }
         return { ok: true as const };
+      }),
+      vpnStatus: authed.computer.vpnStatus.handler(async ({ context }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        return hostVpn.status();
+      }),
+      setVpn: authed.computer.setVpn.handler(async ({ context, input }) => {
+        if (!context.actor.isDeploymentOwner) throw new ORPCError("FORBIDDEN");
+        try {
+          return await hostVpn.set(input.enabled);
+        } catch (error) {
+          if (error instanceof HostVpnUnavailableError) {
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          }
+          throw error;
+        }
       }),
     },
     memory: {

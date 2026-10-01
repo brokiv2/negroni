@@ -464,6 +464,8 @@ export const RU_MESSAGES: Record<string, string> = {
   Stop: "Остановить",
   Submit: "Отправить",
   "Switching…": "Переключение…",
+  "WARP VPN": "WARP VPN",
+  "Could not switch the VPN": "Не удалось переключить VPN",
   "Take control": "Взять управление",
   "Tap + to create a bot": "Нажмите +, чтобы создать бота",
   Team: "Команда",

@@ -40,6 +40,7 @@ import {
   ExternalConversationPolicySchema,
   GroupDetailSchema,
   GroupSchema,
+  HostVpnStatusSchema,
   IntegrationCatalogResultSchema,
   McpServerConfigInput,
   McpServerSchema,
@@ -453,6 +454,12 @@ export const appContract = {
       .output(z.object({ path: z.string(), content: z.string() })),
     screenUrl: oc.input(botId).output(z.object({ url: z.string().nullable() })),
     heartbeat: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    /** Deployment-owner only: the host Mac's WARP VPN. */
+    vpnStatus: oc.output(HostVpnStatusSchema),
+    /** Answers before switching: the toggle can drop the tunnel this request came through. */
+    setVpn: oc
+      .input(z.object({ enabled: z.boolean() }))
+      .output(z.object({ accepted: z.boolean() })),
   },
   memory: {
     list: oc

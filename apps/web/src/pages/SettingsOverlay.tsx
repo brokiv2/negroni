@@ -1,9 +1,10 @@
 import { useLingui } from "@lingui/react/macro";
-import type { AvatarStyle, SpaceMemoryConfig } from "@rakazo/contracts";
+import type { AvatarStyle, HostVpnStatus, SpaceMemoryConfig } from "@rakazo/contracts";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { Brain, CloudDownload, Cpu, Gauge, Monitor, Settings, Volume2, XIcon } from "lucide-react";
 import { type ComponentType, useEffect, useRef, useState } from "react";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
+import { rpc } from "../lib/rpc";
 import {
   ComputerSettingsPanel,
   GeneralSettingsPanels,
@@ -66,12 +67,27 @@ export function SettingsOverlay({
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
-  const showComputer = isDeploymentOwner && computersAreUnavailable(sandboxProvider);
+  const [vpnStatus, setVpnStatus] = useState<HostVpnStatus | null>(null);
+  const computersUnavailable = computersAreUnavailable(sandboxProvider);
+  const vpnAvailable = vpnStatus !== null && vpnStatus.state !== "unavailable";
+  const showComputer = isDeploymentOwner && (computersUnavailable || vpnAvailable);
   const panelBusy = memoryBusy || voiceBusy;
 
   useEffect(() => {
     setSection(initialSection);
   }, [initialSection]);
+
+  useEffect(() => {
+    if (!isDeploymentOwner) return;
+    const controller = new AbortController();
+    rpc.computer
+      .vpnStatus(undefined, { signal: controller.signal })
+      .then((next) => {
+        if (!controller.signal.aborted) setVpnStatus(next);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [isDeploymentOwner]);
 
   useEffect(() => {
     if (section === "usage") {
@@ -210,7 +226,12 @@ export function SettingsOverlay({
               {section === "usage" ? (
                 <UsageSettingsPanel usage={usage} panelRef={usageRef} />
               ) : null}
-              {section === "computer" && showComputer ? <ComputerSettingsPanel /> : null}
+              {section === "computer" && showComputer ? (
+                <ComputerSettingsPanel
+                  computersUnavailable={computersUnavailable}
+                  vpnStatus={vpnAvailable ? vpnStatus : null}
+                />
+              ) : null}
               {section === "updates" ? (
                 <UpdatesSettingsPanel isDeploymentOwner={isDeploymentOwner} />
               ) : null}

@@ -23,6 +23,7 @@ export * from "./delegation.js";
 export * from "./events.js";
 export * from "./featured-connectors.js";
 export * from "./group-mentions.js";
+export * from "./host-vpn.js";
 export * from "./http-response.js";
 export * from "./main-assistant.js";
 export * from "./markdown-plain.js";

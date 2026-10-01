@@ -4217,3 +4217,11 @@ msgstr "Use default profiles"
 #: src/pages/ModelSettingsOverlay.tsx:461
 msgid "Workspace default"
 msgstr "Workspace default"
+
+#: src/components/HostVpnSwitch.tsx
+msgid "Could not switch the VPN"
+msgstr "Impossible de basculer le VPN"
+
+#: src/components/HostVpnSwitch.tsx
+msgid "WARP VPN"
+msgstr "WARP VPN"

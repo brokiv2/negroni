@@ -807,6 +807,22 @@ export const ComputerStatusSchema = z.object({
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
 
+/** The host Mac's VPN (Cloudflare WARP). `unavailable` when the CLI is missing or unreadable. */
+export const HostVpnStateSchema = z.enum([
+  "connected",
+  "disconnected",
+  "connecting",
+  "unavailable",
+]);
+export type HostVpnState = z.infer<typeof HostVpnStateSchema>;
+
+export const HostVpnStatusSchema = z.object({
+  state: HostVpnStateSchema,
+  /** A toggle is scheduled or running on the host. */
+  switching: z.boolean(),
+});
+export type HostVpnStatus = z.infer<typeof HostVpnStatusSchema>;
+
 export const ComputerReleaseReasonSchema = z.enum(["done", "skipped"]);
 export type ComputerReleaseReason = z.infer<typeof ComputerReleaseReasonSchema>;
 

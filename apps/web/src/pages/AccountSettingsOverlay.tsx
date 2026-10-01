@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { AvatarStyle } from "@rakazo/contracts";
+import type { AvatarStyle, HostVpnStatus } from "@rakazo/contracts";
 import { BotAvatar, Button, Field, FieldLabel, Input, Label, Switch, Toggle } from "@rakazo/ui-web";
 import { ChevronDown } from "lucide-react";
 import {
@@ -15,6 +15,7 @@ import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { SuccessPop } from "../components/ai/primitives";
 import { ComputersUnavailableHint } from "../components/ComputersUnavailableHint";
 import { DesktopUpdateSection } from "../components/DesktopUpdates";
+import { HostVpnSwitch } from "../components/HostVpnSwitch";
 import { SoftwareUpdateSection } from "../components/SoftwareUpdateSection";
 import { authClient } from "../lib/auth";
 import { getActiveUiLocale, setUiLocale } from "../lib/i18n";
@@ -239,7 +240,13 @@ export function UsageSettingsPanel({
   );
 }
 
-export function ComputerSettingsPanel() {
+export function ComputerSettingsPanel({
+  computersUnavailable = true,
+  vpnStatus = null,
+}: {
+  computersUnavailable?: boolean;
+  vpnStatus?: HostVpnStatus | null;
+}) {
   return (
     <div
       data-testid="computers-setup-settings"
@@ -248,7 +255,10 @@ export function ComputerSettingsPanel() {
       <h3 className="text-[15px] font-medium text-foreground">
         <Trans>Computers</Trans>
       </h3>
-      <ComputersUnavailableHint className="mt-3 text-[13px] leading-relaxed text-muted-foreground" />
+      {computersUnavailable ? (
+        <ComputersUnavailableHint className="mt-3 text-[13px] leading-relaxed text-muted-foreground" />
+      ) : null}
+      {vpnStatus ? <HostVpnSwitch initialStatus={vpnStatus} /> : null}
     </div>
   );
 }
