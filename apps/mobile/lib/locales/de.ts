@@ -310,6 +310,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Supports images": "Unterstützt Bilder",
   "Supports thinking": "Unterstützt Denkmodus",
   "Switching…": "Wird gewechselt…",
+  "WARP VPN": "WARP VPN",
+  "Could not switch the VPN": "VPN konnte nicht umgeschaltet werden",
   "The final page may not load. Paste its URL or code here.":
     "Die letzte Seite lädt womöglich nicht. Füge ihre URL oder ihren Code hier ein.",
   "This subscription sign-in is not available in Rakazo yet. Use a deployment credential or choose another provider.":

@@ -447,6 +447,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   Stop: "停止",
   Submit: "提交",
   "Switching…": "正在切换…",
+  "WARP VPN": "WARP VPN",
+  "Could not switch the VPN": "无法切换 VPN",
   "Take control": "接管控制",
   "Tap + to create a bot": "点按 + 创建 Bot",
   Team: "团队",

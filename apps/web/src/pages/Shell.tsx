@@ -151,6 +151,7 @@ import {
   computersAreUnavailable,
 } from "../components/ComputersUnavailableHint";
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
+import { HostVpnSwitch } from "../components/HostVpnSwitch";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import { PersonalWorkspace } from "../components/PersonalWorkspace";
 import { ToolActivityDisclosure } from "../components/ToolActivityDisclosure";
@@ -3836,6 +3837,7 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                {bootstrapMe?.isDeploymentOwner ? <HostVpnSwitch /> : null}
                 <RoutineListHeader
                   onCreate={() => {
                     setRoutineDraft(emptyRoutineDraft());
