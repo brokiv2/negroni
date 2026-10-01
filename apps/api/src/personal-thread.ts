@@ -10,10 +10,20 @@ export async function resolvePersonalThread(
 ): Promise<PersonalThread> {
   const bots = await prisma.bot.findMany({
     where: { spaceId: actor.spaceId, userId: actor.userId, archivedAt: null },
-    select: { id: true, pinned: true, parentBotId: true, createdAt: true },
+    select: {
+      id: true,
+      pinned: true,
+      parentBotId: true,
+      createdAt: true,
+      _count: { select: { threads: { where: { kind: "personal" } } } },
+    },
   });
   const root = mainAssistantBot(
-    bots.map((bot) => ({ ...bot, createdAt: bot.createdAt.toISOString() })),
+    bots.map(({ _count, ...bot }) => ({
+      ...bot,
+      createdAt: bot.createdAt.toISOString(),
+      hasPersonalThread: (_count?.threads ?? 0) > 0,
+    })),
   );
   if (!root) throw new ORPCError("NOT_FOUND", { message: "Create a bot first" });
   const thread = await ensurePersonalThread(prisma, {

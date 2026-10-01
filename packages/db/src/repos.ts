@@ -300,6 +300,7 @@ export function createRepos(prisma: PrismaClient) {
             },
             runs: activeRunSelection,
             computer: { select: { scope: true } },
+            _count: { select: { threads: { where: { kind: "personal" } } } },
           },
           orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
         }),
@@ -366,7 +367,8 @@ export function createRepos(prisma: PrismaClient) {
             });
             if (messages.length === 0) break;
           }
-          return mapBot(bot, preview, bot.runs[0]?.status ?? "idle");
+          const mapped = mapBot(bot, preview, bot.runs[0]?.status ?? "idle");
+          return bot._count?.threads ? { ...mapped, hasPersonalThread: true } : mapped;
         }),
       );
     },

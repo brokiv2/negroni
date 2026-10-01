@@ -71,6 +71,8 @@ export const BotSchema = z.object({
   webhookConfigured: z.boolean(),
   /** Present when created with an idempotency key (e.g. onboarding:first). */
   spawnKey: z.string().nullable(),
+  /** Owns the Personal conversation; keeps the main assistant stable across pins. */
+  hasPersonalThread: z.boolean().optional(),
 });
 export type Bot = z.infer<typeof BotSchema>;
 

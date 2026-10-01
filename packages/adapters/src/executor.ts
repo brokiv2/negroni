@@ -4215,15 +4215,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             })
           : history;
         const runtimeHistory = [...historicalContext, ...historyWithImages];
-        // Without a roster a bot only knows the bots it spawned itself.
-        const teammates = thread.groupId
+        // Without a roster a bot only knows the bots it spawned itself. The query includes
+        // this bot so the main-assistant choice sees which root owns the Personal thread.
+        const roster = thread.groupId
           ? []
           : await deps.prisma.bot.findMany({
               where: {
                 spaceId: run.spaceId,
                 userId: run.userId,
                 archivedAt: null,
-                id: { not: bot.id },
                 threads: { some: { kind: "team" } },
               },
               select: {
@@ -4234,10 +4234,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 parentBotId: true,
                 pinned: true,
                 createdAt: true,
+                _count: { select: { threads: { where: { kind: "personal" } } } },
               },
               orderBy: { createdAt: "asc" },
-              take: BOT_DIRECTORY_LIMIT,
+              take: BOT_DIRECTORY_LIMIT + 1,
             });
+        const ownsPersonalThread = (peer: { _count?: { threads: number } }) =>
+          (peer._count?.threads ?? 0) > 0;
+        const teammates = roster.filter((peer) => peer.id !== bot.id).slice(0, BOT_DIRECTORY_LIMIT);
         const botDirectory = thread.groupId ? undefined : renderBotDirectory(teammates);
         const mainAssistantId = thread.groupId
           ? undefined
@@ -4247,12 +4251,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 pinned: bot.pinned,
                 parentBotId: bot.parentBotId,
                 createdAt: isoTimestamp(bot.createdAt),
+                hasPersonalThread:
+                  thread.kind === "personal" ||
+                  roster.some((peer) => peer.id === bot.id && ownsPersonalThread(peer)),
               },
               ...teammates.map((peer) => ({
                 id: peer.id,
                 pinned: peer.pinned,
                 parentBotId: peer.parentBotId,
                 createdAt: isoTimestamp(peer.createdAt),
+                hasPersonalThread: ownsPersonalThread(peer),
               })),
             ])?.id;
         // Runs in the Personal thread take the owner role even when they were

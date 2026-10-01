@@ -439,9 +439,15 @@ export async function reconcileFeedResearch(deps: {
     const bots = await prisma.bot.findMany({
       where: { ...owner, archivedAt: null },
       orderBy: { createdAt: "asc" },
+      include: { _count: { select: { threads: { where: { kind: "personal" } } } } },
     });
     const bot = mainAssistantBot(
-      bots.map((b) => ({ ...b, archivedAt: null, createdAt: b.createdAt.toISOString() })),
+      bots.map(({ _count, ...b }) => ({
+        ...b,
+        archivedAt: null,
+        createdAt: b.createdAt.toISOString(),
+        hasPersonalThread: (_count?.threads ?? 0) > 0,
+      })),
     );
     if (!bot) continue;
     const claimed = await prisma.$transaction(async (tx) => {

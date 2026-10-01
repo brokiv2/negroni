@@ -49,11 +49,22 @@ export async function publishFeed(
   }
   const bots = await prisma.bot.findMany({
     where: { ...scope, archivedAt: null },
-    select: { id: true, parentBotId: true, pinned: true, createdAt: true },
+    select: {
+      id: true,
+      parentBotId: true,
+      pinned: true,
+      createdAt: true,
+      _count: { select: { threads: { where: { kind: "personal" } } } },
+    },
   });
   botId =
-    mainAssistantBot(bots.map((bot) => ({ ...bot, createdAt: bot.createdAt.toISOString() })))?.id ??
-    botId;
+    mainAssistantBot(
+      bots.map(({ _count, ...bot }) => ({
+        ...bot,
+        createdAt: bot.createdAt.toISOString(),
+        hasPersonalThread: (_count?.threads ?? 0) > 0,
+      })),
+    )?.id ?? botId;
   const dedupKey = feedDedupKey(input);
   const where = { spaceId_userId_dedupKey: { ...scope, dedupKey } };
   const existing = await prisma.feedItem.findUnique({ where });

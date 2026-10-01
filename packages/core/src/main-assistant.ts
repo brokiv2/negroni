@@ -1,4 +1,8 @@
-/** The pinned root bot is the durable personal conversation for a space. */
+/**
+ * The root bot that owns the space's Personal conversation. Once a root has a Personal
+ * thread it stays the main assistant, so pinning or adding another root only orders the
+ * sidebar. Before that, the pinned (then oldest) root is chosen.
+ */
 export function mainAssistantBot<
   T extends {
     id: string;
@@ -6,10 +10,13 @@ export function mainAssistantBot<
     parentBotId?: string | null;
     archivedAt?: string | null;
     createdAt?: string;
+    hasPersonalThread?: boolean;
   },
 >(bots: readonly T[]): T | undefined {
   const roots = bots.filter((bot) => !bot.parentBotId && !bot.archivedAt);
-  const candidates = roots.length ? roots : bots.filter((bot) => !bot.archivedAt);
+  const active = roots.length ? roots : bots.filter((bot) => !bot.archivedAt);
+  const established = active.filter((bot) => bot.hasPersonalThread === true);
+  const candidates = established.length ? established : active;
   return [...candidates].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     return (a.createdAt ?? "").localeCompare(b.createdAt ?? "");

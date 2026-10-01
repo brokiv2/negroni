@@ -20,6 +20,33 @@ describe("mainAssistantBot", () => {
     expect(mainAssistantBot(bots)?.id).toBe("chief");
   });
 
+  it("keeps the root that owns the Personal thread when another root is pinned or added", () => {
+    const before = [
+      {
+        id: "first",
+        parentBotId: null,
+        pinned: false,
+        createdAt: "2026-01-01",
+        hasPersonalThread: true,
+      },
+      { id: "second", parentBotId: null, pinned: false, createdAt: "2026-02-01" },
+    ];
+    expect(mainAssistantBot(before)?.id).toBe("first");
+    const pinnedOther = [before[0]!, { ...before[1]!, pinned: true }];
+    expect(mainAssistantBot(pinnedOther)?.id).toBe("first");
+    // Without the Personal thread marker, the old pin rule would have switched assistants.
+    expect(mainAssistantBot(pinnedOther.map(({ hasPersonalThread: _, ...bot }) => bot))?.id).toBe(
+      "second",
+    );
+    // Among roots that already own a Personal thread, the pin/creation order still decides.
+    expect(
+      mainAssistantBot([
+        { ...before[0]! },
+        { ...before[1]!, pinned: true, hasPersonalThread: true },
+      ])?.id,
+    ).toBe("second");
+  });
+
   it("does not route to an archived bot", () => {
     expect(
       mainAssistantBot([
