@@ -116,7 +116,6 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { parse as parseShellCommand } from "shell-quote";
-import { executeAccountResearch } from "./account-research.js";
 import {
   connectAgent,
   messageConnectedAgent,
@@ -1721,8 +1720,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const researchCycle = await deps.prisma.feedResearch.findUniqueOrThrow({
               where: { id: run.researchId },
             });
-            const executeResearch =
-              researchCycle.kind === "accounts" ? executeAccountResearch : executeFeedResearch;
             const researchModel: AgentRunRequest["model"] = {
               provider: runModelProvider,
               id: runModelId,
@@ -1796,15 +1793,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
               });
             }
-            await executeResearch({
-              registry: deps.connectors,
-              memory: deps.memory,
+            await executeFeedResearch({
               prisma: deps.prisma,
               runtime: deps.runtime,
               web: runWeb,
               researchId: run.researchId,
               context,
-              triage: { model: triageModel, onUsage: recordUsage },
               request: { ...researchRequest, model: researchModel },
             });
           } catch (error) {

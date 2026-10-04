@@ -443,7 +443,7 @@ export async function createApp(
         jobs,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
-        reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs, notifications }),
+        reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
         reconcileDelegations: () => reconcileDelegations({ prisma }),
       })

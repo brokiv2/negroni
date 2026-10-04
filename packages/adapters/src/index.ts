@@ -64,7 +64,6 @@ export * from "./fake-browser.js";
 export * from "./fake-sandbox.js";
 export * from "./fake-web.js";
 export * from "./feed-profile.js";
-export { validateAccountResearch } from "./account-research.js";
 export {
   executeFeedResearch,
   getFeedResearchStatus,

@@ -107,7 +107,6 @@ import {
   touchRunningComputer,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
   updateFeedInterest,
-  validateAccountResearch,
   validateModelAuthAvailability,
   validateStoredModelAuth,
   verifyMcpInstall,
@@ -2993,24 +2992,10 @@ export function createRouter(deps: RouterDeps) {
       profile: authed.feed.profile.handler(({ context }) =>
         getFeedProfile(deps.prisma, context.actor),
       ),
-      configure: authed.feed.configure.handler(async ({ context, input }) => {
-        if (input.accountResearchIds) {
-          try {
-            const previous = await getFeedProfile(deps.prisma, context.actor);
-            await validateAccountResearch(
-              deps.prisma,
-              deps.connectors,
-              context.actor,
-              input.accountResearchIds.filter((id) => !previous.accountResearchIds.includes(id)),
-            );
-          } catch {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "Choose a connected account that supports background reading.",
-            });
-          }
-        }
-        return mutateFeedProfile(deps.prisma, context.actor, (p) => ({ ...p, ...input }));
-      }),
+      // Connected-account fields are still accepted for older clients; Radar reads accounts now.
+      configure: authed.feed.configure.handler(async ({ context, input }) =>
+        mutateFeedProfile(deps.prisma, context.actor, (p) => ({ ...p, ...input })),
+      ),
       interest: authed.feed.interest.handler(({ context, input }) =>
         mutateFeedProfile(deps.prisma, context.actor, (p) =>
           updateFeedInterest(p, input.topic, input.action),

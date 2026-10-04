@@ -13,14 +13,9 @@ import { it } from "vitest";
 import { createApp } from "./app.js";
 
 const scenario = process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? it : it.skip;
-scenario.each([
-  { forbidden: false, accounts: false },
-  { forbidden: true, accounts: false },
-  { forbidden: false, accounts: true },
-  { forbidden: true, accounts: true },
-])(
-  "isolates public and connected research from chat and computer tools: %j",
-  async ({ forbidden, accounts }) => {
+scenario.each([{ forbidden: false }, { forbidden: true }])(
+  "isolates public research from chat and computer tools: %j",
+  async ({ forbidden }) => {
     const dataDir = await mkdtemp(join(tmpdir(), "assistant-work-executor-"));
     const priorEnv = { ...process.env };
     Object.assign(process.env, {
@@ -43,37 +38,20 @@ scenario.each([
       SIGNUPS_ENABLED: "true",
       CI: "1",
     });
-    const evidence = "Prepare a prototype for the next review meeting.";
-    const composio = Object.assign(new ComposioEmulator(), {
-      canObserve: () => true,
-      observe: async () => [{ id: "meeting", title: "Prototype", text: evidence }],
-    });
-    const h = await createApp({ composio, email: new EmailEmulator() });
-    let accountId = "";
+    const h = await createApp({ composio: new ComposioEmulator(), email: new EmailEmulator() });
     const p = h.prisma,
       id = randomUUID();
     let calls = 0;
-    let triageCalls = 0;
     let computerCalls = 0;
     h.sandbox.provision = async () => {
       computerCalls++;
       throw new Error("Research must never provision a computer");
     };
     h.runtime.run = async function* (request) {
-      if (request.runId.endsWith(":triage")) {
-        // The cheap first pass is tool-less and sees no chat history either.
-        triageCalls++;
-        assert.deepEqual(request.tools, []);
-        assert.deepEqual(request.history, []);
-        assert.ok(!request.prompt.includes("PRIVATE_THREAD_CONTEXT"));
-        assert.equal(request.model.thinkingLevel, "off");
-        yield { type: "text", text: JSON.stringify({ shortlist: [`${accountId}:meeting`] }) };
-        return;
-      }
       calls++;
       assert.deepEqual(
         request.tools.map((t) => t.name),
-        accounts ? ["save_opportunity"] : ["web_search", "web_fetch", "research_submit"],
+        ["web_search", "web_fetch", "research_submit"],
       );
       assert.deepEqual(request.history, []);
       assert.ok(!request.prompt.includes("PRIVATE_THREAD_CONTEXT"));
@@ -84,22 +62,6 @@ scenario.each([
           name: "shell",
           args: { command: "echo forbidden" },
           executionId: "forbidden",
-        };
-      if (accounts && !forbidden)
-        yield {
-          type: "tool",
-          name: "save_opportunity",
-          executionId: "candidate",
-          args: {
-            sourceId: `${accountId}:meeting`,
-            title: "Prepare a prototype",
-            summary: "Preparation for the review.",
-            nextStep: "Draft a checklist.",
-            reason: "The review needs a prototype and preparation is useful now.",
-            evidence,
-            confidence: 0.95,
-            expiresAt: new Date(Date.now() + 86400000).toISOString(),
-          },
         };
       yield { type: "text", text: "This narration must stay private" };
       yield { type: "done", text: "No useful findings" };
@@ -160,22 +122,9 @@ scenario.each([
         },
       });
       const owner = { spaceId: id, userId: id };
-      if (accounts)
-        accountId = (
-          await p.connection.create({
-            data: {
-              ...owner,
-              connectorId: "composio",
-              provider: "notes",
-              displayName: "Notes",
-              status: "connected",
-            },
-          })
-        ).id;
       await mutateFeedProfile(p, owner, (profile) => ({
         ...profile,
-        researchEnabled: !accounts,
-        accountResearchIds: accounts ? [accountId] : [],
+        researchEnabled: true,
         interests: [
           {
             topic: "Astronomy",
@@ -194,14 +143,12 @@ scenario.each([
       assert.notEqual(run.threadId, thread.id);
       await h.executor.continueRun(run.id, "research-executor-probe");
       const ended = await p.run.findUniqueOrThrow({ where: { id: run.id } });
-      // Public research treats a forbidden tool as fatal. Connected-source checks refuse the
-      // call but finish, so one hostile email cannot stall monitoring of later mail.
-      assert.equal(ended.status, forbidden && !accounts ? "failed" : "completed");
+      // Public research treats a forbidden tool as fatal.
+      assert.equal(ended.status, forbidden ? "failed" : "completed");
       await reconcileFeedResearch({ prisma: p, jobs });
       assert.equal(await p.message.count({ where: { threadId: thread.id, role: "bot" } }), 0);
-      assert.equal(await p.feedItem.count({ where: owner }), accounts && !forbidden ? 1 : 0);
+      assert.equal(await p.feedItem.count({ where: owner }), 0);
       assert.equal(calls, 1);
-      assert.equal(triageCalls, accounts ? 1 : 0);
       assert.equal(computerCalls, 0);
     } finally {
       await p.organization.deleteMany({ where: { id } });

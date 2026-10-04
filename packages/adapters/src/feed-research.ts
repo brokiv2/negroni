@@ -4,7 +4,6 @@ import type {
   AgentRunRequest,
   AgentRuntime,
   JobPublisher,
-  NotificationProvider,
   WebProvider,
   WebSearchHit,
 } from "@rakazo/adapter-kit";
@@ -14,7 +13,6 @@ import { mainAssistantBot } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import * as z from "zod";
-import { publishAccountFinding } from "./account-research.js";
 import { eligibleFeedInterests, topicKey } from "./feed-profile.js";
 import { feedDedupKey, publishFeed } from "./personal-feed.js";
 import { WebSearchUnavailableError } from "./web-errors.js";
@@ -92,9 +90,9 @@ export async function researchRunAllowed(prisma: PrismaClient, runId: string, re
     cycle.deadline <= new Date() ||
     cycle.profile.activeResearchId !== cycle.id ||
     cycle.profile.researchVersion !== cycle.version ||
-    !(cycle.kind === "accounts"
-      ? FeedProfileSchema.parse(cycle.profile.data).accountResearchIds.length
-      : FeedProfileSchema.parse(cycle.profile.data).researchEnabled)
+    // Connected accounts are Radar's now; an older accounts cycle never runs.
+    cycle.kind === "accounts" ||
+    !FeedProfileSchema.parse(cycle.profile.data).researchEnabled
   )
     return false;
   return !!(await prisma.spaceMember.findFirst({
@@ -303,11 +301,7 @@ export async function executeFeedResearch(input: {
 }
 
 /** Existing leader and queued-run recovery are the only scheduler. */
-export async function reconcileFeedResearch(deps: {
-  prisma: PrismaClient;
-  jobs: JobPublisher;
-  notifications?: NotificationProvider;
-}) {
+export async function reconcileFeedResearch(deps: { prisma: PrismaClient; jobs: JobPublisher }) {
   const { prisma, jobs } = deps;
   const active = await prisma.feedProfile.findMany({
     where: { activeResearchId: { not: null } },
@@ -336,25 +330,11 @@ export async function reconcileFeedResearch(deps: {
     if (
       cycle?.run?.status === "completed" &&
       cycle.version === profile.researchVersion &&
-      (cycle.kind === "accounts"
-        ? FeedProfileSchema.parse(profile.data).accountResearchIds.length > 0
-        : FeedProfileSchema.parse(profile.data).researchEnabled)
+      cycle.kind !== "accounts" &&
+      FeedProfileSchema.parse(profile.data).researchEnabled
     ) {
       for (const finding of cycle.findings) {
         if (finding.expiresAt <= new Date()) continue;
-        if (cycle.kind === "accounts") {
-          if (
-            await publishAccountFinding(
-              prisma,
-              cycle.id,
-              finding.id,
-              cycle.run.botId,
-              deps.notifications,
-            )
-          )
-            delivered++;
-          continue;
-        }
         try {
           const item = FeedItemInput.parse(finding.data);
           if (
@@ -420,14 +400,7 @@ export async function reconcileFeedResearch(deps: {
   }
   const profiles = await prisma.feedProfile.findMany({
     where: {
-      AND: [
-        {
-          OR: [
-            { data: { path: ["researchEnabled"], equals: true } },
-            { NOT: { data: { path: ["accountResearchIds"], equals: [] } } },
-          ],
-        },
-      ],
+      data: { path: ["researchEnabled"], equals: true },
       activeResearchId: null,
       OR: [{ nextResearchAt: null }, { nextResearchAt: { lte: new Date() } }],
     },
@@ -455,13 +428,13 @@ export async function reconcileFeedResearch(deps: {
       const current = await tx.feedProfile.findUniqueOrThrow({ where: { spaceId_userId: owner } });
       const settings = FeedProfileSchema.parse(current.data);
       if (
-        (!settings.researchEnabled && !settings.accountResearchIds.length) ||
+        !settings.researchEnabled ||
         current.activeResearchId ||
         (current.nextResearchAt && current.nextResearchAt > new Date())
       )
         return null;
       if (
-        (!settings.accountResearchIds.length && !eligibleFeedInterests(settings).length) ||
+        !eligibleFeedInterests(settings).length ||
         !(await tx.spaceMember.findFirst({ where: owner }))
       ) {
         await tx.feedProfile.update({
@@ -494,19 +467,10 @@ export async function reconcileFeedResearch(deps: {
         create: { ...owner, botId: bot.id, kind: "research" },
         update: {},
       });
-      const last = await tx.feedResearch.findFirst({
-        where: owner,
-        orderBy: { createdAt: "desc" },
-      });
-      const publicReady = settings.researchEnabled && eligibleFeedInterests(settings).length > 0;
-      const kind =
-        settings.accountResearchIds.length && (!publicReady || last?.kind !== "accounts")
-          ? "accounts"
-          : "public";
       const cycle = await tx.feedResearch.create({
         data: {
           ...owner,
-          kind,
+          kind: "public",
           version: current.researchVersion,
           deadline: new Date(Date.now() + 5 * 60_000),
         },
@@ -516,7 +480,7 @@ export async function reconcileFeedResearch(deps: {
           ...owner,
           botId: bot.id,
           threadId: thread.id,
-          prompt: kind === "accounts" ? "Connected-source research" : "Public-source feed research",
+          prompt: "Public-source feed research",
           status: "queued",
         },
       });
@@ -556,20 +520,16 @@ export async function getFeedResearchStatus(
     where: { ...scope, createdAt: { gte: new Date(Date.now() - DAY) } },
   });
   return {
-    state:
-      !settings.researchEnabled && !settings.accountResearchIds.length
-        ? ("off" as const)
-        : !settings.accountResearchIds.length && !eligibleFeedInterests(settings).length
-          ? ("learning" as const)
-          : row?.activeResearchId
-            ? ("researching" as const)
-            : row?.researchError
-              ? ("needs_attention" as const)
-              : ("waiting" as const),
-    nextCheckAt:
-      settings.researchEnabled || settings.accountResearchIds.length
-        ? (row?.nextResearchAt?.toISOString() ?? null)
-        : null,
+    state: !settings.researchEnabled
+      ? ("off" as const)
+      : !eligibleFeedInterests(settings).length
+        ? ("learning" as const)
+        : row?.activeResearchId
+          ? ("researching" as const)
+          : row?.researchError
+            ? ("needs_attention" as const)
+            : ("waiting" as const),
+    nextCheckAt: settings.researchEnabled ? (row?.nextResearchAt?.toISOString() ?? null) : null,
     lastCheckAt: row?.lastResearchAt?.toISOString() ?? null,
     checksUsed,
     checksPerDay: settings.researchChecksPerDay,

@@ -106,14 +106,7 @@ class ConfiguredIntegrationProvider implements ManagedConnectorProvider {
   async canObserve(externalId: string) {
     return !!(await (await this.settings.resolve(this.id))?.canObserve?.(externalId));
   }
-  async observe(
-    request: Parameters<NonNullable<ManagedConnectorProvider["observe"]>>[0],
-    context: AdapterContext,
-  ) {
-    const provider = await this.required();
-    if (!provider?.observe) throw new Error("Source observation is unavailable.");
-    return provider.observe(request, context);
-  }
+
   constructor(
     private readonly id: IntegrationProviderId,
     private readonly settings: IntegrationProviderSettings,

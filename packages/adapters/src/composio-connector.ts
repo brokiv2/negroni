@@ -18,8 +18,6 @@ import {
   withToolkitMetadata,
 } from "./composio-catalog-cache.js";
 import { DestinationEmulator } from "./destination-emulator.js";
-import { observeGmail } from "./gmail-observation.js";
-import { observeGranola } from "./granola-observation.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
 type ComposioSession = Awaited<ReturnType<Composio["create"]>>;
@@ -477,22 +475,6 @@ export class ComposioConnector implements ComposioProvider {
 
   canObserve(externalId: string) {
     return ["granola_mcp", "gmail"].includes(externalId.toLowerCase());
-  }
-
-  async observe(
-    request: {
-      externalId: string;
-      connectionId: string;
-      since: string;
-      seenDocumentIds?: string[];
-      beforeRead: () => Promise<void>;
-    },
-    context: AdapterContext,
-  ) {
-    if (!this.canObserve(request.externalId)) throw new Error("Source observation is unavailable.");
-    return request.externalId.toLowerCase() === "gmail"
-      ? observeGmail(this, request, context)
-      : observeGranola(this, request, context);
   }
 
   async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {
