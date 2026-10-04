@@ -1,13 +1,12 @@
 import { i18n } from "@lingui/core";
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { RadarRule, RadarScores, RadarUpdate } from "@rakazo/contracts";
+import { RadarGate } from "@rakazo/contracts";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@rakazo/ui-web";
 import { useEffect, useState } from "react";
+import { rpc } from "../../lib/rpc";
 import { useRadarCopy } from "./copy";
-import { sendRadarFeedback, useRadarStatus } from "./radar-state";
-
-/** Gates the policy names in a trace, spelled loosely so a renamed gate still reads. */
-const gateKey = (gate: string) => gate.toLowerCase().replace(/[^a-z]/g, "");
+import { useRadarStatus } from "./radar-state";
 
 /**
  * "Why now" and "why not" in plain sentences, built only from the stored decision trace
@@ -82,30 +81,45 @@ export function RadarDecision({ update, rules }: { update: RadarUpdate; rules: R
     const rule = rules.find((item) => item.id === id);
     if (rule) sentences.push(copy.rule(rule));
   }
-  const gates: Record<string, string> = {
-    paused: t`Radar was paused.`,
-    quiethours: t`It came in during quiet hours.`,
-    meeting: t`You were in a meeting.`,
-    cap: t`Today's interrupt limit was reached.`,
-    spacing: t`You had heard from me less than 30 minutes before.`,
-    story: t`You already heard about this today.`,
-    critical: t`Urgent enough to skip quiet hours and meetings.`,
-  };
-  const aliases: Record<string, string> = {
-    quiet: "quiethours",
-    inmeeting: "meeting",
-    dailycap: "cap",
-    budget: "cap",
-    held: "cap",
-    storylimit: "story",
-  };
-  const seenGates = new Set<string>();
-  for (const gate of trace.gates ?? []) {
-    const key = aliases[gateKey(gate)] ?? gateKey(gate);
-    const sentence = gates[key];
-    if (sentence && !seenGates.has(key)) {
-      seenGates.add(key);
-      sentences.push(sentence);
+  if (trace.gates?.length) {
+    // Every gate in the contract has a sentence; a name from a newer server says nothing.
+    const gateSentences: Record<RadarGate, string> = {
+      rule_never: t`Your rule says never to tell you about this.`,
+      rule_digest: t`Your rule keeps this for the brief.`,
+      rule_always: t`Your rule says to always tell you about this.`,
+      unclear: t`It wasn't clear enough to interrupt you.`,
+      not_owner: t`It wasn't clearly yours to act on.`,
+      below_threshold: t`It didn't score high enough to bring up.`,
+      low_confidence: t`I wasn't sure enough to interrupt you.`,
+      already_seen: t`You had already seen it.`,
+      second_opinion: t`A second look disagreed, so it went to the brief.`,
+      critical: t`Urgent enough to skip quiet hours and meetings.`,
+      paused: t`Radar was paused.`,
+      quiet_hours: t`It came in during quiet hours.`,
+      in_meeting: t`You were in a meeting.`,
+      daily_cap: t`Today's interrupt limit was reached.`,
+      story_limit: t`You already heard about this today.`,
+      spacing: t`You had heard from me less than 30 minutes before.`,
+      folded_into_brief: t`It waited for quiet hours to end, then joined your brief.`,
+      handled_in_source: t`It was already handled or gone when I checked the source.`,
+      seen_in_source: t`You had already opened it when I checked the source.`,
+      own: t`It was your own message.`,
+      security_code: t`It looked like a sign-in or security code.`,
+      bulk: t`It looked like bulk or automated mail.`,
+      declined: t`You declined this event.`,
+      calendar_window: t`The event isn't in the next two days.`,
+      backoff: t`You said something like this wasn't important.`,
+      duplicate: t`It matched an earlier update.`,
+      stale: t`It was too old to judge.`,
+      unevaluated: t`It couldn't be evaluated.`,
+      meeting_prep: t`It came from preparing you for a meeting.`,
+    };
+    const told = new Set<RadarGate>();
+    for (const name of trace.gates) {
+      const gate = RadarGate.safeParse(name);
+      if (!gate.success || told.has(gate.data)) continue;
+      told.add(gate.data);
+      sentences.push(gateSentences[gate.data]);
     }
   }
   if (!sentences.length) return null;
@@ -129,10 +143,7 @@ export function RadarEvidence({ text }: { text: string }) {
   );
 }
 
-/**
- * "Why this" for a chat card. Opening it is the implicit `opened` feedback, which also
- * returns the stored trace; it never overrides what the owner said explicitly.
- */
+/** "Why this" for a chat card: a read-only look at the stored decision, not feedback. */
 export function RadarWhyDialog({
   updateId,
   title,
@@ -152,7 +163,8 @@ export function RadarWhyDialog({
     if (!open || update) return;
     let live = true;
     setError(null);
-    sendRadarFeedback(updateId, "opened")
+    rpc.radar
+      .update({ id: updateId })
       .then((next) => {
         if (live) setUpdate(next);
       })

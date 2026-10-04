@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import type { MessageBlock, RadarStatus } from "@rakazo/contracts";
-import { MessageBlock as MessageBlockSchema, RadarStatusSchema } from "@rakazo/contracts";
+import {
+  MessageBlock as MessageBlockSchema,
+  RadarGate,
+  RadarStatusSchema,
+  RadarUpdateSchema,
+} from "@rakazo/contracts";
 import type { ReactNode } from "react";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -9,12 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   status: vi.fn(),
+  update: vi.fn(),
   feedback: vi.fn(),
   send: vi.fn(),
 }));
 vi.mock("../../lib/rpc", () => ({
   rpc: {
-    radar: { status: api.status, feedback: api.feedback },
+    radar: { status: api.status, update: api.update, feedback: api.feedback },
     threads: { send: api.send },
   },
 }));
@@ -33,6 +39,7 @@ vi.mock("@rakazo/chat-ui/web", () => ({
 }));
 
 import { RadarBriefCard, RadarUpdateCard } from "./RadarCards";
+import { RadarDecision } from "./RadarDecision";
 import { resetRadarStatusForTests } from "./radar-state";
 
 type UpdateBlock = Extract<MessageBlock, { kind: "update" }>;
@@ -75,6 +82,7 @@ function update(overrides: Partial<UpdateBlock> = {}): UpdateBlock {
     summary: "Anna asks to move the review",
     updateId: "update-anna",
     source: "gmail",
+    account: "owner@example.test",
     title: "Anna asks to move the review to Thursday",
     actor: { name: "Anna", address: "anna@example.test" },
     why: "She needs an answer before 18:00 to book the room.",
@@ -169,6 +177,26 @@ describe("Radar update card", () => {
     expect(onSent).toHaveBeenCalledOnce();
   });
 
+  it("names the account the update carries, not one guessed from the watched sources", async () => {
+    await render(
+      <>
+        <RadarUpdateCard
+          block={update({ updateId: "update-other", account: "other@example.test" })}
+          botId="bot-main"
+        />
+        <RadarUpdateCard
+          block={update({ updateId: "update-bare", account: undefined })}
+          botId="bot-main"
+        />
+      </>,
+    );
+    const [other, bare] = [...container.querySelectorAll('[data-testid="radar-update"]')];
+    expect(other!.textContent).toContain("other@example.test · Anna · 10m ago");
+    expect(other!.textContent).not.toContain("owner@example.test");
+    expect(bare!.textContent).toContain("Anna · 10m ago");
+    expect(bare!.textContent).not.toContain("owner@example.test");
+  });
+
   it("brings an update back this evening in the Radar time zone", async () => {
     api.feedback.mockResolvedValue({});
     await render(<RadarUpdateCard block={update()} botId="bot-main" />);
@@ -241,7 +269,7 @@ describe("Radar update card", () => {
   });
 
   it("explains the decision from the stored trace and evidence", async () => {
-    api.feedback.mockResolvedValue({
+    api.update.mockResolvedValue({
       id: "update-anna",
       source: "gmail",
       kind: "email",
@@ -276,7 +304,9 @@ describe("Radar update card", () => {
     await render(<RadarUpdateCard block={update()} botId="bot-main" />);
     await click(control("More actions"));
     await click(menuItem("Why this"));
-    expect(api.feedback).toHaveBeenCalledWith({ id: "update-anna", kind: "opened" });
+    // A read of the stored decision, not feedback: nothing was opened.
+    expect(api.update).toHaveBeenCalledWith({ id: "update-anna" });
+    expect(api.feedback).not.toHaveBeenCalled();
     const dialog = document.body.querySelector('[role="dialog"]')!;
     const sentences = [...dialog.querySelectorAll("li")].map((item) => item.textContent);
     expect(sentences).toEqual([
@@ -298,6 +328,40 @@ describe("Radar update card", () => {
   });
 });
 
+describe("Radar decision gates", () => {
+  const decision = (gates: string[]) =>
+    RadarUpdateSchema.parse({
+      id: "update-gates",
+      source: "gmail",
+      kind: "email",
+      title: "Anything",
+      occurredAt: "2026-10-04T02:50:00.000Z",
+      excerpt: "",
+      state: "open",
+      trace: { gates },
+    });
+  const sentencesFor = async (gates: string[]) => {
+    await render(<RadarDecision update={decision(gates)} rules={[]} />);
+    return [...container.querySelectorAll("li")].map((item) => item.textContent ?? "");
+  };
+
+  it("gives every gate in the contract its own plain sentence", async () => {
+    const sentences = await sentencesFor([...RadarGate.options]);
+    expect(sentences).toHaveLength(RadarGate.options.length);
+    expect(new Set(sentences).size).toBe(RadarGate.options.length);
+    for (const sentence of sentences) {
+      expect(sentence).toMatch(/^[A-Z].*[.]$/);
+      expect(sentence).not.toMatch(/_/);
+    }
+  });
+
+  it("says nothing for a gate it does not know and mentions a repeated gate once", async () => {
+    expect(await sentencesFor(["from_a_newer_server", "paused", "paused", "Quiet Hours"])).toEqual([
+      "Radar was paused.",
+    ]);
+  });
+});
+
 describe("Radar brief card", () => {
   function brief(count: number): BriefBlock {
     return MessageBlockSchema.parse({
@@ -312,6 +376,13 @@ describe("Radar brief card", () => {
         why: index === 0 ? "Due today" : undefined,
         source: index === 0 ? "googlecalendar" : "gmail",
         action: index === 0 ? "reply" : undefined,
+        // The second row names its sender and carries its own offer.
+        ...(index === 1
+          ? {
+              offer: "Pay the invoice?",
+              actor: { name: "Billing", address: "billing@example.test" },
+            }
+          : {}),
       })),
       agenda: [
         { title: "Design review", start: "2026-10-04T02:00:00.000Z" },
@@ -349,5 +420,27 @@ describe("Radar brief card", () => {
     await click(notImportant);
     expect(api.feedback).toHaveBeenCalledWith({ id: "brief-item-1", kind: "not_important" });
     expect(first.textContent).toContain("Not important");
+  });
+
+  it("uses a row's own offer and teaches Radar about the sender the row names", async () => {
+    api.feedback.mockResolvedValue({});
+    await render(<RadarBriefCard block={brief(3)} narrative="" botId="bot-main" />);
+    const rows = [...container.querySelectorAll('[data-testid="radar-brief-item"]')];
+    expect(rows[1]!.textContent).toContain("Pay the invoice?");
+    await click(rows[1]!.querySelector('[aria-label="More actions"]') as HTMLElement);
+    expect(
+      [...document.body.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent),
+    ).toEqual(["Never about this", "Always tell me", "Why this"]);
+    await click(menuItem("Never about this"));
+    expect(api.feedback).toHaveBeenCalledWith({ id: "brief-item-2", kind: "mute_sender" });
+  });
+
+  it("leaves out the sender choices on a row that names no sender", async () => {
+    await render(<RadarBriefCard block={brief(3)} narrative="" botId="bot-main" />);
+    const rows = [...container.querySelectorAll('[data-testid="radar-brief-item"]')];
+    await click(rows[0]!.querySelector('[aria-label="More actions"]') as HTMLElement);
+    expect(
+      [...document.body.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent),
+    ).toEqual(["Why this"]);
   });
 });

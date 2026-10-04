@@ -29,6 +29,17 @@ describe("search helpers", () => {
     expect(searchHitThreadTarget({ botId: "bot-1" })).toEqual({ botId: "bot-1" });
   });
 
+  it("loads the Personal thread only when asked, never for a group", () => {
+    expect(searchHitThreadTarget({ botId: "bot-1", personal: true })).toEqual({
+      botId: "bot-1",
+      threadKind: "personal",
+    });
+    expect(searchHitThreadTarget({ botId: "bot-1", personal: false })).toEqual({ botId: "bot-1" });
+    expect(searchHitThreadTarget({ groupId: "group-1", personal: true })).toEqual({
+      groupId: "group-1",
+    });
+  });
+
   it("rejects ambiguous search hit targets", () => {
     expect(() => searchHitThreadTarget({})).toThrow();
     expect(() => searchHitThreadTarget({ botId: "bot-1", groupId: "group-1" })).toThrow();

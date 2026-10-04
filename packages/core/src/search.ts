@@ -28,15 +28,21 @@ export function snippetAroundMatch(text: string, query: string, maxLen = 120): s
 }
 
 export type SearchThreadTarget =
-  | { botId: string; groupId?: undefined }
-  | { groupId: string; botId?: undefined };
+  | { botId: string; threadKind?: "personal"; groupId?: undefined }
+  | { groupId: string; botId?: undefined; threadKind?: undefined };
 
+/**
+ * The thread a message jump loads: a group, or a bot's Team thread. `personal` addresses the
+ * main assistant's Personal thread instead (a search hit is always Team).
+ */
 export function searchHitThreadTarget(hit: {
   botId?: string;
   groupId?: string;
+  personal?: boolean;
 }): SearchThreadTarget {
   if (Boolean(hit.botId) === Boolean(hit.groupId)) {
     throw new Error("Search hit must target exactly one of a bot or group");
   }
-  return hit.groupId ? { groupId: hit.groupId } : { botId: hit.botId! };
+  if (hit.groupId) return { groupId: hit.groupId };
+  return hit.personal ? { botId: hit.botId!, threadKind: "personal" } : { botId: hit.botId! };
 }

@@ -4231,6 +4231,10 @@ msgid "1 hour"
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
+msgid "A second look disagreed, so it went to the brief."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
 msgid "action needed"
 msgstr ""
 
@@ -4343,6 +4347,10 @@ msgid "I interrupt from {interrupt} and brief from {brief}."
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
+msgid "I wasn't sure enough to interrupt you."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
 msgid "Importance {importance} of 100."
 msgstr ""
 
@@ -4363,7 +4371,55 @@ msgid "Interrupts per day"
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
+msgid "It came from preparing you for a meeting."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
 msgid "It came in during quiet hours."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It couldn't be evaluated."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It didn't score high enough to bring up."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It looked like a sign-in or security code."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It looked like bulk or automated mail."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It matched an earlier update."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It waited for quiet hours to end, then joined your brief."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It was already handled or gone when I checked the source."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It was too old to judge."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It was your own message."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It wasn't clear enough to interrupt you."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It wasn't clearly yours to act on."
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
@@ -4509,6 +4565,10 @@ msgid "Remove rule"
 msgstr ""
 
 #: src/components/radar/RadarPanel.tsx
+msgid "Remove {name}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
 msgid "Remove {path}"
 msgstr ""
 
@@ -4570,6 +4630,10 @@ msgstr ""
 
 #: src/components/radar/NeedsYou.tsx
 msgid "Tell {name}…"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "The event isn't in the next two days."
 msgstr ""
 
 #: src/components/radar/copy.ts
@@ -4658,11 +4722,27 @@ msgid "You already heard about this today."
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
+msgid "You declined this event."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You had already opened it when I checked the source."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You had already seen it."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
 msgid "You had heard from me less than 30 minutes before."
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
 msgid "You need to act."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You said something like this wasn't important."
 msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
@@ -4679,6 +4759,18 @@ msgstr ""
 
 #: src/components/radar/RadarDecision.tsx
 msgid "Your feedback moved the bar by {offset}."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Your rule keeps this for the brief."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Your rule says never to tell you about this."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Your rule says to always tell you about this."
 msgstr ""
 
 #: src/components/radar/RadarCards.tsx

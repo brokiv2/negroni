@@ -1,6 +1,7 @@
 import { i18n } from "@lingui/core";
 import { Trans, useLingui } from "@lingui/react/macro";
 import type {
+  RadarPerson,
   RadarSettingsPatch,
   RadarSourceStatus,
   RadarStatus,
@@ -24,11 +25,10 @@ import { ChevronLeft, X } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { formatRadarTime, pauseUntil } from "../../lib/radar-time";
-import { formatRelativeTime } from "../../lib/relative-time";
 import { rpc } from "../../lib/rpc";
 import { SuccessPop } from "../ai/primitives";
 import { useRadarCopy } from "./copy";
-import { RadarSourceMark, radarSourceName } from "./RadarSource";
+import { RadarSourceMark, radarSourceName, radarUpdateMeta } from "./RadarSource";
 import {
   enableRadarPatch,
   loadRadarStatus,
@@ -152,6 +152,19 @@ export function RadarPanel({ onOpenIntegrations }: { onOpenIntegrations?: () => 
     try {
       const rules = await rpc.radar.rule({ removeId: id });
       if (status) publishRadarStatus({ ...status, rules });
+    } catch (err) {
+      setError(errorText(err, t`Could not save. Try again.`));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function removePerson(person: RadarPerson) {
+    setPending(true);
+    setError(null);
+    try {
+      const address = person.addresses[0];
+      const people = await rpc.radar.person(address ? { address } : { name: person.name });
+      if (status) publishRadarStatus({ ...status, people });
     } catch (err) {
       setError(errorText(err, t`Could not save. Try again.`));
     } finally {
@@ -405,14 +418,32 @@ export function RadarPanel({ onOpenIntegrations }: { onOpenIntegrations?: () => 
           ) : null}
           {status.people.length ? (
             <ul aria-label={t`People`} className="space-y-1">
-              {status.people.map((person) => (
-                <li key={`${person.name}-${person.addresses.join(",")}`} dir="auto">
-                  {person.name}
-                  {person.relation ? (
-                    <span className="text-muted-foreground"> · {person.relation}</span>
-                  ) : null}
-                </li>
-              ))}
+              {status.people.map((person) => {
+                const name = person.name;
+                return (
+                  <li
+                    key={`${person.name}-${person.addresses.join(",")}`}
+                    className="flex items-center gap-2"
+                    data-testid="radar-person"
+                  >
+                    <span className="min-w-0 flex-1 truncate" dir="auto">
+                      {person.name}
+                      {person.relation ? (
+                        <span className="text-muted-foreground"> · {person.relation}</span>
+                      ) : null}
+                    </span>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={t`Remove ${name}`}
+                      disabled={pending}
+                      onClick={() => void removePerson(person)}
+                    >
+                      <X aria-hidden />
+                    </Button>
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
           {status.rules.length ? (
@@ -735,8 +766,8 @@ function RadarSkipped({ onBack }: { onBack: () => void }) {
                     {item.reason}
                   </span>
                 ) : null}
-                <span className="block text-[12px] text-muted-foreground">
-                  {formatRelativeTime(item.occurredAt)}
+                <span className="block text-[12px] text-muted-foreground" dir="auto">
+                  {radarUpdateMeta(item)}
                 </span>
               </span>
               {item.feedback === "important" ? (

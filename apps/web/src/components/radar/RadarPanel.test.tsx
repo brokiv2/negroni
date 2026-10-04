@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   updates: vi.fn(),
   feedback: vi.fn(),
   rule: vi.fn(),
+  person: vi.fn(),
   brief: vi.fn(),
 }));
 vi.mock("../../lib/rpc", () => ({ rpc: { radar: api } }));
@@ -260,6 +261,53 @@ describe("Radar panel", () => {
     expect(container.querySelector('[data-testid="radar-rule"]')).toBeNull();
   });
 
+  it("forgets a person by address, or by name when there is no address", async () => {
+    api.status.mockResolvedValue(
+      status({
+        people: [
+          {
+            name: "Anna",
+            addresses: ["anna@example.test", "anna@work.example.test"],
+            relation: "manager",
+            weight: 3,
+            origin: "explicit",
+          },
+          { name: "Dr. Lee", addresses: [], relation: "", weight: 1, origin: "learned" },
+        ],
+      }),
+    );
+    api.person
+      .mockResolvedValueOnce([
+        { name: "Dr. Lee", addresses: [], relation: "", weight: 1, origin: "learned" },
+      ])
+      .mockResolvedValueOnce([]);
+    await render();
+    const people = () =>
+      [...container.querySelectorAll('[data-testid="radar-person"]')].map(
+        (item) => item.textContent,
+      );
+    expect(people()).toEqual(["Anna · manager", "Dr. Lee"]);
+
+    await click(control("Remove Anna"));
+    expect(api.person).toHaveBeenLastCalledWith({ address: "anna@example.test" });
+    expect(people()).toEqual(["Dr. Lee"]);
+
+    await click(control("Remove Dr. Lee"));
+    expect(api.person).toHaveBeenLastCalledWith({ name: "Dr. Lee" });
+    expect(container.querySelector('ul[aria-label="People"]')).toBeNull();
+  });
+
+  it("keeps the person and says so when forgetting fails", async () => {
+    api.status.mockResolvedValue(status());
+    api.person.mockRejectedValue(new Error("Could not reach the server"));
+    await render();
+    await click(control("Remove Anna"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Could not reach the server",
+    );
+    expect(container.querySelector('ul[aria-label="People"]')?.textContent).toBe("Anna · manager");
+  });
+
   it("lists skipped updates with the reason and takes back a wrong call", async () => {
     api.status.mockResolvedValue(status());
     const skipped = RadarUpdateSchema.parse({
@@ -267,6 +315,8 @@ describe("Radar panel", () => {
       source: "gmail",
       kind: "email",
       title: "Newsletter from the gym",
+      account: "owner@example.test",
+      actor: { name: "The gym" },
       occurredAt: "2026-10-04T01:00:00.000Z",
       excerpt: "Classes this week",
       reason: "Bulk mail from a sender you never reply to.",
@@ -282,6 +332,7 @@ describe("Radar panel", () => {
     const row = container.querySelector('[data-testid="radar-skipped-row"]')!;
     expect(row.textContent).toContain("Newsletter from the gym");
     expect(row.textContent).toContain("Bulk mail from a sender you never reply to.");
+    expect(row.textContent).toContain("owner@example.test · The gym · 2h ago");
 
     await click(control("This was important"));
     expect(api.feedback).toHaveBeenCalledWith({ id: "skipped-1", kind: "important" });

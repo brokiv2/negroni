@@ -13,15 +13,13 @@ import type { FormEvent } from "react";
 import { useEffect, useId, useRef, useState } from "react";
 import { newClientId } from "../../lib/client-id";
 import { formatRadarTime } from "../../lib/radar-time";
-import { formatRelativeTime } from "../../lib/relative-time";
 import { rpc } from "../../lib/rpc";
 import { BuiCard, Shimmer } from "../ai/primitives";
 import { useRadarCopy } from "./copy";
 import type { RadarActionTarget, RadarResolution } from "./RadarActions";
 import { RadarActions } from "./RadarActions";
-import { radarSourceAccount } from "./RadarCards";
 import { RadarDecision, RadarEvidence } from "./RadarDecision";
-import { RadarSourceMark, radarSourceName } from "./RadarSource";
+import { RadarSourceMark, radarSourceName, radarUpdateMeta } from "./RadarSource";
 import {
   enableRadarPatch,
   loadRadarStatus,
@@ -36,7 +34,8 @@ const PAGE = 20;
 const FIRST_LOOK_INTERVAL_MS = 20_000;
 const FIRST_LOOK_TRIES = 15;
 
-type ChatTarget = { botId: string };
+/** The personal conversation, at a message when there is one to show. */
+type ChatTarget = { botId: string; messageId?: string };
 
 const target = (update: RadarUpdate): RadarActionTarget => ({
   id: update.id,
@@ -149,7 +148,17 @@ export function NeedsYou({
           <Trans>Needs you</Trans>
         </h2>
         {briefTime ? (
-          <Button variant="link" size="sm" className="px-0" onClick={() => onOpenChat({ botId })}>
+          <Button
+            variant="link"
+            size="sm"
+            className="px-0"
+            onClick={() =>
+              onOpenChat({
+                botId,
+                ...(status.lastBriefMessageId ? { messageId: status.lastBriefMessageId } : {}),
+              })
+            }
+          >
             {t`Latest brief · ${briefTime}`}
           </Button>
         ) : null}
@@ -174,6 +183,9 @@ export function NeedsYou({
               >
                 <RadarSourceMark source={item.source} />
                 <span className="min-w-0">
+                  <span className="block truncate text-[12px] text-muted-foreground" dir="auto">
+                    {radarUpdateMeta(item)}
+                  </span>
                   <span className="block truncate text-[15px] font-medium" dir="auto">
                     {item.title}
                   </span>
@@ -286,7 +298,7 @@ function RadarSetupCard({ onEnabled }: { onEnabled: () => void }) {
 }
 
 function NeedsYouDetail({
-  update: initial,
+  update,
   botId,
   assistantName,
   onClose,
@@ -302,23 +314,15 @@ function NeedsYouDetail({
 }) {
   const { t } = useLingui();
   const status = useRadarStatus();
-  const [update, setUpdate] = useState(initial);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nonce = useRef<{ text: string; value: string } | null>(null);
 
+  // The owner opened this update. The list already carries its decision trace.
   useEffect(() => {
-    let live = true;
-    sendRadarFeedback(initial.id, "opened")
-      .then((next) => {
-        if (live) setUpdate(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [initial.id]);
+    void sendRadarFeedback(update.id, "opened").catch(() => undefined);
+  }, [update.id]);
 
   async function reply(event: FormEvent) {
     event.preventDefault();
@@ -343,11 +347,6 @@ function NeedsYouDetail({
     }
   }
 
-  const meta = [
-    radarSourceAccount(status, update.source),
-    update.actor?.name || update.actor?.address,
-    formatRelativeTime(update.occurredAt),
-  ].filter(Boolean);
   const sourceName = radarSourceName(update.source);
   const name = assistantName?.trim();
   return (
@@ -359,7 +358,7 @@ function NeedsYouDetail({
         <div className="flex min-w-0 items-center gap-2 pe-8 text-[12.5px] text-muted-foreground">
           <RadarSourceMark source={update.source} />
           <span className="min-w-0 truncate" dir="auto">
-            {meta.join(" · ")}
+            {radarUpdateMeta(update)}
           </span>
         </div>
         <DialogTitle className="text-[17px] leading-snug" dir="auto">

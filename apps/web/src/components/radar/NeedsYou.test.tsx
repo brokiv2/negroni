@@ -59,6 +59,7 @@ function update(id: string, overrides: Record<string, unknown> = {}): RadarUpdat
     id,
     source: "gmail",
     kind: "email",
+    account: "owner@example.test",
     title: `Title ${id}`,
     actor: { name: "Anna", address: "anna@example.test" },
     occurredAt: "2026-10-04T02:30:00.000Z",
@@ -133,9 +134,14 @@ describe("Needs you", () => {
     );
   });
 
-  it("lists open updates with Done, Later and Not important and links the latest brief", async () => {
+  it("lists open updates with Done, Later and Not important and opens the latest brief", async () => {
     const onOpenChat = vi.fn();
-    api.status.mockResolvedValue(status({ lastBriefAt: "2026-10-03T23:30:00.000Z" }));
+    api.status.mockResolvedValue(
+      status({
+        lastBriefAt: "2026-10-03T23:30:00.000Z",
+        lastBriefMessageId: "message-brief",
+      }),
+    );
     api.updates.mockResolvedValue({ items: [update("first"), update("second")] });
     api.feedback.mockImplementation(async ({ id, kind }) => update(id, { state: kind }));
     await act(async () =>
@@ -143,6 +149,7 @@ describe("Needs you", () => {
     );
     await flush();
     expect(rows()).toHaveLength(2);
+    expect(rows()[0]!.textContent).toContain("owner@example.test · Anna · 30m ago");
     expect(rows()[0]!.textContent).toContain("Title first");
     expect(rows()[0]!.textContent).toContain("Why first");
     for (const name of ["Done", "Later", "Not important"]) {
@@ -155,7 +162,19 @@ describe("Needs you", () => {
     expect(rows()[0]!.textContent).toContain("Title second");
 
     await click(control("Latest brief · 08:30"));
-    expect(onOpenChat).toHaveBeenCalledWith({ botId: "bot-main" });
+    expect(onOpenChat).toHaveBeenCalledWith({ botId: "bot-main", messageId: "message-brief" });
+  });
+
+  it("opens the chat at its end when the latest brief has no message to show", async () => {
+    const onOpenChat = vi.fn();
+    api.status.mockResolvedValue(status({ lastBriefAt: "2026-10-03T23:30:00.000Z" }));
+    api.updates.mockResolvedValue({ items: [] });
+    await act(async () =>
+      root.render(<NeedsYou botId="bot-main" revision={0} onOpenChat={onOpenChat} />),
+    );
+    await flush();
+    await click(control("Latest brief · 08:30"));
+    expect(onOpenChat.mock.calls).toEqual([[{ botId: "bot-main" }]]);
   });
 
   it("opens the details, explains the decision and replies in the personal chat", async () => {
@@ -164,13 +183,11 @@ describe("Needs you", () => {
       url: "https://mail.example.test/thread/1",
       evidence: "Can you confirm by noon?",
       offer: "Draft a reply confirming?",
+      trace: { importance: 76, result: "interrupt", whoMustAct: "owner", gates: ["quiet_hours"] },
     });
     api.status.mockResolvedValue(status());
     api.updates.mockResolvedValue({ items: [item] });
-    api.feedback.mockResolvedValue({
-      ...item,
-      trace: { importance: 76, result: "interrupt", whoMustAct: "owner" },
-    });
+    api.feedback.mockResolvedValue(item);
     api.send.mockResolvedValue({ runId: "run-1" });
     await act(async () =>
       root.render(
@@ -180,12 +197,18 @@ describe("Needs you", () => {
     await flush();
     await click(rows()[0]!.querySelector("button")!);
     await flush();
+    // The owner opened it: that is the one `opened` feedback; the trace came with the list.
+    expect(api.feedback).toHaveBeenCalledTimes(1);
     expect(api.feedback).toHaveBeenCalledWith({ id: "detail", kind: "opened" });
     const dialog = document.body.querySelector('[data-testid="radar-needs-you-detail"]')!;
+    expect(dialog.textContent).toContain("owner@example.test · Anna · 30m ago");
     expect(dialog.textContent).toContain("Title detail");
     expect(dialog.textContent).toContain("Why detail");
     expect(dialog.querySelector("blockquote")?.textContent).toBe("“Can you confirm by noon?”");
     expect(dialog.querySelector("details")?.textContent).toContain("Importance 76 of 100.");
+    expect(dialog.querySelector("details")?.textContent).toContain(
+      "It came in during quiet hours.",
+    );
     const open = control("Open in Gmail ↗", dialog);
     expect(open.getAttribute("href")).toBe("https://mail.example.test/thread/1");
     expect(control("Draft a reply confirming?", dialog)).toBeTruthy();

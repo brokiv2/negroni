@@ -756,7 +756,13 @@ export function ShellPage() {
     [assistant?.id, navigate],
   );
   const openPersonalChat = useCallback(
-    (target?: { botId: string; groupId?: string; draft?: string; team?: boolean }) => {
+    (target?: {
+      botId: string;
+      groupId?: string;
+      draft?: string;
+      team?: boolean;
+      messageId?: string;
+    }) => {
       if (!assistant) return;
       const targetBotId = target?.botId ?? assistant.id;
       const isTeamTarget =
@@ -783,7 +789,12 @@ export function ShellPage() {
       }
       setPersonalOpen(false);
       setPanel(null);
-      navigate(target?.groupId ? `/app/g/${target.groupId}` : `/app/${targetBotId}`);
+      // A message to scroll to, as a search hit does: only in the personal conversation.
+      const jump =
+        !isTeamTarget && target?.messageId
+          ? `?m=${encodeURIComponent(target.messageId)}&thread=personal`
+          : "";
+      navigate(target?.groupId ? `/app/g/${target.groupId}` : `/app/${targetBotId}${jump}`);
     },
     [assistant?.id, navigate],
   );
@@ -1713,7 +1724,13 @@ export function ShellPage() {
     });
   }
 
-  async function jumpToMessage(target: { botId?: string; groupId?: string; messageId: string }) {
+  async function jumpToMessage(target: {
+    botId?: string;
+    groupId?: string;
+    messageId: string;
+    /** The message is in the main assistant's Personal thread (a Radar brief), not Team. */
+    personal?: boolean;
+  }) {
     const threadTarget = searchHitThreadTarget(target);
     const epoch = historyEpoch.current;
     jumpGeneration.current += 1;
@@ -1808,9 +1825,11 @@ export function ShellPage() {
       setSearchParams(next, { replace: true });
     }
     if (messageId) {
-      void jumpToMessage({ botId: active.id, messageId }).finally(() => {
+      const personal = searchParams.get("thread") === "personal";
+      void jumpToMessage({ botId: active.id, messageId, personal }).finally(() => {
         const next = new URLSearchParams(searchParams);
         next.delete("m");
+        next.delete("thread");
         setSearchParams(next, { replace: true });
       });
     }

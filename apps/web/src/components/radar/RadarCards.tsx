@@ -1,16 +1,15 @@
 import { i18n } from "@lingui/core";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
-import type { MessageBlock, RadarStatus } from "@rakazo/contracts";
+import type { MessageBlock } from "@rakazo/contracts";
 import { Button } from "@rakazo/ui-web";
 import { Quote } from "lucide-react";
 import { useState } from "react";
 import { formatRadarTime } from "../../lib/radar-time";
-import { formatRelativeTime } from "../../lib/relative-time";
 import { BuiCard } from "../ai/primitives";
 import { RadarActions } from "./RadarActions";
 import { RadarEvidence } from "./RadarDecision";
-import { RadarSourceMark } from "./RadarSource";
+import { RadarSourceMark, radarUpdateMeta } from "./RadarSource";
 import { useRadarStatus } from "./radar-state";
 
 type UpdateBlock = Extract<MessageBlock, { kind: "update" }>;
@@ -18,15 +17,6 @@ type BriefBlock = Extract<MessageBlock, { kind: "brief" }>;
 
 /** A brief shows this many items before the rest fold behind "N more". */
 export const BRIEF_VISIBLE_ITEMS = 7;
-
-/** The account an update came from, when only one watched account has that source. */
-export function radarSourceAccount(status: RadarStatus | null, source: string) {
-  const slug = source.trim().toLowerCase();
-  const matches = status?.sources.filter((item) => item.source === slug) ?? [];
-  const watched = matches.filter((item) => item.enabled);
-  const only = watched.length === 1 ? watched[0] : matches.length === 1 ? matches[0] : undefined;
-  return only?.account;
-}
 
 export function RadarUpdateCard({
   block,
@@ -38,13 +28,7 @@ export function RadarUpdateCard({
   onSent?: () => unknown;
 }) {
   const { t } = useLingui();
-  const status = useRadarStatus();
   const [quoteOpen, setQuoteOpen] = useState(false);
-  const meta = [
-    radarSourceAccount(status, block.source),
-    block.actor?.name || block.actor?.address,
-    formatRelativeTime(block.occurredAt),
-  ].filter(Boolean);
   return (
     <BuiCard
       role="article"
@@ -55,7 +39,7 @@ export function RadarUpdateCard({
       <div className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
         <RadarSourceMark source={block.source} />
         <span className="min-w-0 truncate" dir="auto">
-          {meta.join(" · ")}
+          {radarUpdateMeta(block)}
         </span>
       </div>
       <div className="space-y-0.5">
@@ -176,7 +160,14 @@ export function RadarBriefCard({
               </div>
               <RadarActions
                 compact
-                item={{ id: item.updateId, title: item.title, action: item.action, url: item.url }}
+                item={{
+                  id: item.updateId,
+                  title: item.title,
+                  action: item.action,
+                  offer: item.offer,
+                  url: item.url,
+                  hasSender: Boolean(item.actor?.address),
+                }}
                 botId={botId}
                 primary="offer"
                 why

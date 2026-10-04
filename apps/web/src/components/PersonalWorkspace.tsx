@@ -11,7 +11,14 @@ import { FeedSettings } from "./FeedSettings";
 import { NeedsYou } from "./radar/NeedsYou";
 import { RadarPanelDialog } from "./radar/RadarPanel";
 
-type ChatTarget = { botId: string; groupId?: string; draft?: string; team?: boolean };
+type ChatTarget = {
+  botId: string;
+  groupId?: string;
+  draft?: string;
+  team?: boolean;
+  /** Open the personal conversation scrolled to this message. */
+  messageId?: string;
+};
 type Tab = "feed" | "saved" | "automations" | "hidden";
 const button =
   "rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50";
