@@ -311,20 +311,33 @@ public struct RadarTrace: Equatable, Sendable {
 /// (`RadarGate` in `packages/contracts/src/radar.ts`). Every one reads as a plain sentence.
 public enum RadarGate: String, CaseIterable, Sendable {
   // Explicit rules.
-  case ruleNever = "rule_never", ruleDigest = "rule_digest", ruleAlways = "rule_always"
+  case ruleNever = "rule_never"
+  case ruleDigest = "rule_digest"
+  case ruleAlways = "rule_always"
   // Judgement.
-  case unclear, notOwner = "not_owner", belowThreshold = "below_threshold"
-  case lowConfidence = "low_confidence", alreadySeen = "already_seen"
+  case unclear
+  case notOwner = "not_owner"
+  case belowThreshold = "below_threshold"
+  case lowConfidence = "low_confidence"
+  case alreadySeen = "already_seen"
   case secondOpinion = "second_opinion"
   // Delivery gates.
-  case critical, paused, quietHours = "quiet_hours", inMeeting = "in_meeting"
-  case dailyCap = "daily_cap", storyLimit = "story_limit", spacing
+  case critical, paused
+  case quietHours = "quiet_hours"
+  case inMeeting = "in_meeting"
+  case dailyCap = "daily_cap"
+  case storyLimit = "story_limit"
+  case spacing
   case foldedIntoBrief = "folded_into_brief"
   // A fresh look at the source right before sending.
-  case handledInSource = "handled_in_source", seenInSource = "seen_in_source"
+  case handledInSource = "handled_in_source"
+  case seenInSource = "seen_in_source"
   // Screened before any model call.
-  case own, securityCode = "security_code", bulk, declined
-  case calendarWindow = "calendar_window", backoff, duplicate, stale, unevaluated
+  case own
+  case securityCode = "security_code"
+  case bulk, declined
+  case calendarWindow = "calendar_window"
+  case backoff, duplicate, stale, unevaluated
   case meetingPrep = "meeting_prep"
 
   /// Gates that name a matched rule, which the explanation already reads as its own sentence.
