@@ -137,6 +137,90 @@ describe("expo push", () => {
     expect(body.data.kind).toBe("takeover");
   });
 
+  it("keeps an existing notification's Expo body unchanged", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-push-"));
+    dirs.push(dataDir);
+    await savePushToken(dataDir, "user-1", "ExponentPushToken[test]");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ data: { status: "ok", id: "ticket" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ExpoPushProvider(dataDir).send(
+      {
+        kind: "completion",
+        title: "Done",
+        body: "ok",
+        botId: "bot-1",
+        threadId: "th-1",
+        spaceId: "space-1",
+        threadKind: "personal",
+      },
+      notifyContext,
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toBe(
+      JSON.stringify({
+        to: "ExponentPushToken[test]",
+        title: "Done",
+        body: "ok",
+        collapseId: "th-1",
+        tag: "th-1",
+        data: {
+          kind: "completion",
+          botId: "bot-1",
+          threadId: "th-1",
+          spaceId: "space-1",
+          threadKind: "personal",
+        },
+      }),
+    );
+  });
+
+  it("carries a Radar update's category, level, grouping and ids to Expo", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-push-"));
+    dirs.push(dataDir);
+    await savePushToken(dataDir, "user-1", "ExponentPushToken[test]");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ data: { status: "ok", id: "ticket" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new ExpoPushProvider(dataDir).send(
+      {
+        kind: "radar",
+        title: "A colleague",
+        body: "They need the figures before the 15:00 review.",
+        botId: "bot-1",
+        threadId: "th-1",
+        spaceId: "space-1",
+        threadKind: "personal",
+        category: "RADAR_UPDATE",
+        interruptionLevel: "time-sensitive",
+        relevanceScore: 0.9,
+        groupKey: "budget-review",
+        messageId: "message-1",
+        updateId: "signal-1",
+        expiresAt: new Date("2026-10-04T18:00:00Z"),
+      },
+      notifyContext,
+    );
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      expiration: Date.parse("2026-10-04T18:00:00Z") / 1000,
+      collapseId: "budget-review",
+      tag: "budget-review",
+      categoryId: "RADAR_UPDATE",
+      interruptionLevel: "time-sensitive",
+      data: {
+        kind: "radar",
+        botId: "bot-1",
+        threadId: "th-1",
+        spaceId: "space-1",
+        messageId: "message-1",
+        updateId: "signal-1",
+      },
+    });
+  });
+
   it("routes native iOS registrations directly to APNs", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-push-"));
     dirs.push(dataDir);

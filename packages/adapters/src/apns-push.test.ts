@@ -3,7 +3,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { apnsConfigFromEnv, apnsPayload, createApnsProviderToken } from "./apns-push.js";
+import {
+  apnsConfigFromEnv,
+  apnsNotificationHeaders,
+  apnsPayload,
+  createApnsProviderToken,
+} from "./apns-push.js";
 
 const dirs: string[] = [];
 
@@ -78,5 +83,95 @@ describe("APNs push", () => {
       botId: "bot-1",
       threadId: "thread-1",
     });
+  });
+
+  it("keeps existing notifications byte for byte", () => {
+    const message = {
+      kind: "completion" as const,
+      title: "Done",
+      body: "The task finished",
+      botId: "bot-1",
+      threadId: "thread-1",
+      spaceId: "space-1",
+      threadKind: "personal" as const,
+    };
+    expect(JSON.stringify(apnsPayload(message))).toBe(
+      JSON.stringify({
+        aps: {
+          alert: { title: "Done", body: "The task finished" },
+          sound: "default",
+          "thread-id": "thread-1",
+        },
+        spaceId: "space-1",
+        threadKind: "personal",
+        kind: "completion",
+        botId: "bot-1",
+        threadId: "thread-1",
+      }),
+    );
+    // Existing notifications keep a single delivery attempt and collapse by conversation.
+    expect(apnsNotificationHeaders(message)).toEqual({
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "apns-expiration": "0",
+      "apns-collapse-id": "thread-1",
+    });
+  });
+
+  it("carries a Radar update's category, interruption level, relevance and ids", () => {
+    const message = {
+      kind: "radar" as const,
+      title: "A colleague",
+      body: "They need the figures before the 15:00 review.",
+      botId: "bot-1",
+      threadId: "thread-1",
+      spaceId: "space-1",
+      threadKind: "personal" as const,
+      category: "RADAR_UPDATE",
+      interruptionLevel: "time-sensitive" as const,
+      relevanceScore: 1.4,
+      groupKey: "budget-review",
+      messageId: "message-1",
+      updateId: "signal-1",
+      expiresAt: new Date("2026-10-04T18:00:00.500Z"),
+    };
+    expect(apnsPayload(message)).toEqual({
+      aps: {
+        alert: { title: "A colleague", body: "They need the figures before the 15:00 review." },
+        sound: "default",
+        "thread-id": "budget-review",
+        category: "RADAR_UPDATE",
+        "interruption-level": "time-sensitive",
+        "relevance-score": 1,
+      },
+      spaceId: "space-1",
+      threadKind: "personal",
+      kind: "radar",
+      botId: "bot-1",
+      threadId: "thread-1",
+      messageId: "message-1",
+      updateId: "signal-1",
+    });
+    expect(apnsNotificationHeaders(message)["apns-collapse-id"]).toBe("budget-review");
+    const long = apnsNotificationHeaders({ ...message, groupKey: "Résumé review ".repeat(10) });
+    expect(long["apns-collapse-id"]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("keeps an expiring push for a phone that is offline until its expiry", () => {
+    const message = {
+      kind: "radar" as const,
+      title: "Morning brief",
+      body: "Two things need you today.",
+      botId: "bot-1",
+      threadId: "thread-1",
+    };
+    expect(
+      apnsNotificationHeaders({ ...message, expiresAt: new Date("2026-10-04T18:00:00.500Z") })[
+        "apns-expiration"
+      ],
+    ).toBe(String(Date.parse("2026-10-04T18:00:00Z") / 1000));
+    expect(
+      apnsNotificationHeaders({ ...message, expiresAt: new Date(Number.NaN) })["apns-expiration"],
+    ).toBe("0");
   });
 });

@@ -1,4 +1,4 @@
-import { createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { connect } from "node:http2";
 import type { NotificationMessage } from "@rakazo/adapter-kit";
@@ -69,13 +69,44 @@ export function apnsPayload(message: NotificationMessage) {
     aps: {
       alert: { title: message.title, body: message.body },
       sound: "default",
-      "thread-id": message.threadId,
+      "thread-id": message.groupKey ?? message.threadId,
+      ...(message.category ? { category: message.category } : {}),
+      ...(message.interruptionLevel ? { "interruption-level": message.interruptionLevel } : {}),
+      ...(typeof message.relevanceScore === "number" && Number.isFinite(message.relevanceScore)
+        ? { "relevance-score": Math.min(1, Math.max(0, message.relevanceScore)) }
+        : {}),
     },
     ...(message.spaceId ? { spaceId: message.spaceId } : {}),
     ...(message.threadKind ? { threadKind: message.threadKind } : {}),
     kind: message.kind,
     botId: message.botId,
     threadId: message.threadId,
+    ...(message.messageId ? { messageId: message.messageId } : {}),
+    ...(message.updateId ? { updateId: message.updateId } : {}),
+  };
+}
+
+/** APNs caps the collapse id at 64 bytes; an unusual grouping key is hashed to fit. */
+function apnsCollapseId(message: NotificationMessage): string {
+  const key = message.groupKey;
+  if (!key) return message.threadId.slice(0, 64);
+  return /^[\x21-\x7e]{1,64}$/.test(key)
+    ? key
+    : createHash("sha256").update(key).digest("hex").slice(0, 64);
+}
+
+/** The request headers that depend on the notification itself. */
+export function apnsNotificationHeaders(message: NotificationMessage) {
+  const expiresAt = message.expiresAt?.getTime();
+  return {
+    "apns-push-type": "alert",
+    "apns-priority": "10",
+    // "0" means one delivery attempt: a phone that is offline at that moment never gets it.
+    "apns-expiration":
+      expiresAt !== undefined && Number.isFinite(expiresAt)
+        ? String(Math.max(1, Math.floor(expiresAt / 1000)))
+        : "0",
+    "apns-collapse-id": apnsCollapseId(message),
   };
 }
 
@@ -119,10 +150,7 @@ export async function sendApnsNotification(
       ":path": `/3/device/${token}`,
       authorization: `bearer ${authorization}`,
       "apns-topic": config.topic,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
-      "apns-expiration": "0",
-      "apns-collapse-id": message.threadId.slice(0, 64),
+      ...apnsNotificationHeaders(message),
       "content-type": "application/json",
     });
     request.setEncoding("utf8");

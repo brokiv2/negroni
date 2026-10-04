@@ -278,9 +278,22 @@ export class ExpoPushProvider implements NotificationProvider {
           to: token,
           title: message.title,
           body: message.body,
-          collapseId: message.threadId,
-          tag: message.threadId,
-          data: { kind: message.kind, botId: message.botId, threadId: message.threadId, spaceId: message.spaceId, threadKind: message.threadKind },
+          collapseId: message.groupKey ?? message.threadId,
+          tag: message.groupKey ?? message.threadId,
+          ...(message.category ? { categoryId: message.category } : {}),
+          ...(message.interruptionLevel ? { interruptionLevel: message.interruptionLevel } : {}),
+          ...(message.expiresAt && Number.isFinite(message.expiresAt.getTime())
+            ? { expiration: Math.max(1, Math.floor(message.expiresAt.getTime() / 1000)) }
+            : {}),
+          data: {
+            kind: message.kind,
+            botId: message.botId,
+            threadId: message.threadId,
+            spaceId: message.spaceId,
+            threadKind: message.threadKind,
+            messageId: message.messageId,
+            updateId: message.updateId,
+          },
         }),
         signal,
       });

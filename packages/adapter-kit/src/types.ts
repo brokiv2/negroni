@@ -552,14 +552,38 @@ export interface ArtifactPut {
   bytes: Uint8Array;
 }
 
+/** How strongly a notification may break through on the device. */
+export type NotificationInterruptionLevel = "passive" | "active" | "time-sensitive";
+
 export interface NotificationMessage {
   spaceId?: string;
   threadKind?: "team" | "personal";
-  kind: "completion" | "failure" | "help" | "takeover";
+  kind: "completion" | "failure" | "help" | "takeover" | "radar";
   title: string;
   body: string;
   botId: string;
+  /** The conversation the notification opens. */
   threadId: string;
+  /** Category the app registered actions for, e.g. `RADAR_UPDATE`. */
+  category?: string;
+  /** Absent keeps the platform default (active). */
+  interruptionLevel?: NotificationInterruptionLevel;
+  /** 0–1: how prominently the system summary should rank it. */
+  relevanceScore?: number;
+  /**
+   * Groups related notifications on the device; a newer one with the same key replaces
+   * the older. Defaults to `threadId`. Keep it short ASCII (it is also the collapse id).
+   */
+  groupKey?: string;
+  /** Message to open inside the conversation. */
+  messageId?: string;
+  /** Radar update the notification is about. */
+  updateId?: string;
+  /**
+   * Until when a phone that was offline should still get it. Absent keeps the transport
+   * default, which for APNs is a single delivery attempt.
+   */
+  expiresAt?: Date;
 }
 
 /** A product-authored transactional email, independent of its delivery vendor. */
