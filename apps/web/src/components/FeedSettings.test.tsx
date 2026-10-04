@@ -3,6 +3,7 @@ import { FeedProfileSchema } from "@rakazo/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+
 const api = vi.hoisted(() => ({ profile: vi.fn(), list: vi.fn(), configure: vi.fn() }));
 vi.mock("../lib/rpc", () => ({
   rpc: {
@@ -10,35 +11,32 @@ vi.mock("../lib/rpc", () => ({
     connections: { list: api.list },
   },
 }));
+
 import { FeedSettings } from "./FeedSettings";
-it("selects an exact supported account and preserves its choice on failed save", async () => {
+
+it("keeps the article feed controls and leaves connected accounts to Radar", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const profile = FeedProfileSchema.parse({});
   api.profile.mockResolvedValue(profile);
-  api.list.mockResolvedValue([
-    {
-      id: "one",
-      displayName: "Work notes",
-      status: "connected",
-      capabilities: ["background_read"],
-    },
-    { id: "two", displayName: "Other app", status: "connected", capabilities: [] },
-  ]);
   api.configure
-    .mockResolvedValueOnce({ ...profile, accountResearchIds: ["one"] })
+    .mockResolvedValueOnce({ ...profile, learningEnabled: true })
     .mockRejectedValueOnce(new Error("offline"));
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   try {
     await act(async () => root.render(<FeedSettings />));
-    expect(container.textContent).not.toContain("Other app");
-    const checkbox = container.querySelector("fieldset input") as HTMLInputElement;
-    await act(async () => checkbox.click());
-    expect(api.configure).toHaveBeenCalledWith({ accountResearchIds: ["one"] });
-    expect(checkbox.checked).toBe(true);
-    await act(async () => checkbox.click());
-    expect(checkbox.checked).toBe(true);
+    expect(api.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Connected sources");
+    expect(container.textContent).not.toContain("Important updates");
+    expect(container.querySelector('input[aria-label="Add a feed topic"]')).not.toBeNull();
+    expect(container.querySelector('select[aria-label="Articles per collection"]')).not.toBeNull();
+    const learning = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    await act(async () => learning.click());
+    expect(api.configure).toHaveBeenCalledWith({ learningEnabled: true });
+    expect(learning.checked).toBe(true);
+    await act(async () => learning.click());
+    expect(learning.checked).toBe(true);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
   } finally {
     await act(async () => root.unmount());
