@@ -1,7 +1,6 @@
 import { RadarTraceSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { runJsonPass } from "../background-triage.js";
 import type { PolicyMoment } from "./assess.js";
 import { policyContext, policyMoment, screened } from "./assess.js";
 import { localDate, localWhen, startOfLocalDay } from "./clock.js";
@@ -282,22 +281,27 @@ export async function prepareMeetings(cycle: RadarCycle): Promise<void> {
       JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
     // Local labels: models misconvert UTC timestamps.
     const when = (at: Date | string) => localWhen(at, settings.timeZone, now);
-    const answer = await runJsonPass({
-      runtime: deps.runtime,
-      request: cycle.request,
-      suffix: "prep",
-      model: await cycle.models.conversation(),
-      instructions: PREP_INSTRUCTIONS.replace("LANGUAGE", cycle.language),
-      prompt: [
-        `<meeting>${data({ title: event.title, start: when(event.start), ...(event.end ? { end: when(event.end) } : {}), attendees: event.attendees, location: event.location })}</meeting>`,
-        `<notes>${data(notes.map((row) => ({ title: row.title, at: when(row.occurredAt), excerpt: row.excerpt.slice(0, 800) })))}</notes>`,
-        `<mail>${data(mail.map((row) => ({ title: row.title, at: when(row.occurredAt), from: asRecord(row.actor).address, excerpt: row.excerpt.slice(0, 600) })))}</mail>`,
-        `<open>${data(open.map((row) => ({ title: row.headline || row.title, why: row.why })))}</open>`,
-      ].join("\n"),
-      context: cycle.adapter,
-      onUsage: cycle.usage,
-      timeoutMs: 90_000,
-    }).catch(() => null);
+    const result = await cycle
+      .pass({
+        runtime: deps.runtime,
+        request: cycle.request,
+        suffix: "prep",
+        model: await cycle.models.conversation(),
+        instructions: PREP_INSTRUCTIONS.replace("LANGUAGE", cycle.language),
+        prompt: [
+          `<meeting>${data({ title: event.title, start: when(event.start), ...(event.end ? { end: when(event.end) } : {}), attendees: event.attendees, location: event.location })}</meeting>`,
+          `<notes>${data(notes.map((row) => ({ title: row.title, at: when(row.occurredAt), excerpt: row.excerpt.slice(0, 800) })))}</notes>`,
+          `<mail>${data(mail.map((row) => ({ title: row.title, at: when(row.occurredAt), from: asRecord(row.actor).address, excerpt: row.excerpt.slice(0, 600) })))}</mail>`,
+          `<open>${data(open.map((row) => ({ title: row.headline || row.title, why: row.why })))}</open>`,
+        ].join("\n"),
+        context: cycle.adapter,
+        onUsage: cycle.usage,
+        timeoutMs: 90_000,
+      })
+      .catch(() => undefined);
+    // The model could not be asked: record nothing, so a later cycle can still prepare this meeting.
+    if (result?.status === "failed") return;
+    const answer = result?.status === "ok" ? result.value : null;
     const points = Array.isArray(answer?.points)
       ? (answer.points as unknown[])
           .filter((point): point is string => typeof point === "string" && point.trim().length > 0)

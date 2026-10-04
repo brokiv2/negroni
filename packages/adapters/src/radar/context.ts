@@ -5,10 +5,12 @@ import type {
   ManagedConnectorProvider,
 } from "@rakazo/adapter-kit";
 import type { RadarSettings } from "@rakazo/contracts";
+import type { JsonPassInput, JsonPassResult } from "../background-triage.js";
 import type { RadarDeliveryDeps } from "./deliver.js";
 import type { RadarLearned } from "./learned.js";
 import type { RadarModelDeps, radarModels } from "./models.js";
 import type { AgendaEvent } from "./observers/types.js";
+import type { ModelHealth } from "./outage.js";
 import type { RadarOwner } from "./profile.js";
 
 export type RadarCycleDeps = RadarModelDeps &
@@ -39,8 +41,15 @@ export type RadarCycle = {
   adapter: AdapterContext;
   models: ReturnType<typeof radarModels>;
   usage: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => Promise<void>;
-  /** Spends one model pass from today's allowance; false once it is used up. */
+  /**
+   * Spends one model pass from today's allowance; false once it is used up, and while the
+   * model waits out an outage.
+   */
   spendPass: () => boolean;
+  /** Whether the model waits out an outage, and what the passes of this cycle told us. */
+  health: ModelHealth;
+  /** One bounded model pass; keeps `health` in step with how it ended. */
+  pass: (input: JsonPassInput) => Promise<JsonPassResult>;
   ownerAddresses: string[];
   agenda: Array<AgendaEvent & { connectionId: string }>;
   /** Language for everything Radar writes to the owner. */

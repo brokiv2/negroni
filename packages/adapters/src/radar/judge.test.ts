@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefAgenda, briefNarrative, withoutGreeting, withoutTimeOpener } from "./brief.js";
+import {
+  briefAgenda,
+  briefNarrative,
+  plainBrief,
+  uncheckedLine,
+  withoutGreeting,
+  withoutTimeOpener,
+} from "./brief.js";
 import { BRIEF_INSTRUCTIONS } from "./cycle.js";
 import type { JudgeContext, JudgeItem } from "./judge.js";
 import { JUDGE_INSTRUCTIONS, judgeItems, judgePrompt, parseJudgement } from "./judge.js";
@@ -264,6 +271,88 @@ describe("judging", () => {
     expect(many.get("a")).toBeNull();
     expect(many.get("b")).toMatchObject({ action: "reply" });
   });
+
+  const judging = (fake: AgentRuntime, items: JudgeItem[], extra: Record<string, unknown> = {}) =>
+    judgeItems({
+      runtime: fake,
+      model: { provider: "test", id: "judge" },
+      request: { botId: "b", threadId: "t", runId: "r" },
+      context: {
+        operationId: "o",
+        traceId: "t",
+        spaceId: "s",
+        userId: "u",
+        signal: new AbortController().signal,
+      },
+      judge: context,
+      items,
+      batchSize: 1,
+      spendPass: passes(10),
+      ...extra,
+    });
+
+  it("gives an unusable answer a null and a failed call no entry at all", async () => {
+    // Items 1 and 2 are answered, the third pass fails, so the fourth is never tried.
+    let calls = 0;
+    const flaky: AgentRuntime = {
+      describe: () =>
+        ({ id: "test", contractVersion: "1", adapterVersion: "0", capabilities: {} }) as never,
+      abort: async () => undefined,
+      async *run() {
+        calls += 1;
+        if (calls === 1) yield { type: "text", text: JSON.stringify(answer()) };
+        else if (calls === 2) yield { type: "text", text: "I could not decide." };
+        else throw Object.assign(new Error("402 Payment Required"), { status: 402 });
+      },
+    };
+    const results = await judging(flaky, [item("a"), item("b"), item("c"), item("d")]);
+    expect(calls).toBe(3);
+    expect(results.get("a")).toMatchObject({ action: "reply" });
+    // The model answered, badly: that counts as an attempt.
+    expect(results.get("b")).toBeNull();
+    // The provider could not serve the pass: nothing was learned about "c", and "d" waits too.
+    expect([...results.keys()]).toEqual(["a", "b"]);
+  });
+
+  it("runs its passes through the one it is given", async () => {
+    const seen: string[] = [];
+    const results = await judging(
+      runtime(() => answer()),
+      [item("a"), item("b")],
+      {
+        pass: async (call: { suffix: string }) => {
+          seen.push(call.suffix);
+          return { status: "failed", error: new Error("503") };
+        },
+      },
+    );
+    // A failed pass ends judging for this call.
+    expect(seen).toEqual(["judge-0"]);
+    expect(results.size).toBe(0);
+  });
+
+  it("stops at once when the cycle itself was aborted", async () => {
+    const owner = new AbortController();
+    await expect(
+      judging(
+        runtime(() => answer()),
+        [item("a")],
+        {
+          context: {
+            operationId: "o",
+            traceId: "t",
+            spaceId: "s",
+            userId: "u",
+            signal: owner.signal,
+          },
+          pass: async () => {
+            owner.abort();
+            return { status: "invalid" };
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
 });
 
 describe("profile synthesis", () => {
@@ -486,6 +575,36 @@ describe("brief text", () => {
     ).toBe("One call at 11:00-12:00.");
     expect(briefNarrative("Two things need you.", now)).toBe("Two things need you.");
     expect(briefNarrative("", now)).toBe("");
+  });
+});
+
+describe("the plain brief", () => {
+  it("lists what needs the owner, what is held and the day, under the brief's own names", () => {
+    expect(
+      plainBrief({
+        period: "morning",
+        needsYou: ["Contract needs approval by noon.", "Invoice question"],
+        held: ["Partner call moved"],
+        agenda: ["11:00 Planning", "Offsite (all day)"],
+      }),
+    ).toBe(
+      "Needs you: Contract needs approval by noon; Invoice question. Held back: Partner call moved. Your day: 11:00 Planning; Offsite (all day).",
+    );
+    expect(
+      plainBrief({ period: "evening", needsYou: [], held: [], agenda: ["09:30 Standup"] }),
+    ).toBe("Tomorrow: 09:30 Standup.");
+    // Nothing to list is empty, so the caller decides what an empty brief says.
+    expect(plainBrief({ period: "now", needsYou: [], held: [], agenda: [] })).toBe("");
+  });
+
+  it("says how many updates were never looked at, and why", () => {
+    expect(uncheckedLine(1)).toBe(
+      "I couldn't check 1 update yet because the model was unavailable.",
+    );
+    expect(uncheckedLine(12)).toBe(
+      "I couldn't check 12 updates yet because the model was unavailable.",
+    );
+    expect(uncheckedLine(3)).not.toMatch(/[\u2012-\u2015]/);
   });
 });
 

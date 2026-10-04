@@ -2,7 +2,14 @@ import type { MessageBlock, RadarSettings } from "@rakazo/contracts";
 import { MAX_BRIEF_AGENDA } from "@rakazo/contracts";
 import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { localDate, localMinutes, localWhen, nextLocalDate, zonedInstant } from "./clock.js";
+import {
+  localClock,
+  localDate,
+  localMinutes,
+  localWhen,
+  nextLocalDate,
+  zonedInstant,
+} from "./clock.js";
 import type { RadarDeliveryDeps } from "./deliver.js";
 import { blockActor, PRESENCE_WINDOW_MS, sendPush } from "./deliver.js";
 import type { AgendaEvent } from "./observers/types.js";
@@ -66,6 +73,32 @@ export const briefNarrative = (text: string, clock: { hour: number; minute: numb
 
 const short = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value;
+
+/**
+ * What a brief says when no model could write it: the same facts as plain sentences, under the
+ * names the brief's own sections carry. Empty when there is nothing to list.
+ */
+export function plainBrief(input: {
+  period: BriefPeriod;
+  needsYou: string[];
+  held: string[];
+  agenda: string[];
+}): string {
+  const list = (lines: string[]) => lines.map((line) => line.replace(/[.!?…]+$/u, "")).join("; ");
+  return [
+    input.needsYou.length ? `Needs you: ${list(input.needsYou)}.` : "",
+    input.held.length ? `Held back: ${list(input.held)}.` : "",
+    input.agenda.length
+      ? `${input.period === "evening" ? "Tomorrow" : "Your day"}: ${list(input.agenda)}.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** The honest note for updates that were never looked at because the model was unavailable. */
+export const uncheckedLine = (count: number) =>
+  `I couldn't check ${count} ${count === 1 ? "update" : "updates"} yet because the model was unavailable.`;
 
 export type BriefNarration = {
   period: BriefPeriod;
@@ -139,11 +172,17 @@ export async function deliverRadarBrief(
     presenceAt?: Date | null;
     /** The owner asked for it: answer even when nothing needs them. */
     requested?: boolean;
+    /**
+     * Updates still pending because the model was unavailable. The brief then says so, is
+     * never empty, and is the plain one: a model that cannot judge cannot write it either.
+     */
+    unchecked?: number;
   },
 ): Promise<"sent" | "empty" | "exists"> {
   const owner = radarOwner(scope);
   const { prisma } = deps;
   const { now, period, settings } = input;
+  const unchecked = input.unchecked ?? 0;
   const day = localDate(now, settings.timeZone);
   const periodKey = period === "now" ? now.toISOString() : day;
   if (
@@ -215,7 +254,12 @@ export async function deliverRadarBrief(
     }),
   ]);
   const agenda = briefAgenda(input.agenda, period, settings.timeZone, now);
-  if (!input.requested && !primary.length && (period === "evening" || !agenda.length)) {
+  if (
+    !input.requested &&
+    !primary.length &&
+    (period === "evening" || !agenda.length) &&
+    !unchecked
+  ) {
     if (period !== "now")
       await prisma.radarBrief.createMany({
         data: [{ ...owner, period, localDate: periodKey, signalIds: [] }],
@@ -237,38 +281,53 @@ export async function deliverRadarBrief(
     ...(signal.offer ? { offer: short(signal.offer, 80) } : {}),
     ...(blockActor(signal.actor) ? { actor: blockActor(signal.actor) } : {}),
   }));
-  const narration = await deps
-    .narrate({
-      period,
-      localTime: input.localTime,
-      items: primary.map(({ signal, section }) => ({
-        section,
-        title: signal.headline || signal.title,
-        ...(signal.why ? { why: signal.why } : {}),
-        ...(signal.offer ? { offer: signal.offer } : {}),
-        ...(signal.deadline
-          ? { deadline: localWhen(signal.deadline, settings.timeZone, now) }
-          : {}),
-      })),
-      // Local labels: models misconvert UTC timestamps.
-      agenda: agenda.map((event) => ({
-        title: event.title,
-        start: localWhen(event.start, settings.timeZone, now, event.allDay),
-      })),
-      more,
-      quiet: { skipped, borderline },
-    })
-    .catch(() => null);
+  // Updates the model never looked at make this the plain brief: it cannot write one either.
+  const narration = unchecked
+    ? null
+    : await deps
+        .narrate({
+          period,
+          localTime: input.localTime,
+          items: primary.map(({ signal, section }) => ({
+            section,
+            title: signal.headline || signal.title,
+            ...(signal.why ? { why: signal.why } : {}),
+            ...(signal.offer ? { offer: signal.offer } : {}),
+            ...(signal.deadline
+              ? { deadline: localWhen(signal.deadline, settings.timeZone, now) }
+              : {}),
+          })),
+          // Local labels: models misconvert UTC timestamps.
+          agenda: agenda.map((event) => ({
+            title: event.title,
+            start: localWhen(event.start, settings.timeZone, now, event.allDay),
+          })),
+          more,
+          quiet: { skipped, borderline },
+        })
+        .catch(() => null);
   const fallbackTitle =
     period === "morning" ? "Morning brief" : period === "evening" ? "Evening wrap" : "Brief";
   const title = short(plainDashes(narration?.title?.trim() ?? "") || fallbackTitle, 280);
   const minutes = localMinutes(now, settings.timeZone);
-  const narrative =
+  const body =
     briefNarrative(narration?.narrative ?? "", {
       hour: Math.floor(minutes / 60),
       minute: minutes % 60,
     }) ||
-    [...items.map((item) => item.title), ...agenda.map((event) => event.title)].join(" · ") ||
+    plainBrief({
+      period,
+      needsYou: items.filter((item) => item.section === "needs_you").map((item) => item.title),
+      held: items.filter((item) => item.section === "held").map((item) => item.title),
+      agenda: agenda.map((event) =>
+        event.allDay
+          ? `${event.title} (all day)`
+          : `${localClock(new Date(event.start), settings.timeZone)} ${event.title}`,
+      ),
+    });
+  // "Nothing needs you" is only ever said when every update was looked at.
+  const narrative =
+    [body, unchecked ? uncheckedLine(unchecked) : ""].filter(Boolean).join(" ") ||
     "Nothing needs you right now.";
   const summary = short(narrative.split(/(?<=[.!?])\s/)[0] || title, 280);
   const outcome = await prisma.$transaction(async (tx) => {

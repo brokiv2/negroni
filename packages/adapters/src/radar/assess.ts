@@ -344,6 +344,9 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
   }
   const batch = toJudge.slice(0, deps.judgeCap ?? 25);
   if (!batch.length) return 0;
+  // While the model waits out an outage, screening is all that can be done: nothing here is
+  // judged, counted as an attempt or dropped, and the signals keep their place in the queue.
+  if (cycle.health.holding()) return toJudge.length;
 
   const today = localDate(now, settings.timeZone);
   const [labeled, stories, briefs] = await Promise.all([
@@ -485,12 +488,15 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
       batchSize: toJudge.length > 20 ? 5 : 1,
       spendPass: cycle.spendPass,
       onUsage: cycle.usage,
+      pass: cycle.pass,
     });
   } catch (error) {
     if (cycle.adapter.signal.aborted) throw error;
     getLogger().warn("radar judge unavailable", {
       error: error instanceof Error ? error.message.slice(0, 200) : "unknown",
     });
+    // No usable model at all (for example no credential): wait like for any other outage.
+    cycle.health.failed(error);
     return toJudge.length;
   }
 
@@ -527,22 +533,25 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
     let decision = decide(result, context);
     if (needsSecondOpinion(result, decision)) {
       let agree = false;
+      // Whether a second look was had at all: a model that could not give one cannot disagree.
+      let looked = false;
       if (cycle.spendPass()) {
         try {
-          const second = (
-            await judgeItems({
-              runtime: deps.runtime,
-              model: await cycle.models.conversation(),
-              request: cycle.request,
-              context: cycle.adapter,
-              judge: judgeContext,
-              items: [item],
-              batchSize: 1,
-              spendPass: () => true,
-              onUsage: cycle.usage,
-              suffix: "second",
-            })
-          ).get(signal.id);
+          const asked = await judgeItems({
+            runtime: deps.runtime,
+            model: await cycle.models.conversation(),
+            request: cycle.request,
+            context: cycle.adapter,
+            judge: judgeContext,
+            items: [item],
+            batchSize: 1,
+            spendPass: () => true,
+            onUsage: cycle.usage,
+            suffix: "second",
+            pass: cycle.pass,
+          });
+          looked = asked.has(signal.id);
+          const second = asked.get(signal.id);
           agree = Boolean(second && decide(second, context).disposition === "interrupt");
         } catch (error) {
           if (cycle.adapter.signal.aborted) throw error;
@@ -553,7 +562,9 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
           ...decision,
           disposition: "brief",
           held: false,
-          reason: "Kept for your brief: a second look disagreed.",
+          reason: looked
+            ? "Kept for your brief: a second look disagreed."
+            : "Kept for your brief: no second look was available.",
           gates: [...decision.gates, "second_opinion"],
         };
       decision = {

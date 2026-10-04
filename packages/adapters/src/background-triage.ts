@@ -157,11 +157,7 @@ export function quoteInSource(source: string, quote: string): boolean {
 
 type UsageEvent = Extract<AgentRuntimeEvent, { type: "usage" }>;
 
-/**
- * One bounded, tool-less model call that must answer with a JSON object. Any failure
- * (transport, timeout, malformed output) returns null so callers can degrade.
- */
-export async function runJsonPass(input: {
+export type JsonPassInput = {
   runtime: AgentRuntime;
   request: Pick<AgentRunRequest, "botId" | "threadId" | "runId">;
   suffix: string;
@@ -171,12 +167,36 @@ export async function runJsonPass(input: {
   context: AdapterContext;
   onUsage?: (event: UsageEvent) => Promise<void>;
   timeoutMs?: number;
-}): Promise<Record<string, unknown> | null> {
+};
+
+/**
+ * What a bounded model call came back with. `invalid` means the model answered but not with a
+ * JSON object, so another try may help. `failed` means there was no answer at all (the call
+ * threw, or the provider took longer than the pass allows): nothing was learned about the
+ * input, and `error` is what went wrong.
+ */
+export type JsonPassResult =
+  | { status: "ok"; value: Record<string, unknown> }
+  | { status: "invalid" }
+  | { status: "failed"; error: unknown };
+
+/**
+ * One bounded, tool-less model call that must answer with a JSON object. Any failure
+ * (transport, timeout, malformed output) returns null so callers can degrade.
+ */
+export async function runJsonPass(input: JsonPassInput): Promise<Record<string, unknown> | null> {
+  const result = await runJsonPassResult(input);
+  return result.status === "ok" ? result.value : null;
+}
+
+/**
+ * Like `runJsonPass`, but keeps why there is no answer: an unusable reply and a call that
+ * failed are different outcomes. An abort by the caller's own signal still throws.
+ */
+export async function runJsonPassResult(input: JsonPassInput): Promise<JsonPassResult> {
   const runId = `${input.request.runId}:${input.suffix}`;
-  const signal = AbortSignal.any([
-    input.context.signal,
-    AbortSignal.timeout(input.timeoutMs ?? 60_000),
-  ]);
+  const timeout = AbortSignal.timeout(input.timeoutMs ?? 60_000);
+  const signal = AbortSignal.any([input.context.signal, timeout]);
   let text = "";
   try {
     for await (const event of input.runtime.run(
@@ -205,12 +225,18 @@ export async function runJsonPass(input: {
       error: error instanceof Error ? error.message : String(error),
     });
     await input.runtime.abort(runId).catch(() => undefined);
-    return null;
+    return { status: "failed", error: timeout.aborted ? timeout.reason : error };
   }
   const parsed = parseJsonObject(text);
-  if (!parsed)
-    getLogger().warn(`background ${input.suffix} pass returned no JSON`, { chars: text.length });
-  return parsed;
+  if (parsed) return { status: "ok", value: parsed };
+  // A runtime ends quietly when its signal fires, so a provider that never answered in time
+  // looks like an empty reply unless the pass's own clock is checked.
+  if (timeout.aborted && !input.context.signal.aborted) {
+    getLogger().warn(`background ${input.suffix} pass timed out`, { chars: text.length });
+    return { status: "failed", error: timeout.reason };
+  }
+  getLogger().warn(`background ${input.suffix} pass returned no JSON`, { chars: text.length });
+  return { status: "invalid" };
 }
 
 export const TRIAGE_INSTRUCTIONS =

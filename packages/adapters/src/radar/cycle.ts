@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { runJsonPass } from "../background-triage.js";
+import { runJsonPassResult } from "../background-triage.js";
 import { assessPending } from "./assess.js";
 import type { BriefNarration, BriefPeriod } from "./brief.js";
 import { deliverRadarBrief } from "./brief.js";
@@ -14,6 +14,8 @@ import { parseLearned } from "./learned.js";
 import { radarModels, recordRadarUsage } from "./models.js";
 import { observeDueSources, ownerAddressesFor, radarAgenda } from "./observe.js";
 import { asRecord, normalizeAddress } from "./observers/envelope.js";
+import type { ModelHealth, RadarOutage } from "./outage.js";
+import { MODEL_UNAVAILABLE, modelHealth, readOutage } from "./outage.js";
 import { PREP_LEAD_MS } from "./prep.js";
 import type { RadarOwner } from "./profile.js";
 import { commitRadarProfile, lockRadarProfile, radarOwner, readRadarSettings } from "./profile.js";
@@ -34,14 +36,18 @@ const DEFAULT_PASSES = 300;
 const MAX_IDLE_MS = 30 * 60_000;
 const DAY = 86_400_000;
 
-type Counters = { date: string; passes: number; retention?: string };
+/** The day's model passes, when the allowance resets, and the outage the model is waiting out. */
+type Counters = { date: string; passes: number; retention?: string; outage?: RadarOutage };
 
 function counters(value: unknown, today: string): Counters {
   const row = asRecord(value);
+  const outage = readOutage(row.outage);
   return {
     date: today,
     passes: row.date === today && typeof row.passes === "number" ? row.passes : 0,
     ...(typeof row.retention === "string" ? { retention: row.retention } : {}),
+    // Unlike the day's passes, the wait carries over midnight.
+    ...(outage ? { outage } : {}),
   };
 }
 
@@ -51,7 +57,7 @@ export const BRIEF_INSTRUCTIONS =
 function narrator(cycle: RadarCycle) {
   return async (input: BriefNarration) => {
     if (!cycle.spendPass()) return null;
-    const answer = await runJsonPass({
+    const result = await cycle.pass({
       runtime: cycle.deps.runtime,
       request: cycle.request,
       suffix: `brief-${input.period}`,
@@ -62,6 +68,7 @@ function narrator(cycle: RadarCycle) {
       onUsage: cycle.usage,
       timeoutMs: 90_000,
     });
+    const answer = result.status === "ok" ? result.value : null;
     const text = (value: unknown, max: number) =>
       typeof value === "string" ? value.trim().slice(0, max) : "";
     return answer
@@ -93,6 +100,11 @@ async function sendBriefs(
     orderBy: { createdAt: "desc" },
     select: { createdAt: true },
   });
+  // While the model waits out an outage, what is still pending was never looked at, and a
+  // brief that does not say so would read as "nothing needs you".
+  const unchecked = cycle.health.holding()
+    ? await prisma.radarSignal.count({ where: { ...owner, status: "pending" } })
+    : 0;
   const send = (period: BriefPeriod, requested = false) =>
     deliverRadarBrief({ ...deps, narrate: narrator(cycle) }, owner, cycle.conversation, {
       period,
@@ -103,6 +115,7 @@ async function sendBriefs(
       ...(last ? { lastBriefAt: last.createdAt } : {}),
       presenceAt: profile.presenceAt,
       requested,
+      unchecked,
     });
   // A pause that just ended: one catch-up brief, then the pause is cleared.
   if (settings.pausedUntil) {
@@ -213,7 +226,9 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
   }
   const data = (value: unknown) =>
     JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
-  const answer = await runJsonPass({
+  // Not `cycle.pass`: synthesis runs before judging and stays due until it succeeds, so a model
+  // that only it cannot reach must not hold judging up. It still waits while the model waits.
+  const result = await runJsonPassResult({
     runtime: deps.runtime,
     request: cycle.request,
     suffix: "synthesis",
@@ -229,7 +244,8 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
     onUsage: cycle.usage,
     timeoutMs: 120_000,
   });
-  if (!answer) return;
+  if (result.status !== "ok") return;
+  const answer = result.value;
   await prisma.$transaction(async (tx) => {
     const row = await lockRadarProfile(tx, owner);
     const applied = applySynthesis(parseLearned(row.learned), answer, new Set(counts.keys()));
@@ -336,7 +352,8 @@ async function nextCycle(cycle: RadarCycle, pending: number): Promise<Date> {
       ? new Date(settings.pausedUntil as string)
       : nextBriefAt(settings, (slot) => sent.has(`${slot.period}:${slot.localDate}`), now),
     profile?.briefRequestedAt ? now : undefined,
-    pending > 0 ? new Date(now.getTime() + 60_000) : undefined,
+    // Signals that wait for the model are tried again when its wait ends, not a minute from now.
+    pending > 0 ? (cycle.health.until() ?? new Date(now.getTime() + 60_000)) : undefined,
     ...(settings.meetingPrep
       ? cycle.agenda
           .map((event) => Date.parse(event.start) - PREP_LEAD_MS.to)
@@ -376,6 +393,7 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
   let next: Date | null = new Date(now.getTime() + 5 * 60_000);
   let error: string | null = null;
   let used: Counters | undefined;
+  let health: ModelHealth | undefined;
   try {
     const profile = await prisma.radarProfile.findUniqueOrThrow({
       where: { spaceId_userId: owner },
@@ -394,6 +412,8 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
     const today = localDate(now, settings.timeZone);
     used = counters(profile.counters, today);
     const tally = used;
+    const modelState = modelHealth(now, tally.outage);
+    health = modelState;
     const max = deps.maxModelPasses ?? DEFAULT_PASSES;
     const learned = parseLearned(profile.learned);
     const runId = `radar-${randomUUID()}`;
@@ -420,9 +440,16 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
       models: radarModels(deps, owner, conversation.botId),
       usage: recordRadarUsage(prisma, owner, conversation.botId),
       spendPass: () => {
-        if (tally.passes >= max) return false;
+        // No pass while the model waits out an outage, and none past the day's allowance.
+        if (modelState.holding() || tally.passes >= max) return false;
         tally.passes += 1;
         return true;
+      },
+      health: modelState,
+      pass: async (call) => {
+        const result = await runJsonPassResult(call);
+        // A pass cut short by the cycle's own abort says nothing about the provider.
+        return adapter.signal.aborted ? result : modelState.track(result);
       },
       ownerAddresses,
       agenda: [],
@@ -453,7 +480,10 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
     });
     await stage("deliver", () => dispatchDue(cycle));
     await stage("prep", () => prepareMeetings(cycle));
-    await stage("brief", () => sendBriefs(cycle, profile, pending > 0 && tally.passes < max));
+    // A brief waits for a backlog that can still be judged, never for one the model cannot take.
+    await stage("brief", () =>
+      sendBriefs(cycle, profile, pending > 0 && tally.passes < max && !modelState.holding()),
+    );
     if (tally.retention !== today)
       await stage("retention", async () => {
         await retain(prisma, owner, now);
@@ -472,6 +502,12 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
     error = "Radar could not finish a check. It will try again.";
     return true;
   } finally {
+    // The outage is kept (or cleared) even when the cycle ended early, and the owner sees it
+    // until the model answers again.
+    if (used && health) {
+      if (health.outage) used.outage = health.outage;
+      else delete used.outage;
+    }
     await prisma.radarProfile
       .updateMany({
         where: { ...owner, leaseOwner: deps.workerId },
@@ -480,7 +516,7 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
           leaseExpiresAt: null,
           lastCycleAt: now,
           nextCycleAt: next,
-          error,
+          error: health?.outage ? MODEL_UNAVAILABLE : error,
           ...(used ? { counters: used } : {}),
         },
       })

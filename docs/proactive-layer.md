@@ -77,7 +77,7 @@ importance = 100 * (0.20*actionRequired + 0.18*stakes + 0.14*addressed + 0.14*li
              * (seen == 0 ? 0.3 : 1)
 ```
 
-Borderline interrupts (importance within 5 points of the threshold, or `critical` from a sender with relationship below 2) get a second opinion from the conversation model; both must agree to interrupt. A failed pass leaves signals pending (bounded retries, then `silent` with reason "could not evaluate").
+Borderline interrupts (importance within 5 points of the threshold, or `critical` from a sender with relationship below 2) get a second opinion from the conversation model; both must agree to interrupt. A pass the model answers unusably (no JSON, a schema or quote that does not hold) counts as an attempt: three attempts, then `silent` with reason "Could not evaluate." A pass the provider does not answer at all (credit or balance used up, rate limit, bad key, server or network error, timeout) says nothing about the update, so it counts no attempt and starts a model outage (section 9). Without a second look a borderline interrupt stays a brief item, and its reason says no second look was available.
 
 ### 4. Decision policy (decided; pure function, versioned, table-tested)
 
@@ -159,6 +159,8 @@ Profile synthesis runs nightly and right after enabling: the conversation model 
 ### 9. Scheduling
 
 The elected job reconciler gets one more auxiliary reconciler. Per enabled owner it claims a cycle lease, runs due observers, then judging and decisions for pending signals, then due deliveries (deferred interrupts, snoozes, briefs, prep). Model calls use the existing bounded tool-less pass. A daily model allowance (default 300 passes) stops model work without losing signals; they wait. Radar runs regardless of chat activity because it never uses the conversation's run slot. Wake guards: at least 30 seconds between cycles per owner.
+
+**Model outage.** The first judging, brief or prep pass that gets no answer stops model work for the owner for 10 minutes; each further failure doubles the wait, up to 2 hours (kept in the profile's counters, so a restart keeps it). While it lasts no pass runs; observation, screening by rules and delivery of what was already decided carry on, and signals stay pending. The first pass the model answers, usable or not, ends the outage, and pending signals are judged oldest first within the daily allowance (the 3-day staleness rule still applies). `RadarProfile.error` reads "The model is unavailable. If this lasts, check the provider's credit or key." until then; it names no cause because the provider's own reason does not reach Radar. An owner's explicit check ends the wait at once and keeps the count. Profile synthesis neither starts nor ends an outage: it runs before judging and stays due until it succeeds, so it must not hold judging up. Briefs do not wait for a backlog the model cannot take: while it waits they are plain (needs you, held, the day) and end with "I couldn't check N updates yet because the model was unavailable."; they are sent even when nothing else is in them, and never say nothing needs the owner.
 
 Retention: excerpts are cleared after 30 days, signals deleted after 90 days.
 

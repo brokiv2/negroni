@@ -8,6 +8,7 @@ import {
   quoteInSource,
   resolveBackgroundModel,
   runJsonPass,
+  runJsonPassResult,
 } from "./background-triage.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
@@ -172,5 +173,106 @@ describe("runJsonPass", () => {
       throw new Error("gateway 503");
     };
     expect(await runJsonPass({ ...base, runtime })).toBeNull();
+  });
+});
+
+describe("runJsonPassResult", () => {
+  const base = {
+    request: { botId: "b", threadId: "t", runId: "r" },
+    suffix: "judge",
+    model: { provider: "scripted", id: "cheap" },
+    instructions: "x",
+    prompt: "{}",
+    context: {
+      spaceId: "s",
+      userId: "u",
+      operationId: "o",
+      traceId: "t",
+      signal: new AbortController().signal,
+    },
+  };
+  const answering = (text: string) => {
+    const runtime = new ScriptedAgentRuntime();
+    runtime.run = async function* () {
+      yield { type: "text", text };
+    };
+    return runtime;
+  };
+
+  it("keeps an answer, an unusable answer and a call that failed apart", async () => {
+    expect(await runJsonPassResult({ ...base, runtime: answering('{"a":1}') })).toEqual({
+      status: "ok",
+      value: { a: 1 },
+    });
+    // The model answered, just not with JSON: another try may help.
+    for (const text of ["", "I could not decide.", "[1, 2]"])
+      expect(await runJsonPassResult({ ...base, runtime: answering(text) })).toEqual({
+        status: "invalid",
+      });
+    const refused = Object.assign(new Error("402 Payment Required"), { status: 402 });
+    const runtime = new ScriptedAgentRuntime();
+    runtime.run = async function* () {
+      yield { type: "text", text: "" };
+      throw refused;
+    };
+    // The error comes back as it was thrown, so a caller can tell what happened.
+    const result = await runJsonPassResult({ ...base, runtime });
+    expect(result).toEqual({ status: "failed", error: refused });
+    expect((result as { error: unknown }).error).toBe(refused);
+  });
+
+  it("calls a provider that does not answer in time a failure, not an unusable answer", async () => {
+    // A runtime ends quietly once its signal fires, which looks like an empty reply.
+    const runtime = new ScriptedAgentRuntime();
+    runtime.run = async function* (_request, context) {
+      await new Promise<void>((resolve) =>
+        context?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    };
+    const result = await runJsonPassResult({ ...base, runtime, timeoutMs: 20 });
+    expect(result).toMatchObject({ status: "failed", error: { name: "TimeoutError" } });
+    // An answer that arrived in time still counts.
+    const late = new ScriptedAgentRuntime();
+    late.run = async function* (_request, context) {
+      yield { type: "text", text: '{"a":1}' };
+      await new Promise<void>((resolve) =>
+        context?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    };
+    expect(await runJsonPassResult({ ...base, runtime: late, timeoutMs: 20 })).toEqual({
+      status: "ok",
+      value: { a: 1 },
+    });
+  });
+
+  it("still throws when the caller's own signal stopped the pass", async () => {
+    const owner = new AbortController();
+    const runtime = new ScriptedAgentRuntime();
+    runtime.run = async function* () {
+      yield { type: "text", text: "" };
+      owner.abort();
+      throw new Error("aborted");
+    };
+    await expect(
+      runJsonPassResult({ ...base, runtime, context: { ...base.context, signal: owner.signal } }),
+    ).rejects.toThrow("aborted");
+  });
+
+  it("leaves runJsonPass as it was: null for every way of not getting JSON", async () => {
+    expect(await runJsonPass({ ...base, runtime: answering("prose") })).toBeNull();
+    const failing = new ScriptedAgentRuntime();
+    failing.run = async function* () {
+      yield { type: "text", text: "" };
+      throw new Error("503");
+    };
+    expect(await runJsonPass({ ...base, runtime: failing })).toBeNull();
+    const hanging = new ScriptedAgentRuntime();
+    hanging.run = async function* (_request, context) {
+      await new Promise<void>((resolve) =>
+        context?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    };
+    expect(await runJsonPass({ ...base, runtime: hanging, timeoutMs: 20 })).toBeNull();
+    expect(await runJsonPass({ ...base, runtime: answering('{"a":1}') })).toEqual({ a: 1 });
   });
 });
