@@ -15,6 +15,9 @@ const suite =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
 
 const MINUTE = 60_000;
+const EM = String.fromCharCode(0x2014);
+const EN = String.fromCharCode(0x2013);
+const LONG_DASH = new RegExp(`[${String.fromCharCode(0x2012)}-${String.fromCharCode(0x2015)}]`);
 const scores = (value: number, patch: Record<string, number> = {}) => ({
   addressed: value,
   actionRequired: value,
@@ -66,6 +69,17 @@ function fakeModel(): AgentRuntime & {
         action: "decide",
         offer: "Approve it now?",
         lead: "The contract is waiting for you.",
+      });
+    if (prompt.includes("DASHES"))
+      return judgement({
+        evidence: "DASHES",
+        scores: scores(3),
+        costOfDelay: "high",
+        title: `Partner ${EM} contract`,
+        why: `Needs a decision ${EM} by 7${EN}8 October.`,
+        action: "decide",
+        offer: `Approve it ${EN} now?`,
+        lead: `One thing ${EM} the contract.`,
       });
     if (prompt.includes("INJECT"))
       return judgement({
@@ -718,5 +732,79 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     expect(prompt("judge")).toContain('"at":"today 12:55"');
     expect(prompt("judge")).toContain('"start":"today 18:00"');
     expect(prompt("brief")).toContain('"start":"today 18:00"');
+  });
+
+  it("keeps long dashes and a time opener out of what Radar writes", async () => {
+    const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+    s.model.answers.brief = {
+      title: `Calm ${EM} one call`,
+      narrative: `Good morning! Today is Monday, 10:00 ${EM} one call matters ${EN} the rest is free.`,
+    };
+    s.mail("Contract", "DASHES: please decide on the contract.");
+    await s.cycle();
+    const [signal] = await s.signals();
+    expect(signal).toMatchObject({
+      headline: "Partner - contract",
+      why: "Needs a decision - by 7-8 October.",
+      offer: "Approve it - now?",
+      meta: { lead: "One thing - the contract." },
+    });
+    const messages = await s.messages();
+    expect(messages[0]?.blocks).toMatchObject([
+      { kind: "text", text: "One thing - the contract." },
+      { kind: "update", title: "Partner - contract", why: "Needs a decision - by 7-8 October." },
+    ]);
+    expect(messages.at(-1)?.blocks).toMatchObject([
+      { kind: "text", text: "One call matters - the rest is free." },
+      { kind: "brief", title: "Calm - one call" },
+    ]);
+    expect(s.pushes[0]).toMatchObject({
+      title: "Partner - contract",
+      body: "Needs a decision - by 7-8 October. Approve it - now?",
+    });
+    expect(JSON.stringify([messages.map((message) => message.blocks), s.pushes])).not.toMatch(
+      LONG_DASH,
+    );
+  });
+
+  it("keeps long dashes out of the meeting prep", async () => {
+    const s = await setup();
+    s.model.answers.prep = {
+      useful: true,
+      title: `Prep ${EM} planning`,
+      why: `Two open points ${EM} one decision.`,
+      points: [`Budget ${EN} draft is ready`, `Owner ${EM} still unknown`],
+      offer: `Draft an agenda ${EN} now?`,
+      lead: `Heads up ${EM} planning soon.`,
+    };
+    s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+      items: [
+        {
+          id: "p1",
+          status: "confirmed",
+          summary: "Planning",
+          start: { dateTime: "2026-10-05T10:17:00Z" },
+          end: { dateTime: "2026-10-05T11:00:00Z" },
+          updated: "2026-10-05T09:00:00Z",
+          organizer: { email: "outside@elsewhere.test" },
+          attendees: [
+            { email: "me@example.test", self: true, responseStatus: "accepted" },
+            { email: "outside@elsewhere.test", responseStatus: "accepted" },
+          ],
+        },
+      ],
+    });
+    await s.cycle();
+    const prep = (await s.signals()).find((signal) => signal.kind === "prep");
+    expect(prep).toMatchObject({
+      headline: "Prep - planning",
+      why: "Two open points - one decision.",
+      offer: "Draft an agenda - now?",
+      excerpt: "• Budget - draft is ready\n• Owner - still unknown",
+      meta: { lead: "Heads up - planning soon." },
+    });
+    const messages = await s.messages();
+    expect(messages).toHaveLength(1);
+    expect(JSON.stringify([messages[0]?.blocks, s.pushes])).not.toMatch(LONG_DASH);
   });
 });

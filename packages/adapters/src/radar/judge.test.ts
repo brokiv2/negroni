@@ -3,10 +3,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefAgenda, withoutGreeting } from "./brief.js";
+import { briefAgenda, briefNarrative, withoutGreeting, withoutTimeOpener } from "./brief.js";
+import { BRIEF_INSTRUCTIONS } from "./cycle.js";
 import type { JudgeContext, JudgeItem } from "./judge.js";
-import { judgeItems, judgePrompt, parseJudgement } from "./judge.js";
-import { applySynthesis, isAutomatedAddress, readContextFiles } from "./synthesis.js";
+import { JUDGE_INSTRUCTIONS, judgeItems, judgePrompt, parseJudgement } from "./judge.js";
+import { PREP_INSTRUCTIONS } from "./prep.js";
+import {
+  applySynthesis,
+  isAutomatedAddress,
+  readContextFiles,
+  SYNTHESIS_INSTRUCTIONS,
+} from "./synthesis.js";
+
+const EM = String.fromCharCode(0x2014);
+const EN = String.fromCharCode(0x2013);
 
 const source =
   "A Colleague <colleague@example.test>\nBudget figures\nCould you send the figures before the 15:00 review?";
@@ -84,6 +94,27 @@ describe("judge output", () => {
     );
     expect(quoted?.confidence).toBe(0.9);
     expect(quoted?.evidence).toBeDefined();
+  });
+
+  it("keeps long dashes out of what it writes, but quotes the source as it is", () => {
+    const quoted = `Could you send the figures ${EM} today?`;
+    const judged = parseJudgement(
+      answer({
+        evidence: quoted,
+        title: `Colleague ${EM} budget figures`,
+        why: `They need the figures ${EM} due 7${EN}8 October.`,
+        offer: `Send them ${EN} now?`,
+        lead: `One thing ${EM} the budget.`,
+      }),
+      `A Colleague <colleague@example.test>\nBudget figures\n${quoted}`,
+    );
+    expect(judged).toMatchObject({
+      title: "Colleague - budget figures",
+      why: "They need the figures - due 7-8 October.",
+      offer: "Send them - now?",
+      lead: "One thing - the budget.",
+      evidence: quoted,
+    });
   });
 
   it("caps confidence when the quote is not in the source", () => {
@@ -332,6 +363,27 @@ describe("profile synthesis", () => {
     });
   });
 
+  it("writes the profile without long dashes", () => {
+    const applied = applySynthesis(
+      { rules: [], people: [] },
+      {
+        summary: `Runs operations ${EM} budget season.`,
+        language: "English",
+        priorities: [`Budget ${EN} Q4`],
+        noise: [`Vendor mail ${EM} promotions`],
+        people: [{ name: "Colleague", addresses: [], relation: `peer ${EM} finance`, weight: 2 }],
+      },
+      new Set(),
+    );
+    expect(applied.summary).toBe("Runs operations - budget season.");
+    expect(applied.learned.synthesis).toEqual({
+      language: "English",
+      priorities: ["Budget - Q4"],
+      noise: ["Vendor mail - promotions"],
+    });
+    expect(applied.learned.people.map((person) => person.relation)).toEqual(["peer - finance"]);
+  });
+
   it("never learns a system sender as a person", () => {
     for (const address of [
       "noreply@service.example.test",
@@ -359,12 +411,74 @@ describe("profile synthesis", () => {
   });
 });
 
+describe("voice instructions", () => {
+  it("ask every pass that writes for the owner to speak to them, without long dashes", () => {
+    for (const instructions of [JUDGE_INSTRUCTIONS, BRIEF_INSTRUCTIONS, PREP_INSTRUCTIONS]) {
+      expect(instructions).toContain("second person");
+      expect(instructions).toContain("em dashes or en dashes");
+      expect(instructions).toContain("no greeting");
+    }
+    expect(SYNTHESIS_INSTRUCTIONS).toContain("em dashes or en dashes");
+    // The agenda carries the times, so a brief does not open with the day or the clock.
+    expect(BRIEF_INSTRUCTIONS).toContain(
+      "never open with the weekday, the date or the current time",
+    );
+  });
+});
+
 describe("brief text", () => {
   it("drops an opening greeting but keeps a short first sentence with substance", () => {
     expect(withoutGreeting("Доброе утро. Сегодня одна встреча.")).toBe("Сегодня одна встреча.");
     expect(withoutGreeting("Good morning, Sam! Two things need you.")).toBe("Two things need you.");
     expect(withoutGreeting("All quiet. Nothing needs you.")).toBe("All quiet. Nothing needs you.");
     expect(withoutGreeting("History repeats. Again.")).toBe("History repeats. Again.");
+  });
+
+  it("drops an opening weekday and the current time, and only that", () => {
+    const now = { hour: 10, minute: 29 };
+    const stripped = (text: string) => withoutTimeOpener(text, now);
+    expect(stripped("Today is Sunday, 10:29. One call at 11:00.")).toBe("One call at 11:00.");
+    expect(stripped("Sunday, 10:29 - a quiet day with one call.")).toBe(
+      "A quiet day with one call.",
+    );
+    expect(stripped("It's 10:29, and one call matters.")).toBe("One call matters.");
+    expect(stripped("Today is Sunday. One call at 11:00.")).toBe("One call at 11:00.");
+    expect(stripped("Сегодня воскресенье, 10:29, в календаре только планёрка в 11:00.")).toBe(
+      "В календаре только планёрка в 11:00.",
+    );
+    expect(stripped("Сегодня воскресенье. Одна встреча.")).toBe("Одна встреча.");
+    expect(stripped("It's Sunday afternoon, 10:29, and one thing needs you.")).toBe(
+      "One thing needs you.",
+    );
+    expect(stripped("Сейчас 10:29 в воскресенье, один созвон в 11:00.")).toBe(
+      "Один созвон в 11:00.",
+    );
+    expect(stripped("Today is Sunday - a quiet day with one call.")).toBe(
+      "A quiet day with one call.",
+    );
+    expect(stripped("Heute ist Sonntag, 10:29. Ein Termin um 11:00.")).toBe("Ein Termin um 11:00.");
+    // A time that is not the current one, or a sentence that has substance, stays.
+    expect(stripped("11:00, standup, then a free day.")).toBe("11:00, standup, then a free day.");
+    expect(stripped("Today is a quiet day with one call.")).toBe(
+      "Today is a quiet day with one call.",
+    );
+    expect(stripped("Sunday plans: one call at 11:00.")).toBe("Sunday plans: one call at 11:00.");
+    expect(stripped("Today is Sunday, the 4th, and the day is quiet.")).toBe(
+      "Today is Sunday, the 4th, and the day is quiet.",
+    );
+    expect(stripped("Today is Sunday, 10:29.")).toBe("");
+  });
+
+  it("cleans a narrative the same way every time", () => {
+    const now = { hour: 10, minute: 29 };
+    expect(
+      briefNarrative(
+        `  Good morning! Today is Sunday, 10:29 ${EM} one call at 11:00${EN}12:00.`,
+        now,
+      ),
+    ).toBe("One call at 11:00-12:00.");
+    expect(briefNarrative("Two things need you.", now)).toBe("Two things need you.");
+    expect(briefNarrative("", now)).toBe("");
   });
 });
 

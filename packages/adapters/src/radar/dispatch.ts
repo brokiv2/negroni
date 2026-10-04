@@ -17,6 +17,7 @@ import { matchRules } from "./prefilter.js";
 import { PREP_DAILY_CAP, PREP_INSTRUCTIONS, prepCandidates } from "./prep.js";
 import { briefSlots, quietHoursEnd } from "./schedule.js";
 import { isRadarPaused } from "./settings.js";
+import { plainDashes } from "./text.js";
 
 type SignalRow = Awaited<ReturnType<PrismaClient["radarSignal"]["findFirstOrThrow"]>>;
 const HOUR = 3_600_000;
@@ -300,10 +301,12 @@ export async function prepareMeetings(cycle: RadarCycle): Promise<void> {
     const points = Array.isArray(answer?.points)
       ? (answer.points as unknown[])
           .filter((point): point is string => typeof point === "string" && point.trim().length > 0)
+          .map(plainDashes)
           .slice(0, 5)
       : [];
+    // Everything the model writes for the owner is free of long dashes.
     const text = (value: unknown, max: number) =>
-      typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
+      typeof value === "string" ? plainDashes(value).replace(/\s+/g, " ").trim().slice(0, max) : "";
     if (answer?.useful !== true || points.length < 2 || !text(answer.title, 60)) {
       // Record the look so the same meeting is not prepared twice.
       await prisma.radarSignal.createMany({

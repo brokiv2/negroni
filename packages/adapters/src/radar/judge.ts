@@ -8,6 +8,7 @@ import type { RadarAction, RadarScores } from "@rakazo/contracts";
 import { quoteInSource, runJsonPass } from "../background-triage.js";
 import type { CostOfDelay, RadarJudgement } from "./policy.js";
 import { RADAR_DIMENSIONS } from "./policy.js";
+import { plainDashes } from "./text.js";
 
 /** One update as the judge sees it. Everything here is untrusted source data. */
 export type JudgeItem = {
@@ -73,7 +74,7 @@ export const JUDGE_INSTRUCTIONS = [
   'costOfDelay is what the person loses by learning this at the next brief instead of now: "none", "low", "high" or "critical". "critical" needs concrete harm before the next brief that the quote supports.',
   "confidence (0-1) is how sure you are of the facts you extracted, not how important the update is.",
   'title: at most 60 characters, names the person or system and the change. why: one sentence a busy person accepts as a reason to look now, specific about who wants what by when; never "this seems important". action: reply, decide, prepare, attend, pay, review or none. offer: one thing the assistant can do about it, phrased as a short question of at most 80 characters (for example "Draft a reply proposing 11:00?"), or "" when nothing fits. lead: one short sentence to say before showing the card, with no greeting and no "I noticed".',
-  "Write title, why, offer and lead in LANGUAGE, speaking to the person directly in the second person (informally where the language has an informal you); never name them or refer to them in the third person.",
+  "Write title, why, offer and lead in LANGUAGE, speaking to the person directly in the second person (informally where the language has an informal you); never name them or refer to them in the third person. Never use em dashes or en dashes in them; use commas, colons or periods instead.",
   'Return only JSON: {"evidence":"","whoMustAct":"owner|someone_else|nobody|unclear","verdict":"scored|unclear","scores":{"addressed":0,"actionRequired":0,"timePressure":0,"stakes":0,"relationship":0,"novelty":0,"linkage":0,"seen":0},"costOfDelay":"none","confidence":0,"title":"","why":"","action":"none","offer":"","lead":""}',
 ].join("\n");
 
@@ -141,6 +142,9 @@ export const withoutMarkdown = (text: string) =>
 
 const clip = (value: unknown, max: number) =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
+/** Text Radar shows the owner: clipped and free of long dashes (a quote is never passed through). */
+const copy = (value: unknown, max: number) =>
+  clip(typeof value === "string" ? plainDashes(value) : value, max);
 const ACTIONS: RadarAction[] = ["reply", "decide", "attend", "review", "pay", "read", "none"];
 
 /**
@@ -196,14 +200,14 @@ export function parseJudgement(
     (quoteInSource(sourceText, quote) ||
       quoteInSource(withoutMarkdown(sourceText), withoutMarkdown(quote)));
   if (!grounded) confidence = Math.min(confidence, 0.5);
-  const title = clip(value.title, 60);
-  const why = clip(value.why, 240);
+  const title = copy(value.title, 60);
+  const why = copy(value.why, 240);
   if (!title || !why) return null;
   const actionText = clip(value.action, 20).toLowerCase();
   const action =
     actionText === "prepare" ? "review" : (ACTIONS.find((a) => a === actionText) ?? "none");
-  const offer = clip(value.offer, 80);
-  const lead = clip(value.lead, 160);
+  const offer = copy(value.offer, 80);
+  const lead = copy(value.lead, 160);
   return {
     scores,
     costOfDelay,
