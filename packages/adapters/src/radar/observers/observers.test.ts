@@ -311,6 +311,55 @@ describe("granola", () => {
     expect(result.signals[0]?.url).toBeUndefined();
     expect(result.cursor).toEqual({ since: now.toISOString(), seen: ["b", "a"] });
   });
+
+  it("reads the MCP's tagged listing and waits for notes not written yet", async () => {
+    const listing = [
+      "Meetings for the requested period:",
+      '<meetings_data from="2026-10-04" to="2026-10-05" count="2">',
+      '<meeting id="m-1" title="Plan &amp; budget" date="2026-10-05T08:00:00Z" url="https://notes.granola.ai/d/m-1">',
+      "<known_participants>A Colleague &lt;colleague@example.test&gt;</known_participants>",
+      "</meeting>",
+      '<meeting id="m-2" title="Just now" date="2026-10-05T09:50:00Z"></meeting>',
+      "</meetings_data>",
+    ].join("\n");
+    const details = [
+      '<meetings_data count="2">',
+      '<meeting id="m-1" title="Plan &amp; budget" date="2026-10-05T08:00:00Z" url="https://notes.granola.ai/d/m-1">',
+      "<known_participants>A Colleague &lt;colleague@example.test&gt;</known_participants>",
+      "<summary>",
+      "### Decisions",
+      "- Send the budget by Tuesday",
+      "</summary>",
+      "</meeting>",
+      '<meeting id="m-2" title="Just now" date="2026-10-05T09:50:00Z">',
+      "<known_participants>A Colleague</known_participants>",
+      "</meeting>",
+      "</meetings_data>",
+    ].join("\n");
+    expect(granolaMeetings({ data: { data: listing } }).map((meeting) => meeting.id)).toEqual([
+      "m-1",
+      "m-2",
+    ]);
+    expect(
+      granolaMeetings({ data: { data: '<meetings_data count="0"></meetings_data>' } }),
+    ).toEqual([]);
+    const { call } = provider({
+      GRANOLA_MCP_LIST_MEETINGS: { data: { data: listing } },
+      GRANOLA_MCP_GET_MEETINGS: { data: { data: details } },
+    });
+    const result = await granolaObserver.observe(input(call));
+    expect(result.signals).toMatchObject([
+      {
+        externalId: "m-1",
+        title: "Plan & budget",
+        url: "https://notes.granola.ai/d/m-1",
+        excerpt:
+          "Participants: A Colleague <colleague@example.test>\n\n### Decisions\n- Send the budget by Tuesday",
+      },
+    ]);
+    // The second meeting has no notes yet, so the window stays open for it.
+    expect(result.cursor).toEqual({ since: since.toISOString(), seen: ["m-1"] });
+  });
 });
 
 describe("slack, todoist and drive", () => {
