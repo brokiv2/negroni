@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { briefAgenda } from "./brief.js";
 import type { JudgeContext, JudgeItem } from "./judge.js";
 import { judgeItems, judgePrompt, parseJudgement } from "./judge.js";
-import { applySynthesis, readContextFiles } from "./synthesis.js";
+import { applySynthesis, isAutomatedAddress, readContextFiles } from "./synthesis.js";
 
 const source =
   "A Colleague <colleague@example.test>\nBudget figures\nCould you send the figures before the 15:00 review?";
@@ -259,6 +259,17 @@ describe("profile synthesis", () => {
       { path: "AGENTS.md", text: "Routing map" },
       { path: "notes/priorities.md", text: "x".repeat(39) },
     ]);
+    // A long first file does not crowd out the ones after it.
+    await writeFile(path.join(root, "notes", "about.md"), "y".repeat(30));
+    expect(
+      (
+        await readContextFiles(root, ["notes/priorities.md", "notes/about.md", "AGENTS.md"], 60)
+      ).map((file) => [file.path, file.text.length]),
+    ).toEqual([
+      ["notes/priorities.md", 25],
+      ["notes/about.md", 24],
+      ["AGENTS.md", 11],
+    ]);
     expect(await readContextFiles(undefined, ["AGENTS.md"])).toEqual([]);
   });
 
@@ -319,6 +330,32 @@ describe("profile synthesis", () => {
       priorities: ["Quarterly budget"],
       noise: ["Vendor newsletters"],
     });
+  });
+
+  it("never learns a system sender as a person", () => {
+    for (const address of [
+      "noreply@service.example.test",
+      "no-reply-a1b2@mail.example.test",
+      "app_no_reply@email.example.test",
+      "security@mail.example.test",
+      "assistant-bot@mail.example.test",
+      "community@vendor.example.test",
+      "billing+eu@shop.example.test",
+    ])
+      expect(isAutomatedAddress(address), address).toBe(true);
+    for (const address of ["abbott@example.test", "anna.lee@example.test", "newsome@example.test"])
+      expect(isAutomatedAddress(address), address).toBe(false);
+    const applied = applySynthesis(
+      { rules: [], people: [] },
+      {
+        people: [
+          { name: "Service", addresses: ["noreply@service.example.test"], weight: 1 },
+          { name: "Colleague", addresses: ["colleague@example.test"], weight: 2 },
+        ],
+      },
+      new Set(["noreply@service.example.test", "colleague@example.test"]),
+    );
+    expect(applied.learned.people.map((person) => person.name)).toEqual(["Colleague"]);
   });
 });
 

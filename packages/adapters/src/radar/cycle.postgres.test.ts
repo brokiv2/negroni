@@ -585,6 +585,39 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     expect(s.pushes).toHaveLength(1);
   });
 
+  it("writes in the language the profile found, from the very first cycle", async () => {
+    const synthesis = {
+      summary: "Runs a small team.",
+      language: "Russian",
+      priorities: [],
+      noise: [],
+      people: [],
+    };
+    const instructions = (s: Awaited<ReturnType<typeof setup>>, kind: string) =>
+      s.model.requests.find((request) => request.runId.split(":").at(-1)?.startsWith(kind))
+        ?.instructions ?? "";
+    const found = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+    found.model.answers.synthesis = synthesis;
+    found.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await found.cycle();
+    expect(instructions(found, "judge")).toContain("in Russian");
+    expect(instructions(found, "brief")).toContain("Write in Russian");
+    // A language the owner chose wins over the one the profile found.
+    const chosen = await setup({
+      language: "German",
+      morningBrief: { enabled: true, time: "09:30" },
+    });
+    chosen.model.answers.synthesis = synthesis;
+    chosen.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await chosen.cycle();
+    expect(instructions(chosen, "judge")).toContain("in German");
+    expect(instructions(chosen, "brief")).toContain("Write in German");
+  });
+
   it("gives the model local times, not UTC", async () => {
     const s = await setup({
       timeZone: "Europe/Helsinki",

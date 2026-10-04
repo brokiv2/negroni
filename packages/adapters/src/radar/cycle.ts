@@ -19,7 +19,12 @@ import type { RadarOwner } from "./profile.js";
 import { commitRadarProfile, lockRadarProfile, radarOwner, readRadarSettings } from "./profile.js";
 import { briefSlots, nextBriefAt } from "./schedule.js";
 import { isRadarPaused } from "./settings.js";
-import { applySynthesis, readContextFiles, SYNTHESIS_INSTRUCTIONS } from "./synthesis.js";
+import {
+  applySynthesis,
+  isAutomatedAddress,
+  readContextFiles,
+  SYNTHESIS_INSTRUCTIONS,
+} from "./synthesis.js";
 
 const LEASE_MS = 10 * 60_000;
 const CYCLE_BUDGET_MS = 8 * 60_000;
@@ -135,7 +140,7 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
         createdAt: { gte: since },
         kind: { in: ["email", "message", "comment", "share"] },
       },
-      select: { actor: true, direct: true },
+      select: { actor: true, direct: true, meta: true },
       take: 2000,
     }),
     prisma.radarSignal.findMany({
@@ -148,8 +153,17 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
   const counts = new Map<string, { name?: string; count: number; direct: number }>();
   for (const row of actors) {
     const actor = asRecord(row.actor);
+    const meta = asRecord(row.meta);
     const address = normalizeAddress(actor.address);
-    if (!address || cycle.ownerAddresses.includes(address)) continue;
+    // People only: bulk, no-reply and other system senders are not correspondents.
+    if (
+      !address ||
+      cycle.ownerAddresses.includes(address) ||
+      meta.bulk === true ||
+      meta.noReply === true ||
+      isAutomatedAddress(address)
+    )
+      continue;
     const entry = counts.get(address) ?? { count: 0, direct: 0 };
     entry.count += 1;
     if (row.direct) entry.direct += 1;
@@ -205,6 +219,9 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
     });
     cycle.learned = applied.learned;
     if (applied.summary) cycle.summary = applied.summary;
+    // The first cycle after enabling already writes in the language the profile found.
+    if (!settings.language && applied.learned.synthesis?.language)
+      cycle.language = applied.learned.synthesis.language;
   });
   getLogger().info("radar profile synthesized", {
     files: files.length,
