@@ -1,10 +1,23 @@
 import { RadarSettingsSchema } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { localDate, nextLocalDate, startOfLocalDay, zonedInstant } from "./clock.js";
+import { localDate, localWhen, nextLocalDate, startOfLocalDay, zonedInstant } from "./clock.js";
 import type { BriefSlot } from "./schedule.js";
 import { briefSlots, nextBriefAt, radarPushExpiry } from "./schedule.js";
 
 describe("radar clock", () => {
+  it("labels times the way the owner reads them", () => {
+    const now = new Date("2026-10-04T07:20:00Z");
+    expect(localWhen("2026-10-04T08:00:00Z", "Europe/Helsinki", now)).toBe("today 11:00");
+    expect(localWhen(new Date("2026-10-05T06:30:00Z"), "Europe/Helsinki", now)).toBe(
+      "tomorrow 09:30",
+    );
+    expect(localWhen("2026-10-06T11:00:00Z", "Europe/Helsinki", now)).toBe(
+      "Tuesday 6 October 14:00",
+    );
+    expect(localWhen("2026-10-04", "America/Los_Angeles", now, true)).toBe("today (all day)");
+    expect(localWhen("not a date", "UTC", now)).toBe("not a date");
+  });
+
   it("reads the calendar date in the owner's zone", () => {
     const at = new Date("2026-10-03T22:30:00Z");
     expect(localDate(at, "UTC")).toBe("2026-10-03");

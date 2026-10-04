@@ -40,9 +40,20 @@ const judgement = (patch: Record<string, unknown>) => ({
   ...patch,
 });
 
-/** A deterministic model: the source text says how it should be judged. */
-function fakeModel(): AgentRuntime & { calls: string[] } {
+type Answers = Partial<Record<"brief" | "synthesis" | "prep", unknown>>;
+
+/**
+ * A deterministic model: the source text says how it should be judged. `requests` keeps what
+ * each pass was asked; `answers` replaces the canned brief, synthesis or prep answer.
+ */
+function fakeModel(): AgentRuntime & {
+  calls: string[];
+  requests: AgentRunRequest[];
+  answers: Answers;
+} {
   const calls: string[] = [];
+  const requests: AgentRunRequest[] = [];
+  const answers: Answers = {};
   const judge = (prompt: string, second: boolean) => {
     if (prompt.includes('"kind":"event_cancelled"')) return judgement({ scores: scores(0) });
     if (prompt.includes("URGENT"))
@@ -85,27 +96,33 @@ function fakeModel(): AgentRuntime & { calls: string[] } {
   };
   return {
     calls,
+    requests,
+    answers,
     describe: () =>
       ({ id: "fake", contractVersion: "1", adapterVersion: "0", capabilities: {} }) as never,
     abort: async () => undefined,
     async *run(request: AgentRunRequest) {
       const kind = request.runId.split(":").at(-1) ?? "";
       calls.push(kind);
+      requests.push(request);
       const answer = kind.startsWith("judge")
         ? judge(request.prompt, false)
         : kind.startsWith("second")
           ? judge(request.prompt, true)
           : kind.startsWith("brief")
-            ? { title: "Morning brief", narrative: "A calm day with one thing that matters." }
+            ? (answers.brief ?? {
+                title: "Morning brief",
+                narrative: "A calm day with one thing that matters.",
+              })
             : kind === "synthesis"
-              ? {
+              ? (answers.synthesis ?? {
                   summary: "Runs a small team.",
                   language: "English",
                   priorities: [],
                   noise: [],
                   people: [],
-                }
-              : { useful: false };
+                })
+              : (answers.prep ?? { useful: false });
       yield { type: "text", text: JSON.stringify(answer) };
     },
   };
@@ -566,5 +583,40 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       "expired",
     );
     expect(s.pushes).toHaveLength(1);
+  });
+
+  it("gives the model local times, not UTC", async () => {
+    const s = await setup({
+      timeZone: "Europe/Helsinki",
+      morningBrief: { enabled: true, time: "12:00" },
+    });
+    s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+      items: [
+        {
+          id: "e1",
+          status: "confirmed",
+          summary: "Planning",
+          start: { dateTime: "2026-10-05T15:00:00Z" },
+          end: { dateTime: "2026-10-05T16:00:00Z" },
+          updated: "2026-10-05T09:00:00Z",
+          organizer: { email: "partner@example.test" },
+          attendees: [
+            { email: "me@example.test", self: true, responseStatus: "accepted" },
+            { email: "partner@example.test", responseStatus: "accepted" },
+          ],
+        },
+      ],
+    });
+    s.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await s.cycle();
+    const prompt = (kind: string) =>
+      s.model.requests.find((request) => request.runId.split(":").at(-1)?.startsWith(kind))
+        ?.prompt ?? "";
+    // Helsinki is three hours ahead in October: 09:55Z is 12:55, 15:00Z is 18:00.
+    expect(prompt("judge")).toContain('"at":"today 12:55"');
+    expect(prompt("judge")).toContain('"start":"today 18:00"');
+    expect(prompt("brief")).toContain('"start":"today 18:00"');
   });
 });

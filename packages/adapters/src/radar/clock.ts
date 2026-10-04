@@ -81,3 +81,37 @@ export function localTimeLabel(at: Date, timeZone: string): string {
     hourCycle: "h23",
   }).format(at);
 }
+
+/**
+ * A time as the owner reads it, for prompts: "today 11:00", "tomorrow 09:30" or
+ * "Tuesday 6 October 14:00". Models misconvert UTC timestamps, so they get local labels.
+ * An all-day date ("2026-10-06") keeps its calendar day.
+ */
+export function localWhen(at: Date | string, timeZone: string, now: Date, allDay = false): string {
+  const date = typeof at === "string" ? new Date(at) : at;
+  if (Number.isNaN(date.getTime())) return String(at);
+  const day =
+    allDay && typeof at === "string" && /^\d{4}-\d{2}-\d{2}/.test(at)
+      ? at.slice(0, 10)
+      : localDate(date, timeZone);
+  const today = localDate(now, timeZone);
+  const label =
+    day === today
+      ? "today"
+      : day === nextLocalDate(today)
+        ? "tomorrow"
+        : new Intl.DateTimeFormat("en-GB", {
+            timeZone: "UTC",
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+          }).format(new Date(`${day}T12:00:00Z`));
+  if (allDay) return `${label} (all day)`;
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `${label} ${time}`;
+}

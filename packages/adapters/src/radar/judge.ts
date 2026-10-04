@@ -69,11 +69,11 @@ export const JUDGE_INSTRUCTIONS = [
   "relationship: 0 unknown or automated; 1 known contact; 2 frequent collaborator; 3 a person who matters (listed in <owner> or a rule).",
   "novelty: 0 duplicate or already known; 1 cosmetic change; 2 material change to a known story; 3 new story.",
   "linkage: 0 none; 1 a stated interest; 2 an active project or ongoing work; 3 blocks or unblocks an open commitment.",
-  "seen: 0 already handled in the source; 1 opened; 2 unknown; 3 unread.",
+  "seen: 0 already handled in the source (the data shows the person already did what is asked); 1 opened, or a meeting they attended; 2 unknown; 3 unread.",
   'costOfDelay is what the person loses by learning this at the next brief instead of now: "none", "low", "high" or "critical". "critical" needs concrete harm before the next brief that the quote supports.',
   "confidence (0-1) is how sure you are of the facts you extracted, not how important the update is.",
-  'title: at most 60 characters, names the person or system and the change. why: one sentence a busy person accepts as a reason to look now, specific about who wants what by when; never "this seems important". action: reply, decide, prepare, attend, pay, review or none. offer: one thing the assistant can do about it, phrased as a short question of at most 80 characters (for example "Draft a reply proposing 11:00?"), or "" when nothing fits. lead: one short sentence to say before showing the card.',
-  "Write title, why, offer and lead in LANGUAGE.",
+  'title: at most 60 characters, names the person or system and the change. why: one sentence a busy person accepts as a reason to look now, specific about who wants what by when; never "this seems important". action: reply, decide, prepare, attend, pay, review or none. offer: one thing the assistant can do about it, phrased as a short question of at most 80 characters (for example "Draft a reply proposing 11:00?"), or "" when nothing fits. lead: one short sentence to say before showing the card, with no greeting and no "I noticed".',
+  "Write title, why, offer and lead in LANGUAGE, speaking to the person directly in the second person (informally where the language has an informal you); never name them or refer to them in the third person.",
   'Return only JSON: {"evidence":"","whoMustAct":"owner|someone_else|nobody|unclear","verdict":"scored|unclear","scores":{"addressed":0,"actionRequired":0,"timePressure":0,"stakes":0,"relationship":0,"novelty":0,"linkage":0,"seen":0},"costOfDelay":"none","confidence":0,"title":"","why":"","action":"none","offer":"","lead":""}',
 ].join("\n");
 
@@ -128,6 +128,17 @@ export function judgePrompt(context: JudgeContext, items: JudgeItem[]): string {
     .join("\n");
 }
 
+/**
+ * Notes arrive as markdown with escapes ("\\~7-8th", "**Decision**"); a faithful quote of the
+ * rendered words still counts.
+ */
+export const withoutMarkdown = (text: string) =>
+  text
+    .replace(/\\([\\`*_{}[\]()#+\-.!~|>])/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`~]+/g, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "");
+
 const clip = (value: unknown, max: number) =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
 const ACTIONS: RadarAction[] = ["reply", "decide", "attend", "review", "pay", "read", "none"];
@@ -140,7 +151,7 @@ const ACTIONS: RadarAction[] = ["reply", "decide", "attend", "review", "pay", "r
 export function parseJudgement(
   raw: unknown,
   sourceText: string,
-  known: { unread?: boolean | null } = {},
+  known: { unread?: boolean | null; kind?: string } = {},
 ): JudgeResult | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
@@ -151,9 +162,12 @@ export function parseJudgement(
     if (!Number.isFinite(score)) return null;
     scores[dimension] = Math.min(3, Math.max(0, Math.round(score)));
   }
-  // The provider's read state is a fact; the model's guess is not.
+  // The provider's read state is a fact; the model's guess is not. Whether the owner already
+  // handled mail is decided in code from their replies, so a read message counts as opened.
+  // Notes from a meeting the owner attended are known to them, never already handled.
   if (known.unread === true) scores.seen = 3;
-  else if (known.unread === false && scores.seen > 1) scores.seen = 1;
+  else if (known.unread === false) scores.seen = 1;
+  else if (known.kind === "meeting_notes") scores.seen = Math.max(1, scores.seen);
   const who = clip(value.whoMustAct, 40)
     .toLowerCase()
     .replace(/[\s-]+/g, "_");
@@ -177,7 +191,10 @@ export function parseJudgement(
   if (confidence > 1 && confidence <= 100) confidence /= 100;
   confidence = Math.min(1, Math.max(0, confidence));
   const quote = clip(value.evidence, 200);
-  const grounded = Boolean(quote) && quoteInSource(sourceText, quote);
+  const grounded =
+    Boolean(quote) &&
+    (quoteInSource(sourceText, quote) ||
+      quoteInSource(withoutMarkdown(sourceText), withoutMarkdown(quote)));
   if (!grounded) confidence = Math.min(confidence, 0.5);
   const title = clip(value.title, 60);
   const why = clip(value.why, 240);
@@ -251,7 +268,9 @@ export async function judgeItems(input: {
       const raw = answers.find((candidate) => candidate && candidate.id === item.id);
       results.set(
         item.id,
-        raw ? parseJudgement(raw, judgeSourceText(item), { unread: item.unread }) : null,
+        raw
+          ? parseJudgement(raw, judgeSourceText(item), { unread: item.unread, kind: item.kind })
+          : null,
       );
     }
   }

@@ -2,7 +2,7 @@ import type { MessageBlock, RadarSettings } from "@rakazo/contracts";
 import { MAX_BRIEF_AGENDA } from "@rakazo/contracts";
 import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { localDate, nextLocalDate, zonedInstant } from "./clock.js";
+import { localDate, localWhen, nextLocalDate, zonedInstant } from "./clock.js";
 import type { RadarDeliveryDeps } from "./deliver.js";
 import { blockActor, PRESENCE_WINDOW_MS, sendPush } from "./deliver.js";
 import type { AgendaEvent } from "./observers/types.js";
@@ -190,9 +190,15 @@ export async function deliverRadarBrief(
         title: signal.headline || signal.title,
         ...(signal.why ? { why: signal.why } : {}),
         ...(signal.offer ? { offer: signal.offer } : {}),
-        ...(signal.deadline ? { deadline: signal.deadline.toISOString() } : {}),
+        ...(signal.deadline
+          ? { deadline: localWhen(signal.deadline, settings.timeZone, now) }
+          : {}),
       })),
-      agenda: agenda.map((event) => ({ title: event.title, start: event.start })),
+      // Local labels: models misconvert UTC timestamps.
+      agenda: agenda.map((event) => ({
+        title: event.title,
+        start: localWhen(event.start, settings.timeZone, now, event.allDay),
+      })),
       more,
       quiet: { skipped, borderline },
     })

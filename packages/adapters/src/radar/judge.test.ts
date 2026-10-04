@@ -72,6 +72,20 @@ describe("judge output", () => {
     expect(parseJudgement(answer({ verdict: "maybe" }), source)?.verdict).toBe("unclear");
   });
 
+  it("accepts a quote of notes written in markdown", () => {
+    const notes =
+      "Meeting notes\n### Budget\n- Active budgeting phase starts \\~7-8th October; **submissions** due by 16th October";
+    const quoted = parseJudgement(
+      answer({
+        evidence: "Active budgeting phase starts ~7-8th October; submissions due by 16th October",
+        confidence: 0.9,
+      }),
+      notes,
+    );
+    expect(quoted?.confidence).toBe(0.9);
+    expect(quoted?.evidence).toBeDefined();
+  });
+
   it("caps confidence when the quote is not in the source", () => {
     const invented = parseJudgement(answer({ evidence: "The CEO says this is critical." }), source);
     expect(invented?.confidence).toBe(0.5);
@@ -79,11 +93,14 @@ describe("judge output", () => {
   });
 
   it("trusts the provider's read state over the model", () => {
+    const handled = answer({ scores: { ...answer().scores, seen: 0 } });
     expect(parseJudgement(answer(), source, { unread: false })?.scores.seen).toBe(1);
-    expect(
-      parseJudgement(answer({ scores: { ...answer().scores, seen: 0 } }), source, { unread: true })
-        ?.scores.seen,
-    ).toBe(3);
+    expect(parseJudgement(handled, source, { unread: true })?.scores.seen).toBe(3);
+    // Only the owner's own reply marks mail handled, and that is decided in code.
+    expect(parseJudgement(handled, source, { unread: false })?.scores.seen).toBe(1);
+    // Notes from a meeting the owner attended are known to them, not handled.
+    expect(parseJudgement(handled, source, { kind: "meeting_notes" })?.scores.seen).toBe(1);
+    expect(parseJudgement(handled, source, { kind: "message" })?.scores.seen).toBe(0);
   });
 });
 

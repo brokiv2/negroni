@@ -4,7 +4,7 @@ import { getLogger } from "@rakazo/logging";
 import { runJsonPass } from "../background-triage.js";
 import type { PolicyMoment } from "./assess.js";
 import { policyContext, policyMoment, screened } from "./assess.js";
-import { localDate, startOfLocalDay } from "./clock.js";
+import { localDate, localWhen, startOfLocalDay } from "./clock.js";
 import type { RadarCycle } from "./context.js";
 import type { DeliverableSignal } from "./deliver.js";
 import { deliverInterrupts } from "./deliver.js";
@@ -279,6 +279,8 @@ export async function prepareMeetings(cycle: RadarCycle): Promise<void> {
     ]);
     const data = (value: unknown) =>
       JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+    // Local labels: models misconvert UTC timestamps.
+    const when = (at: Date | string) => localWhen(at, settings.timeZone, now);
     const answer = await runJsonPass({
       runtime: deps.runtime,
       request: cycle.request,
@@ -286,9 +288,9 @@ export async function prepareMeetings(cycle: RadarCycle): Promise<void> {
       model: await cycle.models.conversation(),
       instructions: PREP_INSTRUCTIONS.replace("LANGUAGE", cycle.language),
       prompt: [
-        `<meeting>${data({ title: event.title, start: event.start, end: event.end, attendees: event.attendees, location: event.location })}</meeting>`,
-        `<notes>${data(notes.map((row) => ({ title: row.title, at: row.occurredAt.toISOString(), excerpt: row.excerpt.slice(0, 800) })))}</notes>`,
-        `<mail>${data(mail.map((row) => ({ title: row.title, at: row.occurredAt.toISOString(), from: asRecord(row.actor).address, excerpt: row.excerpt.slice(0, 600) })))}</mail>`,
+        `<meeting>${data({ title: event.title, start: when(event.start), ...(event.end ? { end: when(event.end) } : {}), attendees: event.attendees, location: event.location })}</meeting>`,
+        `<notes>${data(notes.map((row) => ({ title: row.title, at: when(row.occurredAt), excerpt: row.excerpt.slice(0, 800) })))}</notes>`,
+        `<mail>${data(mail.map((row) => ({ title: row.title, at: when(row.occurredAt), from: asRecord(row.actor).address, excerpt: row.excerpt.slice(0, 600) })))}</mail>`,
         `<open>${data(open.map((row) => ({ title: row.headline || row.title, why: row.why })))}</open>`,
       ].join("\n"),
       context: cycle.adapter,
