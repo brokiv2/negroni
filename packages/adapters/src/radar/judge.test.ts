@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefAgenda, briefNarrative, withoutGreeting, withoutTimeOpener } from "./brief.js";
+import {
+  briefAgenda,
+  briefNarrative,
+  plainBrief,
+  uncheckedLine,
+  withoutGreeting,
+  withoutTimeOpener,
+} from "./brief.js";
 import { BRIEF_INSTRUCTIONS } from "./cycle.js";
 import type { JudgeContext, JudgeItem } from "./judge.js";
 import { JUDGE_INSTRUCTIONS, judgeItems, judgePrompt, parseJudgement } from "./judge.js";
@@ -568,6 +575,36 @@ describe("brief text", () => {
     ).toBe("One call at 11:00-12:00.");
     expect(briefNarrative("Two things need you.", now)).toBe("Two things need you.");
     expect(briefNarrative("", now)).toBe("");
+  });
+});
+
+describe("the plain brief", () => {
+  it("lists what needs the owner, what is held and the day, under the brief's own names", () => {
+    expect(
+      plainBrief({
+        period: "morning",
+        needsYou: ["Contract needs approval by noon.", "Invoice question"],
+        held: ["Partner call moved"],
+        agenda: ["11:00 Planning", "Offsite (all day)"],
+      }),
+    ).toBe(
+      "Needs you: Contract needs approval by noon; Invoice question. Held back: Partner call moved. Your day: 11:00 Planning; Offsite (all day).",
+    );
+    expect(
+      plainBrief({ period: "evening", needsYou: [], held: [], agenda: ["09:30 Standup"] }),
+    ).toBe("Tomorrow: 09:30 Standup.");
+    // Nothing to list is empty, so the caller decides what an empty brief says.
+    expect(plainBrief({ period: "now", needsYou: [], held: [], agenda: [] })).toBe("");
+  });
+
+  it("says how many updates were never looked at, and why", () => {
+    expect(uncheckedLine(1)).toBe(
+      "I couldn't check 1 update yet because the model was unavailable.",
+    );
+    expect(uncheckedLine(12)).toBe(
+      "I couldn't check 12 updates yet because the model was unavailable.",
+    );
+    expect(uncheckedLine(3)).not.toMatch(/[\u2012-\u2015]/);
   });
 });
 

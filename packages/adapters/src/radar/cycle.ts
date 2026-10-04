@@ -100,6 +100,11 @@ async function sendBriefs(
     orderBy: { createdAt: "desc" },
     select: { createdAt: true },
   });
+  // While the model waits out an outage, what is still pending was never looked at, and a
+  // brief that does not say so would read as "nothing needs you".
+  const unchecked = cycle.health.holding()
+    ? await prisma.radarSignal.count({ where: { ...owner, status: "pending" } })
+    : 0;
   const send = (period: BriefPeriod, requested = false) =>
     deliverRadarBrief({ ...deps, narrate: narrator(cycle) }, owner, cycle.conversation, {
       period,
@@ -110,6 +115,7 @@ async function sendBriefs(
       ...(last ? { lastBriefAt: last.createdAt } : {}),
       presenceAt: profile.presenceAt,
       requested,
+      unchecked,
     });
   // A pause that just ended: one catch-up brief, then the pause is cleared.
   if (settings.pausedUntil) {
@@ -474,7 +480,10 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
     });
     await stage("deliver", () => dispatchDue(cycle));
     await stage("prep", () => prepareMeetings(cycle));
-    await stage("brief", () => sendBriefs(cycle, profile, pending > 0 && tally.passes < max));
+    // A brief waits for a backlog that can still be judged, never for one the model cannot take.
+    await stage("brief", () =>
+      sendBriefs(cycle, profile, pending > 0 && tally.passes < max && !modelState.holding()),
+    );
     if (tally.retention !== today)
       await stage("retention", async () => {
         await retain(prisma, owner, now);

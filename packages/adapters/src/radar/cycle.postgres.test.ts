@@ -10,7 +10,7 @@ import { MODEL_UNAVAILABLE } from "./outage.js";
 import { recordRadarPresence, requestRadarCycle } from "./profile.js";
 import { configureRadar } from "./settings.js";
 import { getRadarStatus } from "./status.js";
-import { radarUpdateContext } from "./tools.js";
+import { radarStatusTool, radarUpdateContext } from "./tools.js";
 
 const suite =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
@@ -1017,6 +1017,96 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       expect((await profile(s)).error).toBeNull();
     });
 
+    it("tells the owner in the brief what it could not check, and never that nothing needs them", async () => {
+      const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      s.mail("Agenda", "FYI the agenda for Thursday.", colleague);
+      // Newsletters are screened without a model, so they are not among the unchecked.
+      s.mail("Big sale", "Sale ends soon.", { sender: "no-reply@shop.example.test" });
+      await s.cycle();
+      // The brief did not wait for a backlog the model cannot take.
+      expect(await prisma.radarBrief.findMany({ where: s.scope })).toMatchObject([
+        { period: "morning", localDate: "2026-10-05" },
+      ]);
+      const message = (await s.messages()).at(-1);
+      const unchecked = "I couldn't check 2 updates yet because the model was unavailable.";
+      expect(message?.blocks).toMatchObject([
+        { kind: "text", text: unchecked },
+        {
+          kind: "brief",
+          period: "morning",
+          title: "Morning brief",
+          items: [],
+          quiet: { skipped: 1 },
+        },
+      ]);
+      expect(JSON.stringify(message?.blocks)).not.toMatch(/nothing needs/i);
+      expect(s.pushes.at(-1)).toMatchObject({ category: "RADAR_BRIEF", body: unchecked });
+      // No pass went to the narrative either: the model is known to be down.
+      expect(s.model.calls).toEqual(["synthesis", "judge-0"]);
+    });
+
+    it("sends an evening wrap or a requested brief that holds nothing but the unchecked count", async () => {
+      const evening = await setup({
+        morningBrief: { enabled: false },
+        eveningBrief: { enabled: true, time: "09:30" },
+      });
+      evening.model.failure.error = PAYMENT_REQUIRED;
+      evening.mail("Notes", "FYI the slides are attached.", colleague);
+      await evening.cycle();
+      // An empty evening wrap is normally not sent at all.
+      expect((await evening.messages()).at(-1)?.blocks).toMatchObject([
+        { kind: "text", text: "I couldn't check 1 update yet because the model was unavailable." },
+        { kind: "brief", period: "evening", items: [] },
+      ]);
+
+      // The brief asked for when Radar is turned on does not wait for judging to catch up.
+      const asked = await setup({}, { followUp: true });
+      asked.model.failure.error = PAYMENT_REQUIRED;
+      asked.mail("Notes", "FYI the slides are attached.", colleague);
+      await asked.cycle();
+      expect((await asked.messages()).at(-1)?.blocks).toMatchObject([
+        { kind: "text", text: "I couldn't check 1 update yet because the model was unavailable." },
+        { kind: "brief", period: "now" },
+      ]);
+      expect((await profile(asked)).briefRequestedAt).toBeNull();
+    });
+
+    it("writes the plain brief when only the narrative cannot be generated", async () => {
+      const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.model.failure.kinds.push("brief");
+      s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+        items: [
+          {
+            id: "e1",
+            status: "confirmed",
+            summary: "Planning",
+            start: { dateTime: "2026-10-05T13:00:00Z" },
+            end: { dateTime: "2026-10-05T14:00:00Z" },
+            updated: "2026-10-05T09:00:00Z",
+            organizer: { email: "partner@example.test" },
+            attendees: [
+              { email: "me@example.test", self: true, responseStatus: "accepted" },
+              { email: "partner@example.test", responseStatus: "accepted" },
+            ],
+          },
+        ],
+      });
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      await s.cycle();
+      expect(s.model.calls).toContain("brief-morning");
+      expect((await s.messages()).at(-1)?.blocks).toMatchObject([
+        { kind: "text", text: "Needs you: FYI from a colleague. Your day: 13:00 Planning." },
+        { kind: "brief", period: "morning", items: [{ title: "FYI from a colleague" }] },
+      ]);
+      // Everything was judged, so nothing is unchecked; the failed pass still starts the wait.
+      expect((await s.signals()).every((signal) => signal.status === "decided")).toBe(true);
+      expect(await outage(s)).toMatchObject({ failures: 1 });
+      expect((await profile(s)).error).toBe(MODEL_UNAVAILABLE);
+    });
+
     it("still gives up on an update the model keeps answering unusably, and calls that no outage", async () => {
       const s = await setup();
       s.model.garbled.push("judge");
@@ -1103,6 +1193,28 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       expect((await profile(s)).error).toBe(MODEL_UNAVAILABLE);
       // Not retried every minute: the next cycle is when the wait ends.
       expect((await profile(s)).nextCycleAt?.toISOString()).toBe("2026-10-05T10:10:00.000Z");
+    });
+
+    it("tells the assistant what was never looked at, so it does not say nothing came in", async () => {
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.mail("Budget", "FYI the budget draft is attached.", colleague);
+      await s.cycle();
+      const asked = () =>
+        radarStatusTool(prisma, s.deps.registry, s.scope, { query: "budget" }, s.now());
+      // The update matches nothing yet, but the answer says why.
+      expect(await asked()).toMatchObject({
+        unchecked: 1,
+        error: MODEL_UNAVAILABLE,
+        matches: [],
+      });
+      s.model.failure.error = undefined;
+      s.advance(11);
+      await s.cycle();
+      const answer = await asked();
+      expect(answer).not.toHaveProperty("unchecked");
+      expect(answer).not.toHaveProperty("error");
+      expect(answer).toMatchObject({ matches: [{ title: "FYI from a colleague" }] });
     });
 
     it("leaves no record of a meeting prep the model could not write", async () => {

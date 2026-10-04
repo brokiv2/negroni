@@ -22,7 +22,9 @@ function from(actor: unknown): string | undefined {
 
 /**
  * `radar_status`: what was checked and told today, and, with a query, how the matching
- * updates were decided. Answers come from stored decisions, never a fresh judgement.
+ * updates were decided. Answers come from stored decisions, never a fresh judgement. What was
+ * seen but not judged yet (while the model is unavailable, for one) and the error Radar shows
+ * are part of the answer, so "nothing about X" is never said of mail that was never looked at.
  */
 export async function radarStatusTool(
   prisma: PrismaClient,
@@ -32,7 +34,10 @@ export async function radarStatusTool(
   now = new Date(),
 ) {
   const owner = radarOwner(scope);
-  const status = await getRadarStatus(prisma, registry, owner, now);
+  const [status, unchecked] = await Promise.all([
+    getRadarStatus(prisma, registry, owner, now),
+    prisma.radarSignal.count({ where: { ...owner, status: "pending" } }),
+  ]);
   const decided = await prisma.radarSignal.findMany({
     where: { ...owner, status: "decided", createdAt: { gte: new Date(now.getTime() - 14 * DAY) } },
     orderBy: { occurredAt: "desc" },
@@ -94,6 +99,8 @@ export async function radarStatusTool(
       ...(source.lastCheckAt ? { lastCheckAt: source.lastCheckAt } : {}),
     })),
     today: status.today,
+    ...(unchecked ? { unchecked } : {}),
+    ...(status.error ? { error: status.error } : {}),
     ...(status.nextBriefAt ? { nextBriefAt: status.nextBriefAt } : {}),
     ...(status.lastBriefAt ? { lastBriefAt: status.lastBriefAt } : {}),
     rules: status.rules.map((rule) => ({

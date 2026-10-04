@@ -71,6 +71,16 @@ export function localMinutes(at: Date, timeZone: string): number {
   return wall.hour * 60 + wall.minute;
 }
 
+/** Local "HH:MM". */
+export function localClock(at: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(at);
+}
+
 /** Local "HH:MM" and weekday name, for prompts. */
 export function localTimeLabel(at: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("en-GB", {
@@ -107,11 +117,5 @@ export function localWhen(at: Date | string, timeZone: string, now: Date, allDay
             month: "long",
           }).format(new Date(`${day}T12:00:00Z`));
   if (allDay) return `${label} (all day)`;
-  const time = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(date);
-  return `${label} ${time}`;
+  return `${label} ${localClock(date, timeZone)}`;
 }
