@@ -326,7 +326,11 @@ final class RadarController: ListController {
     guard !summary.isEmpty || !people.isEmpty || !rules.isEmpty else { return nil }
     var rows: [ListRow] = []
     if !summary.isEmpty { rows.append(ListRow(title: summary, lines: 0)) }
-    rows += people.map { ListRow(title: $0.name, detail: $0.detail, symbol: "person") }
+    rows += people.map { person in
+      ListRow(
+        title: person.name, detail: person.detail, symbol: "person",
+        deleteAction: { [weak self] in self?.removePerson(person) })
+    }
     rows += rules.map { rule in
       ListRow(
         title: rule.subject, detail: rule.title + (rule.learned ? " · Learned" : ""),
@@ -335,6 +339,15 @@ final class RadarController: ListController {
         deleteAction: { [weak self] in self?.removeRule(rule.id) })
     }
     return ListSection(title: "What I’ve learned", rows: rows)
+  }
+  private func removePerson(_ person: RadarPerson) {
+    Task {
+      do {
+        status["people"] = try await API.shared.rpc("radar/person", person.forgetInput)
+        RadarStore.shared.apply(status)
+      } catch { showError(error) }
+      render()
+    }
   }
   private func removeRule(_ id: String) {
     Task {

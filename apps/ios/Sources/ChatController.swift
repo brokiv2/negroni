@@ -47,8 +47,9 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private var active = false
   /// The Radar update the next message from the composer is about.
   private var replyRadar: (id: String, title: String)?
-  /// A message to bring into view once it is loaded (a notification's message).
+  /// A message to bring into view once it is loaded (a notification's message, the latest brief).
   private var pendingFocus: String?
+  private var focusTask: Task<Void, Never>?
   var notificationThreadID: String { snapshot["threadId"].string }
   init(target: JSON, title: String? = nil) {
     self.target = target
@@ -277,9 +278,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     try Task.checkCancellation()
     guard next["cursor"].int >= cursor else { return }
     render(next)
-    // A message outside the loaded window is not looked for again.
     if let id = pendingFocus, !messages.contains(where: { $0["id"].string == id }) {
-      pendingFocus = nil
+      seekFocus(id)
     }
     if activityTask == nil {
       activityTask = Task { [weak self] in
@@ -462,23 +462,27 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           try await refresh()
           return
         }
-        let page = try await API.shared.rpc(
-          "threads/messages", target.merging(["before": olderCursor]))
-        let existing = Set(messages.map { $0["id"].string })
-        let earlier = page["messages"].array.filter {
-          !existing.contains($0["id"].string) && !ThreadLogic.visibleBlocks($0).isEmpty
-        }
-        let height = table.contentSize.height
-        earlierMessages = earlier + earlierMessages
-        messages = earlier + messages
-        olderCursor = page["olderCursor"]
-        snapshot["olderCursor"] = olderCursor
-        snapshot["messages"] = .array(messages)
-        table.reloadData()
-        table.layoutIfNeeded()
-        table.contentOffset.y += table.contentSize.height - height
+        try await loadOlder()
       } catch { showError(error) }
     }
+  }
+  /// Reads the page before the oldest loaded message and puts it above them.
+  private func loadOlder() async throws {
+    let page = try await API.shared.rpc(
+      "threads/messages", target.merging(["before": olderCursor]))
+    let existing = Set(messages.map { $0["id"].string })
+    let earlier = page["messages"].array.filter {
+      !existing.contains($0["id"].string) && !ThreadLogic.visibleBlocks($0).isEmpty
+    }
+    let height = table.contentSize.height
+    earlierMessages = earlier + earlierMessages
+    messages = earlier + messages
+    olderCursor = page["olderCursor"]
+    snapshot["olderCursor"] = olderCursor
+    snapshot["messages"] = .array(messages)
+    table.reloadData()
+    table.layoutIfNeeded()
+    table.contentOffset.y += table.contentSize.height - height
   }
   private func refreshComputer() async {
     guard !target["botId"].string.isEmpty else { return }
@@ -715,6 +719,23 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     guard !messageID.isEmpty else { return }
     pendingFocus = messageID
     applyFocus()
+    // Loaded and not there: it is older than the window (the first load looks again itself).
+    if pendingFocus != nil, !messages.isEmpty { seekFocus(messageID) }
+  }
+  /// A message older than the loaded window (this morning's brief in a busy chat): reads
+  /// earlier pages, a few at most, until it shows, then brings it into view.
+  private func seekFocus(_ id: String) {
+    guard focusTask == nil else { return }
+    focusTask = Task { [weak self] in
+      guard let self else { return }
+      for _ in 0..<5 {
+        if messages.contains(where: { $0["id"].string == id }) || olderCursor.isNull { break }
+        guard (try? await loadOlder()) != nil, !Task.isCancelled else { break }
+      }
+      applyFocus()
+      pendingFocus = nil
+      focusTask = nil
+    }
   }
   private func applyFocus() {
     guard let id = pendingFocus, let row = messages.firstIndex(where: { $0["id"].string == id })

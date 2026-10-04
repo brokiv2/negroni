@@ -5,7 +5,8 @@ import XCTest
 final class RadarTests: XCTestCase {
   private let update: JSON = [
     "kind": "update", "summary": "A colleague needs the budget figures by 15:00.",
-    "updateId": "signal-1", "source": "gmail", "title": "Budget figures due today",
+    "updateId": "signal-1", "source": "gmail", "account": "work@example.test",
+    "title": "Budget figures due today",
     "actor": ["name": "A colleague", "address": "colleague@example.test"],
     "why": "They need the figures before the 15:00 review.", "nextStep": "Send the spreadsheet.",
     "url": "https://mail.example.test/thread/1", "urgency": "today", "action": "reply",
@@ -20,6 +21,7 @@ final class RadarTests: XCTestCase {
   func testUpdateBlocksDecodeForTheCardAndRefuseOtherLinks() {
     let item = RadarItem(update)!
     XCTAssertEqual(item.id, "signal-1")
+    XCTAssertEqual(item.account, "work@example.test")
     XCTAssertEqual(item.sender, "A colleague")
     XCTAssertTrue(item.hasSenderAddress)
     XCTAssertEqual(item.url?.host, "mail.example.test")
@@ -34,6 +36,25 @@ final class RadarTests: XCTestCase {
     let anonymous = RadarItem(update.merging(["actor": ["name": "Billing"]]))!
     XCTAssertEqual(anonymous.sender, "Billing")
     XCTAssertFalse(anonymous.hasSenderAddress)
+  }
+
+  func testTheMetaLineNamesTheAccountTheSenderAndTheTime() {
+    let now = date("2026-10-04T09:30:00Z")
+    func line(_ item: RadarItem, showSource: Bool = false) -> String {
+      item.metaLine(showSource: showSource, now: now, timeZone: utc, locale: british)
+    }
+    let item = RadarItem(update)!
+    XCTAssertEqual(line(item), "work@example.test · A colleague · 09:12")
+    XCTAssertEqual(
+      line(item, showSource: true), "Gmail · work@example.test · A colleague · 09:12")
+    let noAccount = RadarItem(update.merging(["account": .null]))!
+    XCTAssertEqual(line(noAccount), "A colleague · 09:12")
+    XCTAssertEqual(line(noAccount, showSource: true), "Gmail · A colleague · 09:12")
+    let nobody = RadarItem(update.merging(["account": .null, "actor": .null]))!
+    XCTAssertEqual(line(nobody), "Gmail · 09:12", "the mark alone does not say which app")
+    XCTAssertEqual(line(nobody, showSource: true), "Gmail · 09:12")
+    let accountOnly = RadarItem(update.merging(["actor": .null, "occurredAt": .null]))!
+    XCTAssertEqual(line(accountOnly), "work@example.test")
   }
 
   func testThePrimaryButtonUsesTheOfferOrFallsBackByAction() {
@@ -69,7 +90,9 @@ final class RadarTests: XCTestCase {
     XCTAssertEqual(full.trace?.interruptAt, 70)
     XCTAssertEqual(full.trace?.rules, ["rule-1"])
     XCTAssertNil(RadarItem(view.merging(["trace": "corrupt"]))?.trace)
+    XCTAssertEqual(full.account, "", "a view without an account names none")
     let merged = RadarItem(update)!.merged(with: full)
+    XCTAssertEqual(merged.account, "work@example.test")
     XCTAssertEqual(merged.offer, "Draft a reply with the figures?")
     XCTAssertEqual(merged.evidence, "Could you send the budget figures before the review?")
     XCTAssertEqual(merged.messageID, "message-1")
@@ -100,6 +123,25 @@ final class RadarTests: XCTestCase {
     XCTAssertEqual(short.hiddenCount, 0)
     XCTAssertEqual(short.visibleItems(expanded: false).count, 7)
     XCTAssertNil(RadarBrief(["title": "Morning brief"]))
+  }
+
+  func testBriefRowsNameTheirSenderSoTheyCanTeachRadar() {
+    let brief = RadarBrief([
+      "briefId": "brief-1",
+      "items": [
+        [
+          "updateId": "u1", "title": "Invoice due Monday", "source": "gmail",
+          "offer": "Pay the invoice?",
+          "actor": ["name": "Billing", "address": "billing@example.test"],
+        ],
+        ["updateId": "u2", "title": "Standup moved", "source": "googlecalendar"],
+        ["updateId": "u3", "title": "Survey closes", "source": "gmail", "actor": ["name": "HR"]],
+      ],
+    ])!
+    XCTAssertEqual(brief.items.map(\.hasSenderAddress), [true, false, false])
+    XCTAssertEqual(brief.items[0].sender, "Billing")
+    XCTAssertEqual(brief.items[0].primary, RadarPrimary(title: "Pay the invoice", kind: .send))
+    XCTAssertEqual(brief.items[2].sender, "HR")
   }
 
   func testTheTraceReadsAsPlainSentences() {
@@ -141,7 +183,7 @@ final class RadarTests: XCTestCase {
       "result": "silent", "importance": 18, "confidence": .number(0.6), "costOfDelay": "none",
       "whoMustAct": "nobody", "verdict": "unclear",
       "scores": ["addressed": 0, "actionRequired": 0, "stakes": 1, "seen": 0],
-      "gates": ["quiet_hours", "daily_cap_reached", "story-limit", "new_gate_name"],
+      "gates": ["quiet_hours", "daily_cap", "story_limit", "quiet_hours", "from_a_newer_server"],
     ])
     XCTAssertEqual(
       RadarExplanation.sentences(for: item),
@@ -156,19 +198,57 @@ final class RadarTests: XCTestCase {
         "Nobody needs to act on it.",
         "I could not tell clearly what it is about.",
         "I was 60% sure.",
-        "It came in during quiet hours, so it waited until they ended.",
-        "You had reached today's limit, so it went to the brief.",
-        "You had already heard about this today.",
-        "New gate name.",
+        "It came in during quiet hours.",
+        "Today's interrupt limit was reached.",
+        "You already heard about this today.",
+      ])
+    // A matched rule reads once; without one the gate says it.
+    item.trace = RadarTrace([
+      "result": "silent", "rules": ["rule-1"], "gates": ["rule_never", "bulk"],
+    ])
+    XCTAssertEqual(
+      RadarExplanation.sentences(for: item),
+      [
+        "I stayed quiet.", "Bulk mail with an unsubscribe link.", "One of your rules matched.",
+        "It looked like bulk or automated mail.",
+      ])
+    item.trace = RadarTrace(["result": "silent", "gates": ["rule_never"]])
+    XCTAssertEqual(
+      RadarExplanation.sentences(for: item),
+      [
+        "I stayed quiet.", "Bulk mail with an unsubscribe link.",
+        "Your rule says never to tell you about this.",
       ])
     item.trace = nil
     item.disposition = "brief"
     XCTAssertEqual(
       RadarExplanation.sentences(for: item),
       ["I kept it for your brief.", "Bulk mail with an unsubscribe link."])
-    XCTAssertEqual(RadarExplanation.gateSentence("owner_replied"), "You had already replied.")
-    XCTAssertEqual(
-      RadarExplanation.gateSentence("paused"), "Radar was paused, so it went to the brief.")
+    XCTAssertEqual(RadarExplanation.gateSentence("paused"), "Radar was paused.")
+    XCTAssertEqual(RadarExplanation.gateSentence("Quiet Hours"), "", "names match exactly")
+  }
+
+  func testEveryGateInTheContractReadsAsItsOwnSentence() {
+    // `RadarGate` in packages/contracts/src/radar.ts; a gate added there needs a sentence here
+    // and on web (the contracts test lists the same names).
+    let contract = [
+      "rule_never", "rule_digest", "rule_always", "unclear", "not_owner", "below_threshold",
+      "low_confidence", "already_seen", "second_opinion", "critical", "paused", "quiet_hours",
+      "in_meeting", "daily_cap", "story_limit", "spacing", "folded_into_brief",
+      "handled_in_source", "seen_in_source", "own", "security_code", "bulk", "declined",
+      "calendar_window", "backoff", "duplicate", "stale", "unevaluated", "meeting_prep",
+    ]
+    XCTAssertEqual(RadarGate.allCases.map(\.rawValue), contract)
+    var sentences = Set<String>()
+    for name in contract {
+      let sentence = RadarExplanation.gateSentence(name)
+      XCTAssertEqual(sentence.first?.isUppercase, true, name)
+      XCTAssertEqual(sentence.last, ".", name)
+      XCTAssertFalse(sentence.contains("_"), name)
+      XCTAssertTrue(sentences.insert(sentence).inserted, "\(name) repeats another sentence")
+    }
+    XCTAssertEqual(RadarExplanation.gateSentence("from_a_newer_server"), "")
+    XCTAssertEqual(RadarExplanation.gateSentence(""), "")
   }
 
   func testRulesAndPeopleReadForTheRadarScreen() {
@@ -185,6 +265,8 @@ final class RadarTests: XCTestCase {
       "name": "A colleague", "relation": "Manager", "addresses": ["colleague@example.test"],
     ])!
     XCTAssertEqual(person.detail, "Manager · colleague@example.test")
+    XCTAssertEqual(person.forgetInput, ["address": "colleague@example.test"])
+    XCTAssertEqual(RadarPerson(["name": "Dr. Lee"])!.forgetInput, ["name": "Dr. Lee"])
     XCTAssertEqual(ConnectedApp.name("granola_mcp"), "Granola")
     XCTAssertEqual(ConnectedApp.name("todoist"), "Todoist")
   }

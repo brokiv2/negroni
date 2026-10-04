@@ -3,13 +3,17 @@
   import UIKit
 
   /// Simulator review without a server. Launch a debug build with `-NegroniPreview YES` to run
-  /// the app on fixture data; `-NegroniPreviewScreen` opens one screen (foryou, radar,
-  /// radar-advanced, skipped, detail, why, brief, settings) and `-NegroniPreviewRadarOff YES`
-  /// starts with Radar off. Debug builds only: it never reads the Keychain or the network.
+  /// the app on fixture data; `-NegroniPreviewScreen` opens one screen (foryou, foryou-brief,
+  /// foryou-tabs, foryou-automations, radar, radar-timing, radar-learned, radar-forget,
+  /// radar-advanced, skipped, detail, why, why-skipped, brief, settings),
+  /// `-NegroniPreviewRadarOff YES` starts with Radar off and `-NegroniPreviewOlder YES` loads
+  /// the chat without the older messages (the brief), which the chat then reads. Debug builds
+  /// only: it never reads the Keychain or the network.
   enum PreviewMode {
     static let enabled = UserDefaults.standard.bool(forKey: "NegroniPreview")
     static var screen: String { UserDefaults.standard.string(forKey: "NegroniPreviewScreen") ?? "" }
     static var radarOff: Bool { UserDefaults.standard.bool(forKey: "NegroniPreviewRadarOff") }
+    static var older: Bool { UserDefaults.standard.bool(forKey: "NegroniPreviewOlder") }
     @MainActor private static var opened = false
 
     @MainActor static func open(in tabs: MainTabController) {
@@ -42,16 +46,41 @@
       }
       let contract = RadarItem(PreviewData.shared.view("u-contract"))!
       switch screen {
-      case "foryou", "foryou-brief":
+      case "foryou", "foryou-brief", "foryou-tabs", "foryou-automations":
         tabs.selectedIndex = 1
-        guard screen == "foryou-brief" else { return }
-        later(1.5) { reveal(feed?.topViewController as? ListController, "Morning brief") }
-      case "radar", "radar-timing", "radar-advanced":
+        guard screen != "foryou" else { return }
+        func segmented(in view: UIView) -> UISegmentedControl? {
+          if let control = view as? UISegmentedControl { return control }
+          return view.subviews.lazy.compactMap { segmented(in: $0) }.first
+        }
+        later(1.5) {
+          guard let list = feed?.topViewController as? ListController else { return }
+          if screen == "foryou-brief" { return reveal(list, "Morning brief") }
+          // The Feed / Saved / Automations control, below Needs you and the brief.
+          let last = IndexPath(row: 0, section: list.tableView.numberOfSections - 1)
+          list.tableView.scrollToRow(at: last, at: .bottom, animated: false)
+          guard screen == "foryou-automations" else { return }
+          later(0.5) {
+            guard let control = segmented(in: list.view) else { return }
+            control.selectedSegmentIndex = 2
+            control.sendActions(for: .valueChanged)
+          }
+        }
+      case "radar", "radar-timing", "radar-learned", "radar-forget", "radar-advanced":
         tabs.selectedIndex = 1
         let radar = RadarController()
         feed?.pushViewController(radar, animated: false)
         later(1.5) {
           if screen == "radar-timing" { reveal(radar, "Tell me") }
+          if screen == "radar-learned" || screen == "radar-forget" {
+            reveal(radar, "What I’ve learned")
+          }
+          if screen == "radar-forget" {
+            // Forget one person by address and one by name, as the swipe does.
+            for name in ["Alex Rivera", "Dr. Okafor"] {
+              radar.sections.flatMap(\.rows).first { $0.title == name }?.deleteAction?()
+            }
+          }
           guard screen == "radar-advanced" else { return }
           radar.sections.flatMap(\.rows).first { $0.title == "Advanced" }?.action?()
           later(0.5) { reveal(radar, "Context files") }
@@ -64,6 +93,10 @@
         later(1.5) { sheet(contract, .detail, from: feed?.topViewController) }
       case "why":
         later(1.5) { sheet(contract, .why, from: chat?.topViewController) }
+      case "why-skipped":
+        tabs.selectedIndex = 1
+        let skipped = RadarItem(PreviewData.shared.view("s-wiki"))!
+        later(1.5) { sheet(skipped, .why, from: feed?.topViewController) }
       case "brief":
         later(1.5) {
           (chat?.topViewController as? ChatController)?.focus(messageID: "m-brief")
@@ -122,6 +155,7 @@
     private var settings: JSON
     private var sources: [JSON]
     private var rules: [JSON]
+    private var people: [JSON]
     private var updates: [JSON] = []
     private var sent: [JSON] = []
 
@@ -147,6 +181,20 @@
         Self.rule("rule-alex", "always", ["sender": "alex@example.test"], "explicit"),
         Self.rule("rule-shop", "never", ["domain": "shop.example.test"], "learned"),
         Self.rule("rule-wiki", "digest", ["topic": "Team wiki digests"], "learned"),
+      ]
+      people = [
+        [
+          "name": "Alex Rivera", "addresses": ["alex@example.test"], "relation": "Manager",
+          "weight": 3, "origin": "learned",
+        ],
+        [
+          "name": "Sam Lee", "addresses": ["sam@example.test"], "relation": "Finance partner",
+          "weight": 2, "origin": "learned",
+        ],
+        [
+          "name": "Dr. Okafor", "addresses": [], "relation": "Dentist", "weight": 1,
+          "origin": "learned",
+        ],
       ]
       updates = makeUpdates()
     }
@@ -177,6 +225,10 @@
         RadarTime.iso(RadarTime.at(hour: hour, minute: minute, onDayOf: now, timeZone: .current)))
     }
     private func makeUpdates() -> [JSON] {
+      let accounts = [
+        "gmail": "work@example.test", "googlecalendar": "work@example.test",
+        "googledrive": "work@example.test", "granola_mcp": "Granola 1", "todoist": "Todoist 1",
+      ]
       func trace(
         _ importance: Int, _ result: String, cost: String, scores: [Int], rules: [String] = [],
         gates: [String] = []
@@ -205,6 +257,7 @@
       ) -> JSON {
         var value: JSON = [
           "id": .string(id), "source": .string(source), "kind": "email", "title": .string(title),
+          "account": .string(accounts[source] ?? ""),
           "occurredAt": ago(minutes), "excerpt": "", "why": .string(why),
           "disposition": .string(disposition), "action": .string(action),
           "urgency": .string(urgency), "state": "open", "trace": trace,
@@ -219,6 +272,9 @@
         }
         return value
       }
+      func address(of name: String) -> String {
+        name.lowercased().replacingOccurrences(of: " ", with: ".") + "@example.test"
+      }
       let brief = [
         ("u-invoice", "gmail", "The design studio's invoice is due Monday", "Billing"),
         ("u-survey", "gmail", "The quarterly survey closes Friday", "People team"),
@@ -230,9 +286,11 @@
         ("u-panel", "googlecalendar", "The hiring panel moved to Thursday", "Priya Nair"),
       ].enumerated().map { index, entry in
         update(
-          entry.0, entry.1, entry.2, actor: entry.3.isEmpty ? nil : (entry.3, ""),
+          entry.0, entry.1, entry.2,
+          actor: entry.3.isEmpty ? nil : (entry.3, address(of: entry.3)),
           why: "Worth a look today.", minutes: 300 + Double(index) * 20, disposition: "brief",
           action: "review", urgency: "week",
+          offer: entry.0 == "u-invoice" ? "Pay the invoice?" : "",
           trace: trace(50, "brief", cost: "low", scores: [2, 1, 1, 1, 1, 3, 1, 3]))
       }
       return [
@@ -266,24 +324,28 @@
           actor: ("Shop", "news@shop.example.test"), why: "", minutes: 15,
           disposition: "silent", action: "none", urgency: "none",
           reason: "Bulk mail with an unsubscribe link.",
-          trace: trace(9, "silent", cost: "none", scores: [0, 0, 1, 0, 0, 2, 0, 3])),
+          trace: trace(
+            9, "silent", cost: "none", scores: [0, 0, 1, 0, 0, 2, 0, 3], gates: ["bulk"])),
         update(
           "s-code", "gmail", "Your sign-in code", actor: ("Accounts", "no-reply@example.test"),
           why: "", minutes: 55, disposition: "silent", action: "none", urgency: "none",
           reason: "Sign-in codes are never sent.",
-          trace: trace(5, "silent", cost: "none", scores: [1, 0, 3, 1, 0, 3, 0, 3])),
+          trace: trace(
+            5, "silent", cost: "none", scores: [1, 0, 3, 1, 0, 3, 0, 3], gates: ["security_code"])),
         update(
           "s-accepted", "googlecalendar", "You accepted the design critique", actor: nil, why: "",
           minutes: 95, disposition: "silent", action: "none", urgency: "none",
           reason: "Sent by you.",
-          trace: trace(3, "silent", cost: "none", scores: [0, 0, 0, 0, 0, 1, 1, 0])),
+          trace: trace(
+            3, "silent", cost: "none", scores: [0, 0, 0, 0, 0, 1, 1, 0], gates: ["own"])),
         update(
           "s-wiki", "gmail", "Weekly digest from the team wiki",
           actor: ("Team wiki", "digest@wiki.example.test"), why: "", minutes: 130,
           disposition: "silent", action: "none", urgency: "none",
           reason: "A brief-only rule matched and nothing in it needs you.",
           trace: trace(
-            22, "silent", cost: "none", scores: [1, 0, 0, 1, 1, 2, 1, 3], rules: ["rule-wiki"])),
+            22, "silent", cost: "none", scores: [1, 0, 0, 1, 1, 2, 1, 3], rules: ["rule-wiki"],
+            gates: ["rule_digest", "below_threshold"])),
       ]
     }
 
@@ -297,14 +359,16 @@
       let brief = updates.filter { $0["disposition"].string == "brief" }.map { update in
         [
           "updateId": update["id"], "title": update["title"], "why": update["why"],
-          "source": update["source"], "action": update["action"],
+          "source": update["source"], "action": update["action"], "actor": update["actor"],
+          "offer": update["offer"],
         ] as JSON
       }
       let card = { (id: String, summary: String) -> JSON in
         let update = self.updates.first { $0["id"].string == id }!
         return [
           "kind": "update", "summary": .string(summary), "updateId": .string(id),
-          "source": update["source"], "title": update["title"], "actor": update["actor"],
+          "source": update["source"], "account": update["account"], "title": update["title"],
+          "actor": update["actor"],
           "why": update["why"], "offer": update["offer"], "evidence": update["evidence"],
           "url": update["url"], "urgency": update["urgency"], "action": update["action"],
           "occurredAt": update["occurredAt"],
@@ -357,20 +421,11 @@
         "today": ["seen": 42, "interrupted": 2, "briefed": 9, "skipped": 31, "deferred": 0],
         "lastCycleAt": settings["enabled"].bool ? ago(4) : .null,
         "nextCycleAt": .string(RadarTime.iso(now.addingTimeInterval(6 * 60))),
-        "lastBriefAt": ago(150),
+        "lastBriefAt": ago(150), "lastBriefMessageId": "m-brief",
         "summary":
           "Leads product on a small software team. This month: the Q4 launch, the vendor contract and keeping the design review on track.",
         "rules": .array(rules),
-        "people": [
-          [
-            "name": "Alex Rivera", "addresses": ["alex@example.test"], "relation": "Manager",
-            "weight": 3, "origin": "learned",
-          ],
-          [
-            "name": "Sam Lee", "addresses": ["sam@example.test"], "relation": "Finance partner",
-            "weight": 2, "origin": "learned",
-          ],
-        ],
+        "people": .array(people),
       ]
     }
 
@@ -395,11 +450,20 @@
       case "aiConsent/status":
         return ["recipients": [], "scope": "space", "version": 1]
       case "threads/get":
+        // With `-NegroniPreviewOlder YES` the window starts at the Radar message.
         return [
           "threadId": "thread-preview", "kind": "personal",
           "cursor": .number(Double(4 + sent.count)),
-          "messages": .array(messages), "olderCursor": .null, "botId": "bot-preview", "run": .null,
+          "messages": .array(PreviewMode.older ? messages.filter { $0["seq"].int >= 4 } : messages),
+          "olderCursor": PreviewMode.older ? 4 : .null, "botId": "bot-preview", "run": .null,
           "activeRuns": [],
+        ]
+      case "threads/messages":
+        // The page before a message, or the messages around one.
+        let before = input["before"].isNull ? Int.max : input["before"].int
+        return [
+          "threadId": "thread-preview",
+          "messages": .array(messages.filter { $0["seq"].int < before }), "olderCursor": .null,
         ]
       case "threads/send":
         let seq = 5 + sent.count
@@ -470,6 +534,16 @@
           }
         }
         return ["items": .array(items)]
+      case "radar/update":
+        return updates.first { $0["id"] == input["id"] } ?? .null
+      case "radar/person":
+        let address = input["address"].string
+        let name = input["name"].string
+        people.removeAll { person in
+          (!address.isEmpty && person["addresses"].array.contains { $0.string == address })
+            || (!name.isEmpty && person["name"].string == name)
+        }
+        return .array(people)
       case "radar/feedback":
         guard let index = updates.firstIndex(where: { $0["id"] == input["id"] }) else {
           return .null

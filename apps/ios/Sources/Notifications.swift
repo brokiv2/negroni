@@ -209,7 +209,7 @@ import UserNotifications
         return
       }
       Task {
-        let item = await RadarStore.shared.item(for: push)
+        let item = await RadarStore.shared.update(push.updateID)
         if let item, item.primary.kind == .open {
           chat.openRadarSource(item)
         } else if let text = item?.primary.title ?? push.fallbackInstruction {

@@ -123,37 +123,12 @@ enum RadarOutcome: Equatable {
     NotificationCenter.default.post(name: Self.outcomesChanged, object: nil)
   }
 
-  /// The full view of one update. There is no single-update read, so this looks through the
-  /// open list and the two most recent pages of history.
+  /// One update as the server stores it, decision trace included (`radar/update`, read only).
   func update(_ id: String) async -> RadarItem? {
-    for (view, pages) in [("open", 1), ("all", 2)] {
-      var cursor: JSON = .null
-      for _ in 0..<pages {
-        var input: JSON = ["view": .string(view), "limit": 100]
-        if !cursor.isNull { input["cursor"] = cursor }
-        guard let page = try? await API.shared.rpc("radar/updates", input) else { return nil }
-        if let match = page["items"].array.first(where: { $0["id"].string == id }) {
-          return RadarItem(match)
-        }
-        cursor = page["nextCursor"]
-        if cursor.isNull { break }
-      }
+    guard let view = try? await API.shared.rpc("radar/update", ["id": .string(id)]) else {
+      return nil
     }
-    return nil
-  }
-  /// The update behind a push as its card has it, or the full view.
-  func item(for push: RadarPush) async -> RadarItem? {
-    if let snapshot = try? await API.shared.rpc("threads/get", push.target) {
-      for message in snapshot["messages"].array
-      where push.messageID.isEmpty || message["id"].string == push.messageID {
-        if let block = message["blocks"].array.first(where: {
-          $0["kind"].string == "update" && $0["updateId"].string == push.updateID
-        }), let item = RadarItem(block) {
-          return item
-        }
-      }
-    }
-    return await update(push.updateID)
+    return RadarItem(view)
   }
 }
 

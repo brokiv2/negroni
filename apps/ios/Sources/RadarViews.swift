@@ -1,7 +1,7 @@
 import NegroniCore
 import UIKit
 
-/// Source mark, then sender (or the app) and time.
+/// Source mark, then account, sender and time (the app when nothing else says where from).
 final class RadarMetaRow: UIStackView {
   private let icon = UIImageView()
   private var iconTask: Task<Void, Never>?
@@ -14,13 +14,8 @@ final class RadarMetaRow: UIStackView {
     icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
     icon.heightAnchor.constraint(equalToConstant: 16).isActive = true
     icon.isAccessibilityElement = false
-    let app = item.source.isEmpty ? "" : ConnectedApp.name(item.source)
-    let parts = [
-      item.sender.isEmpty ? app : item.sender, showSource && !item.sender.isEmpty ? app : "",
-      item.occurredAt.map { RadarTime.when($0, now: Date()) } ?? "",
-    ]
     let label = Theme.label(
-      parts.filter { !$0.isEmpty }.joined(separator: " · "), style: .caption1, color: Theme.muted)
+      item.metaLine(showSource: showSource), style: .caption1, color: Theme.muted)
     label.numberOfLines = 1
     label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     addArrangedSubview(icon)

@@ -48,6 +48,9 @@ public enum ConnectedApp {
 public struct RadarItem: Equatable, Sendable {
   public var id: String
   public var source: String
+  /// Which account of that source: the provider-verified address or the connection's name.
+  /// Update blocks and views carry it; brief rows do not.
+  public var account: String
   /// Signal kind (`email`, `invite`, …); empty for blocks and brief rows.
   public var kind: String
   public var title: String
@@ -77,6 +80,7 @@ public struct RadarItem: Equatable, Sendable {
     title = json["title"].string.trimmed
     guard !id.isEmpty, !title.isEmpty else { return nil }
     source = json["source"].string.trimmed.lowercased()
+    account = json["account"].string.trimmed
     kind = blockID.isEmpty ? json["kind"].string : ""
     actorName = json["actor"]["name"].string.trimmed
     actorAddress = json["actor"]["address"].string.trimmed
@@ -103,9 +107,23 @@ public struct RadarItem: Equatable, Sendable {
   public var primary: RadarPrimary {
     RadarPrimary(offer: offer, action: action, hasURL: url != nil)
   }
-  /// The full view from `radar/updates`, keeping what only the card or brief row carried.
+  /// The line beside a card's source mark: the account and the sender, then the time. With
+  /// neither it names the app, and `showSource` puts the app first even when they are known.
+  public func metaLine(
+    showSource: Bool = false, now: Date = Date(), timeZone: TimeZone = .current,
+    locale: Locale = .current
+  ) -> String {
+    let app = source.isEmpty ? "" : ConnectedApp.name(source)
+    let who = [account, sender].filter { !$0.isEmpty }
+    let when =
+      occurredAt.map { RadarTime.when($0, now: now, timeZone: timeZone, locale: locale) } ?? ""
+    return ((showSource || who.isEmpty ? [app] : []) + who + [when]).filter { !$0.isEmpty }
+      .joined(separator: " · ")
+  }
+  /// The full view from `radar/update`, keeping what only the card or brief row carried.
   public func merged(with full: RadarItem) -> RadarItem {
     var result = full
+    if result.account.isEmpty { result.account = account }
     if result.why.isEmpty { result.why = why }
     if result.offer.isEmpty { result.offer = offer }
     if result.evidence.isEmpty { result.evidence = evidence }
@@ -250,6 +268,10 @@ public struct RadarPerson: Equatable, Sendable {
   public var detail: String {
     ([relation] + addresses).filter { !$0.isEmpty }.joined(separator: " · ")
   }
+  /// What `radar/person` takes to forget this person: an address when there is one, else the name.
+  public var forgetInput: JSON {
+    addresses.first.map { ["address": .string($0)] } ?? ["name": .string(name)]
+  }
 }
 
 /// What triage and the policy saw and applied (`RadarTraceSchema`).
@@ -282,6 +304,64 @@ public struct RadarTrace: Equatable, Sendable {
     rules = json["rules"].array.map(\.string).filter { !$0.isEmpty }
     gates = json["gates"].array.map(\.string).filter { !$0.isEmpty }
     result = json["result"].string
+  }
+}
+
+/// A reason that shaped a decision, as the policy and the screening write it to `trace.gates`
+/// (`RadarGate` in `packages/contracts/src/radar.ts`). Every one reads as a plain sentence.
+public enum RadarGate: String, CaseIterable, Sendable {
+  // Explicit rules.
+  case ruleNever = "rule_never", ruleDigest = "rule_digest", ruleAlways = "rule_always"
+  // Judgement.
+  case unclear, notOwner = "not_owner", belowThreshold = "below_threshold"
+  case lowConfidence = "low_confidence", alreadySeen = "already_seen"
+  case secondOpinion = "second_opinion"
+  // Delivery gates.
+  case critical, paused, quietHours = "quiet_hours", inMeeting = "in_meeting"
+  case dailyCap = "daily_cap", storyLimit = "story_limit", spacing
+  case foldedIntoBrief = "folded_into_brief"
+  // A fresh look at the source right before sending.
+  case handledInSource = "handled_in_source", seenInSource = "seen_in_source"
+  // Screened before any model call.
+  case own, securityCode = "security_code", bulk, declined
+  case calendarWindow = "calendar_window", backoff, duplicate, stale, unevaluated
+  case meetingPrep = "meeting_prep"
+
+  /// Gates that name a matched rule, which the explanation already reads as its own sentence.
+  public var isRule: Bool { [.ruleNever, .ruleDigest, .ruleAlways].contains(self) }
+
+  public var sentence: String {
+    switch self {
+    case .ruleNever: return "Your rule says never to tell you about this."
+    case .ruleDigest: return "Your rule keeps this for the brief."
+    case .ruleAlways: return "Your rule says to always tell you about this."
+    case .unclear: return "It wasn't clear enough to interrupt you."
+    case .notOwner: return "It wasn't clearly yours to act on."
+    case .belowThreshold: return "It didn't score high enough to bring up."
+    case .lowConfidence: return "I wasn't sure enough to interrupt you."
+    case .alreadySeen: return "You had already seen it."
+    case .secondOpinion: return "A second look disagreed, so it went to the brief."
+    case .critical: return "Urgent enough to skip quiet hours and meetings."
+    case .paused: return "Radar was paused."
+    case .quietHours: return "It came in during quiet hours."
+    case .inMeeting: return "You were in a meeting."
+    case .dailyCap: return "Today's interrupt limit was reached."
+    case .storyLimit: return "You already heard about this today."
+    case .spacing: return "You had heard from me less than 30 minutes before."
+    case .foldedIntoBrief: return "It waited for quiet hours to end, then joined your brief."
+    case .handledInSource: return "It was already handled or gone when I checked the source."
+    case .seenInSource: return "You had already opened it when I checked the source."
+    case .own: return "It was your own message."
+    case .securityCode: return "It looked like a sign-in or security code."
+    case .bulk: return "It looked like bulk or automated mail."
+    case .declined: return "You declined this event."
+    case .calendarWindow: return "The event isn't in the next two days."
+    case .backoff: return "You said something like this wasn't important."
+    case .duplicate: return "It matched an earlier update."
+    case .stale: return "It was too old to judge."
+    case .unevaluated: return "It couldn't be evaluated."
+    case .meetingPrep: return "It came from preparing you for a meeting."
+    }
   }
 }
 
@@ -399,41 +479,18 @@ public enum RadarExplanation {
     if let confidence = trace.confidence, confidence < 0.85 {
       add("I was \(Int((confidence * 100).rounded()))% sure.")
     }
-    for gate in trace.gates { add(gateSentence(gate)) }
+    for gate in trace.gates {
+      // A matched rule already reads as its own sentence above.
+      if !trace.rules.isEmpty, RadarGate(rawValue: gate)?.isRule == true { continue }
+      add(gateSentence(gate))
+    }
     return lines
   }
 
-  /// Gate identifiers are free strings in the contract: recognisable words read as a sentence,
-  /// anything else is shown as written.
+  /// The sentence for a gate name, or nothing for a name this build does not know: traces are
+  /// read tolerantly, so a newer server's gate says nothing rather than showing as written.
   public static func gateSentence(_ gate: String) -> String {
-    let id = gate.lowercased().replacingOccurrences(
-      of: "[^a-z0-9]+", with: "_", options: .regularExpression)
-    let known: [(words: [String], sentence: String)] = [
-      (["critical"], "It was critical, so it went through quiet hours and meetings."),
-      (["quiet"], "It came in during quiet hours, so it waited until they ended."),
-      (["meeting"], "You were in a meeting, so it waited until the meeting ended."),
-      (["pause"], "Radar was paused, so it went to the brief."),
-      (["cap", "budget", "daily"], "You had reached today's limit, so it went to the brief."),
-      (["spacing", "interval", "cooldown"], "You had just been interrupted, so it waited."),
-      (["story", "duplicate", "repeat"], "You had already heard about this today."),
-      (["never"], "A never rule matched."),
-      (["digest"], "A brief-only rule matched."),
-      (["always"], "An always rule matched."),
-      (["unclear", "verdict"], "It was not clear enough to interrupt you."),
-      (["replied", "answered"], "You had already replied."),
-      (["cancelled", "canceled"], "The event was cancelled."),
-      (["someone", "owner"], "It was not yours to act on."),
-      (["confidence"], "I was not sure enough to interrupt you."),
-      (["cost", "delay"], "It could wait for your brief."),
-      (["threshold", "importance", "score"], "It scored below the bar to interrupt you."),
-    ]
-    let words = id.split(separator: "_").map(String.init)
-    if let match = known.first(where: { entry in
-      entry.words.contains { word in words.contains { $0.hasPrefix(word) } }
-    }) {
-      return match.sentence
-    }
-    return sentence(gate.replacingOccurrences(of: "_", with: " "))
+    RadarGate(rawValue: gate)?.sentence ?? ""
   }
 
   /// Capitalised and ending in punctuation.

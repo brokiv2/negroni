@@ -8,8 +8,10 @@ final class FeedController: ListController {
   private let categories = UISegmentedControl(items: ["Feed", "Saved", "Automations"])
   private var expanded = Set<String>(), hidden = false
   private var feedItems: [JSON] = []
-  /// Radar sections above the articles: the level card, or Needs you and the latest brief.
-  private var radarSections = 0
+  /// Sections above the selected tab: the Radar block (the level card, or Needs you and the
+  /// latest brief), then the Feed / Saved / Automations control. They belong to For you, not
+  /// to the Feed tab, so they stay while the tabs change.
+  private var leadingSections = 0
   private var showAllOpen = false
   init(botID: String) {
     self.botID = botID
@@ -20,21 +22,12 @@ final class FeedController: ListController {
     super.viewDidLoad()
     categories.selectedSegmentIndex = 0
     categories.addTarget(self, action: #selector(categoryChanged), for: .valueChanged)
-    let header = UIView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 56))
-    header.addSubview(categories)
-    categories.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-      categories.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 20),
-      categories.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -20),
-      categories.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-    ])
-    tableView.tableHeaderView = header
     updateToolbar()
     NotificationCenter.default.addObserver(
       self, selector: #selector(radarChanged), name: RadarStore.outcomesChanged, object: nil)
   }
   @objc private func radarChanged() {
-    if viewIfLoaded?.window != nil, categories.selectedSegmentIndex == 0 { reloadData() }
+    if viewIfLoaded?.window != nil { reloadData() }
   }
   private func updateToolbar() {
     defer {
@@ -78,11 +71,20 @@ final class FeedController: ListController {
   }
   @objc private func categoryChanged() {
     hidden = false
-    sections = []
     updateToolbar()
-    reloadData()
+    // The control is a row of this list, so the list changes after its own touch ends. Needs
+    // you and the control stay; the old tab's sections go while the new tab loads.
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      sections = Array(sections.prefix(leadingSections))
+      reloadData()
+    }
   }
   override func load() async throws {
+    // Needs you comes first, whichever tab is selected.
+    async let radarBlock = radarContent()
+    var tab: [ListSection]
+    var articles: [JSON] = []
     if categories.selectedSegmentIndex == 2 {
       let bots = try await API.shared.rpc("bots/list")
       var ids = Set([botID])
@@ -99,8 +101,7 @@ final class FeedController: ListController {
       for id in ids {
         routines += try await API.shared.rpc("routines/list", ["botId": .string(id)]).array
       }
-      radarSections = 0
-      sections = [
+      tab = [
         ListSection(
           rows: routines.map { routine in
             let id = routine["id"].string
@@ -151,14 +152,11 @@ final class FeedController: ListController {
             : "Touch and hold an automation to pause, edit or delete it.")
       ]
     } else {
-      async let list = API.shared.rpc(
+      let items = try await API.shared.rpc(
         "feed/list",
         ["saved": .bool(categories.selectedSegmentIndex == 1), "hidden": .bool(hidden)])
-      let radar = categories.selectedSegmentIndex == 0 && !hidden ? await radarContent() : []
-      let items = try await list
-      feedItems = items.array
-      radarSections = radar.count
-      sections = radar + items.array.map { item in
+      articles = items.array
+      tab = items.array.map { item in
         ListSection(rows: [
           ListRow(
             title: item["title"].string,
@@ -185,16 +183,27 @@ final class FeedController: ListController {
             }, deleteTitle: item["hidden"].bool ? "Restore" : "Hide")
         ])
       }
-      if feedItems.isEmpty {
-        sections.append(
+      if articles.isEmpty {
+        tab.append(
           ListSection(rows: [], footer: "Articles and posts selected for you will appear here."))
       }
     }
+    let leading = await radarBlock + [tabsSection()]
+    try Task.checkCancellation()
+    feedItems = articles
+    leadingSections = leading.count
+    sections = leading + tab
+  }
+  /// Feed / Saved / Automations, a row of its own with no card behind it.
+  private func tabsSection() -> ListSection {
+    ListSection(rows: [
+      ListRow(title: "", cell: { [categories] in SegmentedControlCell(categories) })
+    ])
   }
   override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath)
     -> UITableViewCell
   {
-    let index = indexPath.section - radarSections
+    let index = indexPath.section - leadingSections
     guard categories.selectedSegmentIndex != 2, feedItems.indices.contains(index) else {
       return super.tableView(tableView, cellForRowAt: indexPath)
     }
@@ -276,32 +285,32 @@ final class FeedController: ListController {
       menu: radarActionsMenu(item), cell: { RadarRowCell(item, detail: item.why) },
       swipeActions: [done, later])
   }
-  /// The newest brief from the last day, read from the personal conversation.
+  /// The newest brief from the last day. Its message (named by the status) is read from the
+  /// personal conversation, and the card opens the chat at that message.
   private func latestBrief(_ status: JSON) async -> ListSection? {
-    guard let sent = RadarTime.parse(status["lastBriefAt"].string),
+    let id = status["lastBriefMessageId"].string
+    guard !id.isEmpty, let sent = RadarTime.parse(status["lastBriefAt"].string),
       Date().timeIntervalSince(sent) < 86_400,
-      let thread = try? await API.shared.rpc(
-        "threads/get", ["botId": .string(botID), "threadKind": "personal"])
+      let page = try? await API.shared.rpc(
+        "threads/messages",
+        ["botId": .string(botID), "threadKind": "personal", "around": ["messageId": .string(id)]]),
+      let message = page["messages"].array.first(where: { $0["id"].string == id })
     else { return nil }
-    for message in thread["messages"].array.reversed() {
-      let blocks = message["blocks"].array
-      guard let block = blocks.first(where: { $0["kind"].string == "brief" }),
-        let brief = RadarBrief(block)
-      else { continue }
-      let narrative = blocks.filter { $0["kind"].string == "text" }.map { $0["text"].string }
-        .joined(separator: "\n\n")
-      let id = message["id"].string
-      return ListSection(
-        title: brief.title.isEmpty ? nil : brief.title,
-        rows: [
-          ListRow(
-            title: brief.title,
-            action: { [weak self] in
-              self?.radarTabs?.showPersonalChat { $0.focus(messageID: id) }
-            }, cell: { RadarBriefCardCell(narrative: narrative, brief: brief) })
-        ])
-    }
-    return nil
+    let blocks = message["blocks"].array
+    guard let block = blocks.first(where: { $0["kind"].string == "brief" }),
+      let brief = RadarBrief(block)
+    else { return nil }
+    let narrative = blocks.filter { $0["kind"].string == "text" }.map { $0["text"].string }
+      .joined(separator: "\n\n")
+    return ListSection(
+      title: brief.title.isEmpty ? nil : brief.title,
+      rows: [
+        ListRow(
+          title: brief.title,
+          action: { [weak self] in
+            self?.radarTabs?.showPersonalChat { $0.focus(messageID: id) }
+          }, cell: { RadarBriefCardCell(narrative: narrative, brief: brief) })
+      ])
   }
   /// Turns Radar on at a level, asks for notifications and starts the first look around.
   private func enableRadar(_ level: String) {
@@ -320,6 +329,24 @@ final class FeedController: ListController {
       reloadData()
     }
   }
+}
+
+/// Hosts a segmented control as a list row, without the card around other rows.
+final class SegmentedControlCell: UITableViewCell {
+  init(_ control: UISegmentedControl) {
+    super.init(style: .default, reuseIdentifier: nil)
+    backgroundColor = .clear
+    selectionStyle = .none
+    contentView.addSubview(control)
+    control.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      control.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+      control.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+      control.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+      control.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+    ])
+  }
+  required init?(coder: NSCoder) { fatalError() }
 }
 
 final class FeedCardCell: UITableViewCell {
