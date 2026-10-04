@@ -17,8 +17,9 @@ import type { ObservedSignal, RadarObserver } from "./types.js";
 const CAP = 50;
 /** Full bodies are read only for mail addressed to the owner, and only this many. */
 const BODY_CAP = 15;
+/** The marker may start the address or follow a separator: "noreply@", "builds_no_reply@". */
 const NO_REPLY =
-  /^(?:no-?reply|do-?not-?reply|donotreply|noreply|mailer-daemon|bounces?|postmaster)[^@]*@/i;
+  /^(?:[^@]*[-_.+])?(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer-daemon|bounces?|postmaster)[^@]*@/i;
 
 const headerMap = (payload: unknown) =>
   new Map(

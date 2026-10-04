@@ -154,6 +154,43 @@ describe("gmail", () => {
     });
   });
 
+  it("spots no-reply senders wherever the marker sits in the address", async () => {
+    const mail = (id: string, sender: string) => ({
+      messageId: id,
+      threadId: id,
+      sender,
+      to: "Me <me@example.test>",
+      subject: "Notice",
+      labelIds: ["INBOX"],
+      messageTimestamp: "2026-10-05T09:00:00Z",
+      preview: { body: "Hello" },
+    });
+    const { call } = provider({
+      GMAIL_GET_PROFILE: { data: { response_data: { emailAddress: "me@example.test" } } },
+      GMAIL_FETCH_EMAILS: {
+        successful: true,
+        data: {
+          messages: [
+            mail("a1", "Builds <builds_no_reply@email.example.test>"),
+            mail("a2", "Service <notifications-noreply@service.example.test>"),
+            mail("a3", "App <do_not_reply@app.example.test>"),
+            mail("a4", "A Colleague <anna.lee@example.test>"),
+            mail("a5", "Sam <snoreply@example.test>"),
+          ],
+        },
+      },
+      GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID: { data: { messageId: "a4", messageText: "Hi" } },
+    });
+    const result = await gmailObserver.observe(input(call));
+    expect(result.signals.map((signal) => [signal.externalId, signal.meta?.noReply])).toEqual([
+      ["a1", true],
+      ["a2", true],
+      ["a3", true],
+      ["a4", false],
+      ["a5", false],
+    ]);
+  });
+
   it("re-reads a thread: a later owner reply handles it, a read message was opened", async () => {
     const thread = (labels: string[], reply = false) =>
       provider({
