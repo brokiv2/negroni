@@ -1,10 +1,15 @@
+import { useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { FeedItem, Routine, ThreadSnapshot } from "@rakazo/contracts";
 import { xPostId } from "@rakazo/contracts";
+import { Button } from "@rakazo/ui-web";
+import { Antenna } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { AskCard } from "./AskCard";
 import { FeedSettings } from "./FeedSettings";
+import { NeedsYou } from "./radar/NeedsYou";
+import { RadarPanelDialog } from "./radar/RadarPanel";
 
 type ChatTarget = { botId: string; groupId?: string; draft?: string; team?: boolean };
 type Tab = "feed" | "saved" | "automations" | "hidden";
@@ -14,15 +19,30 @@ export function PersonalWorkspace({
   botId,
   botIds,
   onOpenChat,
+  onOpenIntegrations,
+  assistantName,
+  active = true,
 }: {
   botId: string;
   botIds: readonly string[];
   onClose: () => void;
   onOpenChat: (target?: ChatTarget) => void;
+  /** The connected-apps screen, where a source Radar lost access is reconnected. */
+  onOpenIntegrations?: () => void;
   assistantName?: string;
   embedded?: boolean;
+  /** Whether For you is on screen; showing it again refreshes Radar. */
+  active?: boolean;
 }) {
+  const { t } = useLingui();
   const [tab, setTab] = useState<Tab>("feed");
+  const [radarOpen, setRadarOpen] = useState(false);
+  const [radarRevision, setRadarRevision] = useState(0);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) setRadarRevision((v) => v + 1);
+    wasActive.current = active;
+  }, [active]);
   const [items, setItems] = useState<FeedItem[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -80,6 +100,16 @@ export function PersonalWorkspace({
         <header className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-medium">For you</h1>
           <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="icon-lg"
+              className="rounded-lg"
+              aria-label={t`Radar`}
+              aria-haspopup="dialog"
+              onClick={() => setRadarOpen(true)}
+            >
+              <Antenna aria-hidden />
+            </Button>
             <button
               type="button"
               className={button}
@@ -88,11 +118,29 @@ export function PersonalWorkspace({
             >
               Customize feed
             </button>
-            <button type="button" className={button} onClick={() => setRevision((v) => v + 1)}>
+            <button
+              type="button"
+              className={button}
+              onClick={() => {
+                setRevision((v) => v + 1);
+                setRadarRevision((v) => v + 1);
+              }}
+            >
               Refresh
             </button>
           </div>
         </header>
+        <RadarPanelDialog
+          open={radarOpen}
+          onOpenChange={setRadarOpen}
+          onOpenIntegrations={onOpenIntegrations}
+        />
+        <NeedsYou
+          botId={botId}
+          assistantName={assistantName}
+          revision={radarRevision}
+          onOpenChat={onOpenChat}
+        />
         {settingsOpen && <FeedSettings />}
         <nav className="flex flex-wrap gap-2" aria-label="For you sections">
           {(["feed", "saved", "automations", "hidden"] as const).map((value) => (

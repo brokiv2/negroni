@@ -153,6 +153,7 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import { PersonalWorkspace } from "../components/PersonalWorkspace";
+import { RadarBriefCard, RadarUpdateCard } from "../components/radar/RadarCards";
 import { ToolActivityDisclosure } from "../components/ToolActivityDisclosure";
 import { SkillDraftCard } from "../components/teach/SkillDraftCard";
 import { TeachCaptureOverlay } from "../components/teach/TeachCaptureOverlay";
@@ -3680,8 +3681,10 @@ export function ShellPage() {
               botIds={assistantIds}
               assistantName={assistant.name}
               embedded
+              active={personalView}
               onClose={() => setPersonalOpen(false)}
               onOpenChat={openPersonalChat}
+              onOpenIntegrations={() => setPluginsOpen(true)}
             />
           </div>
         ) : null}
@@ -6359,11 +6362,38 @@ const MessageView = memo(function MessageView({
       </>
     );
   }
+  // A Radar brief is one card: the message's text is its narrative.
+  const briefNarrative = message.blocks.some((block) => block.kind === "brief")
+    ? message.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : [])).join("\n\n")
+    : null;
+  const radarBotId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
   return (
     <>
       {messageContext}
       {message.blocks.map((block, i) => {
         if (isToolActivityBlock(block)) return null;
+        if (briefNarrative !== null && block.kind === "text" && message.role === "bot") {
+          return null;
+        }
+        if (block.kind === "update") {
+          return (
+            <div key={i} className="flex justify-start">
+              <RadarUpdateCard block={block} botId={radarBotId} onSent={onRefresh} />
+            </div>
+          );
+        }
+        if (block.kind === "brief") {
+          return (
+            <div key={i} className="flex justify-start">
+              <RadarBriefCard
+                block={block}
+                narrative={briefNarrative ?? ""}
+                botId={radarBotId}
+                onSent={onRefresh}
+              />
+            </div>
+          );
+        }
         const chip = compactDelegation ? delegationChip(block) : null;
         if (chip) {
           const name = chip.name ?? memberName?.(chip.botId) ?? t`a teammate`;

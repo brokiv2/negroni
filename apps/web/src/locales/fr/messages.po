@@ -4225,3 +4225,462 @@ msgstr "Impossible de basculer le VPN"
 #: src/components/HostVpnSwitch.tsx
 msgid "WARP VPN"
 msgstr "WARP VPN"
+
+#: src/components/radar/copy.ts
+msgid "1 hour"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "action needed"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Add a file"
+msgstr ""
+
+#: src/components/radar/RadarCards.tsx
+msgid "All day"
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "Always tell me"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Always tell me: {target}"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Brief only: {target}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Briefs"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Confidence {percent}%."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Connect apps"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Context files"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+#: src/components/radar/RadarDecision.tsx
+#: src/components/radar/RadarPanel.tsx
+msgid "Could not load. Try again."
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+#: src/components/radar/RadarPanel.tsx
+msgid "Could not save. Try again."
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+#: src/components/radar/RadarActions.tsx
+msgid "Could not send. Try again."
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Could not turn on Radar. Try again."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Counted against it: {signalsAgainst}."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Counted for it: {signalsFor}."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "deadline"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Draft reply"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Evening"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Evening brief"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Evening brief time"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Handle it"
+msgstr ""
+
+#: src/components/radar/RadarCards.tsx
+msgid "Hide quote"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "How it was decided"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "how new it is"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "I couldn't tell what this needs."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "I interrupt from {interrupt} and brief from {brief}."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Importance {importance} of 100."
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Important"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "In 1 hour"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "In brief"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Interrupts per day"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It came in during quiet hours."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "It's unclear who needs to act."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Kept for your brief."
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "Later · {time}"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Latest brief · {briefTime}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Learned"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Marked important"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Meeting prep"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgctxt "Radar level"
+msgid "More"
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "More actions"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Morning"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Morning brief"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Morning brief time"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Needs reconnect"
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "Never about this"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Never: {target}"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Nobody needs to act."
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "Not important"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Nothing needs you."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Nothing skipped."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Off"
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+msgid "On it"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "On its way"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Only urgent"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Open in {sourceName}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Other apps"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Pause"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Paused until {time}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "People"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Quiet hours"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Quiet hours end"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Quiet hours start"
+msgstr ""
+
+#: src/components/PersonalWorkspace.tsx
+#: src/components/radar/RadarPanel.tsx
+msgid "Radar"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Radar was paused."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Reconnect"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Remove rule"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Remove {path}"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Reply in chat"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Resume"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Rules"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Same as chat"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Seen"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Send a brief now"
+msgstr ""
+
+#: src/components/radar/RadarCards.tsx
+msgid "Show quote"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Skipped"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Someone else needs to act."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Sources"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "stakes"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Stayed quiet."
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Taking a look around. I'll follow up shortly."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Tell me"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "Tell {name}…"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "This evening"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "This was important"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Today's interrupt limit was reached."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Told you"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Told you right away."
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Tomorrow morning"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Until resumed"
+msgstr ""
+
+#: src/components/radar/copy.ts
+msgid "Until tomorrow 08:00"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Urgent enough to skip quiet hours and meetings."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Waiting until your next brief costs little."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Waiting until your next brief would cost you."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Waiting would cause harm before your next brief."
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Watching"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "Watching · next check {time}"
+msgstr ""
+
+#: src/components/radar/RadarPanel.tsx
+msgid "What I've learned"
+msgstr ""
+
+#: src/components/radar/NeedsYou.tsx
+msgid "When should I interrupt you?"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "whether you've seen it"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "who it's addressed to"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "who it's from"
+msgstr ""
+
+#: src/components/radar/RadarActions.tsx
+#: src/components/radar/RadarDecision.tsx
+msgid "Why this"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You already heard about this today."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You had heard from me less than 30 minutes before."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You need to act."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "You were in a meeting."
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "your current work"
+msgstr ""
+
+#: src/components/radar/RadarCards.tsx
+msgid "Your day"
+msgstr ""
+
+#: src/components/radar/RadarDecision.tsx
+msgid "Your feedback moved the bar by {offset}."
+msgstr ""
+
+#: src/components/radar/RadarCards.tsx
+msgid "{hidden} more"
+msgstr ""

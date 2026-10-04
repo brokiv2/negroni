@@ -1,23 +1,20 @@
-import type { Connection, FeedProfile } from "@rakazo/contracts";
+import type { FeedProfile } from "@rakazo/contracts";
 import { useEffect, useState } from "react";
 import { rpc } from "../lib/rpc";
+/** Article feed controls. Connected accounts are watched by Radar, not by the feed. */
 export function FeedSettings() {
   const [profile, setProfile] = useState<FeedProfile | null>(null);
-  const [accounts, setAccounts] = useState<Connection[]>([]);
   const [topic, setTopic] = useState("");
   const [domains, setDomains] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const abort = new AbortController();
-    void Promise.all([
-      rpc.feed.profile({}, { signal: abort.signal }),
-      rpc.connections.list({}, { signal: abort.signal }),
-    ])
-      .then(([p, connections]) => {
+    void rpc.feed
+      .profile({}, { signal: abort.signal })
+      .then((p) => {
         if (!abort.signal.aborted) {
           setProfile(p);
-          setAccounts(connections);
           setDomains(p.sourceDomains.join(", "));
         }
       })
@@ -43,54 +40,6 @@ export function FeedSettings() {
       {error && <p role="alert">{error}</p>}
       {profile && (
         <>
-          <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">Connected sources</legend>
-            {accounts
-              .filter(
-                (a) =>
-                  a.capabilities.includes("background_read") ||
-                  profile.accountResearchIds.includes(a.id),
-              )
-              .map((account) => (
-                <label key={account.id} className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    disabled={
-                      busy ||
-                      (account.status !== "connected" &&
-                        !profile.accountResearchIds.includes(account.id))
-                    }
-                    checked={profile.accountResearchIds.includes(account.id)}
-                    onChange={(event) => {
-                      const ids = profile.accountResearchIds.filter((id) => id !== account.id);
-                      if (event.target.checked) ids.push(account.id);
-                      void apply(() => rpc.feed.configure({ accountResearchIds: ids }));
-                    }}
-                  />
-                  {account.accountLabel ?? account.displayName}
-                </label>
-              ))}
-            <p className="text-sm text-muted-foreground">
-              Read new mail and recent meetings from selected accounts. Useful findings appear in
-              For you.
-            </p>
-          </fieldset>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={profile.accountAlerts}
-              disabled={busy}
-              onChange={(e) =>
-                void apply(() =>
-                  rpc.feed.configure({
-                    accountAlerts: e.target.checked,
-                    accountTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                  }),
-                )
-              }
-            />
-            Important updates · up to two a day, 08:00–22:00
-          </label>
           <label className="flex items-center gap-2">
             <input
               type="checkbox"
