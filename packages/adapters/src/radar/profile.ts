@@ -1,8 +1,8 @@
-import type { RadarRule, RadarSettings } from "@rakazo/contracts";
-import { RadarRuleChange, RadarSettingsSchema } from "@rakazo/contracts";
+import type { RadarPerson, RadarRule, RadarSettings } from "@rakazo/contracts";
+import { RadarPersonRemove, RadarRuleChange, RadarSettingsSchema } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { RadarError } from "./errors.js";
-import { newRule, parseLearned, withoutRule, withRule } from "./learned.js";
+import { newRule, parseLearned, withoutPerson, withoutRule, withRule } from "./learned.js";
 
 export type RadarOwner = { spaceId: string; userId: string };
 export type RadarTx = Prisma.TransactionClient;
@@ -98,4 +98,45 @@ export async function requestRadarCycle(
         data: { nextCheckAt: now },
       });
   });
+}
+
+/** Forget a learned or explicit person; nightly synthesis will not add them back. */
+export async function forgetRadarPerson(
+  prisma: PrismaClient,
+  scope: RadarOwner,
+  input: unknown,
+): Promise<RadarPerson[]> {
+  const key = RadarPersonRemove.parse(input);
+  return prisma.$transaction(async (tx) => {
+    const row = await lockRadarProfile(tx, scope);
+    const learned = parseLearned(row.learned);
+    const next = withoutPerson(learned, key);
+    if (next !== learned) await commitRadarProfile(tx, row, { learned: next });
+    return next.people;
+  });
+}
+
+const PRESENCE_THROTTLE_MS = 30_000;
+
+/**
+ * A desktop or web client read the personal thread: Radar delivers into the conversation
+ * without a push for a short while. Throttled; never creates a profile.
+ */
+export async function recordRadarPresence(
+  prisma: PrismaClient,
+  scope: RadarOwner,
+  now = new Date(),
+) {
+  await prisma.radarProfile
+    .updateMany({
+      where: {
+        ...radarOwner(scope),
+        OR: [
+          { presenceAt: null },
+          { presenceAt: { lt: new Date(now.getTime() - PRESENCE_THROTTLE_MS) } },
+        ],
+      },
+      data: { presenceAt: now },
+    })
+    .catch(() => undefined);
 }

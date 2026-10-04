@@ -458,6 +458,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     updateId: Id,
     /** Toolkit slug of the source account, for its mark. */
     source: z.string().min(1).max(64),
+    /** Which account of that source: provider-verified address or the connection's name. */
+    account: z.string().max(320).optional(),
     title: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
     actor: z
       .object({
@@ -493,9 +495,27 @@ export const MessageBlock = z.discriminatedUnion("kind", [
           source: z.string().min(1).max(64),
           url: HttpUrl.optional(),
           action: RadarAction.optional(),
+          /** Which part of the brief the row belongs to. */
+          section: z.enum(["needs_you", "your_day", "held"]).optional(),
+          offer: z.string().min(1).max(RADAR_OFFER_MAX).optional(),
+          actor: z
+            .object({
+              name: z.string().max(TOOL_CARD_SUMMARY_MAX_LENGTH).optional(),
+              address: z.string().max(320).optional(),
+            })
+            .optional(),
         }),
       )
       .max(MAX_BRIEF_ITEMS),
+    /** Items left out of `items` ("and 4 more"). */
+    more: z.number().int().nonnegative().optional(),
+    /** Updates kept quiet since the last brief, and how many of them were close calls. */
+    quiet: z
+      .object({
+        skipped: z.number().int().nonnegative(),
+        borderline: z.number().int().nonnegative(),
+      })
+      .optional(),
     agenda: z
       .array(
         z.object({

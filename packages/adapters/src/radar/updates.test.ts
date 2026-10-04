@@ -16,9 +16,11 @@ function row(patch: Partial<Parameters<typeof radarUpdateView>[0]> = {}) {
     occurredAt: new Date("2026-10-04T08:00:00Z"),
     actor: { name: "A colleague", address: "colleague@example.test" },
     direct: true,
+    unread: true,
     title: "Re: budget",
     excerpt: "x".repeat(900),
     url: "https://mail.example.test/t1",
+    deadline: null,
     meta: {},
     contentHash: "h1",
     status: "decided",
@@ -37,6 +39,7 @@ function row(patch: Partial<Parameters<typeof radarUpdateView>[0]> = {}) {
     reason: null,
     trace: { level: "important", importance: 81, thresholds: { interrupt: 72, brief: 40 } },
     deliverAt: null,
+    held: false,
     deliveredAt: new Date("2026-10-04T08:05:00Z"),
     deliveryKey: "k1",
     messageId: "message-1",
@@ -47,6 +50,7 @@ function row(patch: Partial<Parameters<typeof radarUpdateView>[0]> = {}) {
     createdAt: now,
     updatedAt: now,
     message: { threadId: "thread-1" },
+    connection: { displayName: "Work mail", metadata: { accountLabel: "me@example.test" } },
     ...patch,
   };
 }
@@ -69,7 +73,11 @@ describe("radar update view", () => {
       offer: "Draft a reply?",
       evidence: "Could you send the budget figures before the 15:00 review?",
       trace: { level: "important", thresholds: { interrupt: 72, brief: 40 } },
+      account: "me@example.test",
     });
+    expect(
+      radarUpdateView(row({ connection: { displayName: "Work mail", metadata: {} } })).account,
+    ).toBe("Work mail");
     expect(view.excerpt).toHaveLength(500);
     expect(view.nextStep).toBeUndefined();
   });

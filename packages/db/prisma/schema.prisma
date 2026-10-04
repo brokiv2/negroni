@@ -515,6 +515,9 @@ model Message {
   assignedWork AssistantWork[]
   radarSignals RadarSignal[]
   radarBriefs RadarBrief[]
+  // The Radar update this user message is about; its run gets the update's details.
+  radarSignalId String?
+  radarSignal  RadarSignal? @relation("RadarSignalReplies", fields: [radarSignalId], references: [id], onDelete: SetNull)
   id               String    @id @default(cuid())
   threadId         String
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
@@ -1507,6 +1510,8 @@ model RadarProfile {
   lastCycleAt      DateTime?
   nextCycleAt      DateTime?
   briefRequestedAt DateTime?
+  // Last time a desktop or web client read the personal thread ("probably watching").
+  presenceAt       DateTime?
   // Local date of the last brief per period.
   lastBriefs       Json          @default("{}")
   // Daily budgets (model passes, interrupts), keyed by local date.
@@ -1561,9 +1566,12 @@ model RadarSignal {
   occurredAt   DateTime
   actor        Json?
   direct       Boolean      @default(false)
+  unread       Boolean?
   title        String
   excerpt      String       @default("") @db.Text
   url          String?
+  // When the story stops mattering: event start, task due.
+  deadline     DateTime?
   meta         Json         @default("{}")
   contentHash  String
   // Pipeline progress: pending -> triaged -> decided, or failed.
@@ -1585,6 +1593,8 @@ model RadarSignal {
   reason       String?
   trace        Json?
   deliverAt    DateTime?
+  // An interrupt postponed by pause, quiet hours, a meeting or the budget.
+  held         Boolean      @default(false)
   deliveredAt  DateTime?
   deliveryKey  String?      @unique
   messageId    String?
@@ -1594,6 +1604,7 @@ model RadarSignal {
   snoozedUntil DateTime?
   feedback     String?
   feedbackAt   DateTime?
+  replies      Message[]    @relation("RadarSignalReplies")
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -1604,6 +1615,7 @@ model RadarSignal {
   @@index([spaceId, userId, storyKey])
   @@index([spaceId, userId, feedback, feedbackAt])
   @@index([connectionId, threadKey])
+  @@index([connectionId, externalId])
   @@index([deliverAt])
   @@index([state, snoozedUntil])
   @@index([createdAt])

@@ -61,6 +61,7 @@ import {
   reconcileComputerUpdates,
   reconcileDelegations,
   reconcileFeedResearch,
+  reconcileRadar,
   removePiUserSessions,
   SmtpEmailProvider,
   SpaceMemoryProviderResolver,
@@ -433,6 +434,8 @@ export async function createApp(
     deploymentModelKey: env.deploymentModelKey,
     messaging,
     cloudAgent,
+    connectors: stack.connector,
+    notifications,
   });
   if (inMemoryJobs) {
     await inMemoryJobs.start(jobHandlers);
@@ -444,6 +447,7 @@ export async function createApp(
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
         reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
+        reconcileRadar: () => reconcileRadar({ prisma, jobs }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
         reconcileDelegations: () => reconcileDelegations({ prisma }),
       })

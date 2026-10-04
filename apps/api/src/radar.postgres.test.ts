@@ -17,12 +17,16 @@ suite("radar RPC (PostgreSQL)", () => {
   beforeAll(() => {
     db = createDb(process.env.DATABASE_URL!);
     prisma = db.prisma;
-    const connectors = { managed: (id: string) => (id === "composio" ? {} : undefined) };
+    const connectors = {
+      managed: (id: string) => (id === "composio" ? { canObserve: () => true } : undefined),
+    };
     handler = new RPCHandler(
       createRouter({
         prisma,
         connectors,
-        env: { defaultProvider: "fake", defaultModel: "fake" },
+        events: { notify: async () => undefined },
+        jobs: { enqueue: async () => undefined },
+        env: { defaultProvider: "fake", defaultModel: "fake", agentRuntime: "scripted" },
       } as unknown as RouterDeps),
     );
   });

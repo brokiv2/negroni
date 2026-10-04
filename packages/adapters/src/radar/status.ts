@@ -46,9 +46,9 @@ export async function getRadarStatus(
         },
       }),
       prisma.radarBrief.findFirst({
-        where: key,
+        where: { ...key, messageId: { not: null } },
         orderBy: { createdAt: "desc" },
-        select: { createdAt: true },
+        select: { createdAt: true, messageId: true },
       }),
       prisma.radarBrief.findMany({
         where: { ...key, localDate: { in: [today, nextLocalDate(today)] } },
@@ -74,6 +74,7 @@ export async function getRadarStatus(
     lastCycleAt: row?.lastCycleAt?.toISOString(),
     nextCycleAt: settings.enabled ? row?.nextCycleAt?.toISOString() : undefined,
     lastBriefAt: lastBrief?.createdAt.toISOString(),
+    lastBriefMessageId: lastBrief?.messageId ?? undefined,
     nextBriefAt: nextBrief?.toISOString(),
     error: row?.error || undefined,
     summary: row?.summary || undefined,

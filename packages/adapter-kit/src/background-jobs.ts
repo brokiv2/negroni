@@ -22,6 +22,7 @@ const payloadSchemas = {
   "history.compact": z.object({ threadId: z.string().min(1) }),
   "messaging.deliver": z.object({ runId: z.string().min(1).optional() }),
   "cloud_agent.poll": z.object({ agentId: z.string().min(1) }),
+  "radar.cycle": z.object({ spaceId: z.string().min(1), userId: z.string().min(1) }),
 } satisfies { [Name in BackgroundJobName]: z.ZodType<BackgroundJobPayloads[Name]> };
 
 export function parseBackgroundJob(name: string, payload: unknown): BackgroundJob {
@@ -154,5 +155,15 @@ export function cloudAgentPollJob(
     payload,
     replaceKey: cloudAgentPollJobKey(payload.agentId),
     ...(availableAt ? { availableAt } : {}),
+  };
+}
+
+/** One queued cycle per owner; a cycle that fails waits for the next reconciliation. */
+export function radarCycleJob(owner: { spaceId: string; userId: string }): BackgroundJob {
+  return {
+    name: "radar.cycle",
+    payload: { spaceId: owner.spaceId, userId: owner.userId },
+    replaceKey: `radar.cycle:${owner.spaceId}:${owner.userId}`,
+    maxAttempts: 1,
   };
 }

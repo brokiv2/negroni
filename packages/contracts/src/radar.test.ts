@@ -23,7 +23,7 @@ describe("radar settings", () => {
       quietHours: { enabled: true, start: "22:00", end: "08:00" },
       morningBrief: { enabled: true, time: "08:30" },
       eveningBrief: { enabled: false, time: "18:30" },
-      maxInterruptsPerDay: 6,
+      maxInterruptsPerDay: 4,
       meetingPrep: true,
       contextPaths: [],
     });

@@ -100,7 +100,7 @@ export function apnsNotificationHeaders(message: NotificationMessage) {
   const expiresAt = message.expiresAt?.getTime();
   return {
     "apns-push-type": "alert",
-    "apns-priority": "10",
+    "apns-priority": message.priority === 5 ? "5" : "10",
     // "0" means one delivery attempt: a phone that is offline at that moment never gets it.
     "apns-expiration":
       expiresAt !== undefined && Number.isFinite(expiresAt)

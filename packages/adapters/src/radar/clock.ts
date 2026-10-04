@@ -64,3 +64,20 @@ export function startOfLocalDay(at: Date, timeZone: string): Date {
 }
 
 export const hoursAfter = (at: Date, hours: number) => new Date(at.getTime() + hours * HOUR);
+
+/** Minutes since local midnight. */
+export function localMinutes(at: Date, timeZone: string): number {
+  const wall = wallClock(at, timeZone);
+  return wall.hour * 60 + wall.minute;
+}
+
+/** Local "HH:MM" and weekday name, for prompts. */
+export function localTimeLabel(at: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(at);
+}

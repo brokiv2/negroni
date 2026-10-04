@@ -3,7 +3,9 @@ import type {
   AgentRuntime,
   BackgroundJobHandlers,
   JobPublisher,
+  ManagedConnectorProvider,
   MessagingSurface,
+  NotificationProvider,
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import { messagingDeliverJob } from "@rakazo/adapter-kit";
@@ -16,8 +18,10 @@ import { scheduleComputerSleep, sleepComputerIfIdle } from "./computer-idle.js";
 import { performComputerUpdate } from "./computer-update.js";
 import type { createRunExecutor } from "./executor.js";
 import { compactHistory } from "./history-compaction.js";
+import { knowledgeRootPath } from "./knowledge-root.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import { deliverMessagingOutbound, mirrorMessagingOutbound } from "./messaging-delivery.js";
+import { runRadarCycle } from "./radar/index.js";
 import type { EncryptedSecretStore } from "./secrets.js";
 import { expireTaughtSkillTeaching } from "./teaching-session.js";
 
@@ -35,6 +39,9 @@ export function createBackgroundJobHandlers(deps: {
   deploymentModelKey?: string;
   messaging?: MessagingSurface;
   cloudAgent?: CloudAgentConnection | null;
+  /** Managed connectors Radar observes through. */
+  connectors?: { managed(id: string): ManagedConnectorProvider | undefined };
+  notifications?: NotificationProvider;
 }): BackgroundJobHandlers {
   const deliverMessaging = async (runId?: string) => {
     if (!deps.messaging) return;
@@ -96,6 +103,23 @@ export function createBackgroundJobHandlers(deps: {
           cloudAgent: deps.cloudAgent,
         },
         payload,
+      );
+    },
+    "radar.cycle": async (owner) => {
+      await runRadarCycle(
+        {
+          prisma: deps.prisma,
+          runtime: deps.runtime,
+          registry: deps.connectors,
+          notifications: deps.notifications,
+          events: deps.events,
+          workerId: deps.workerId,
+          resolveModel: deps.executor.resolveModel,
+          resolveConnectedModel: (scope, provider, modelId) =>
+            deps.executor.resolveConnectedModel(scope, provider, modelId),
+          knowledgeRoot: knowledgeRootPath(),
+        },
+        owner,
       );
     },
     "history.compact": async (payload) => {

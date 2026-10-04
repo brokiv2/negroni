@@ -282,6 +282,7 @@ export class ExpoPushProvider implements NotificationProvider {
           tag: message.groupKey ?? message.threadId,
           ...(message.category ? { categoryId: message.category } : {}),
           ...(message.interruptionLevel ? { interruptionLevel: message.interruptionLevel } : {}),
+          ...(message.priority === 5 ? { priority: "normal" } : {}),
           ...(message.expiresAt && Number.isFinite(message.expiresAt.getTime())
             ? { expiration: Math.max(1, Math.floor(message.expiresAt.getTime() / 1000)) }
             : {}),

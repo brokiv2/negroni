@@ -14,14 +14,21 @@ import {
 } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import type { ZodType } from "zod";
+import { connectionAccountLabel } from "../app-connection-tools.js";
 import { RadarError } from "./errors.js";
 import type { RadarOwner } from "./profile.js";
 import { radarOwner } from "./profile.js";
 
 type SignalRow = Prisma.RadarSignalGetPayload<{
-  include: { message: { select: { threadId: true } } };
+  include: {
+    message: { select: { threadId: true } };
+    connection: { select: { displayName: true; metadata: true } };
+  };
 }>;
-export const updateInclude = { message: { select: { threadId: true } } } as const;
+export const updateInclude = {
+  message: { select: { threadId: true } },
+  connection: { select: { displayName: true, metadata: true } },
+} as const;
 
 /** Stored values a newer or older build wrote outside the contract are left out, not fatal. */
 function valid<T>(schema: ZodType<T>, value: unknown): T | undefined {
@@ -31,9 +38,16 @@ function valid<T>(schema: ZodType<T>, value: unknown): T | undefined {
 
 const text = (value: string | null | undefined) => (value?.trim() ? value : undefined);
 
+/** The account label a card shows: the provider-verified address, else the connection's name. */
+export const accountLabel = (
+  connection: { displayName: string; metadata: unknown } | null | undefined,
+) =>
+  connection ? (connectionAccountLabel(connection.metadata) ?? connection.displayName) : undefined;
+
 export function radarUpdateView(row: SignalRow): RadarUpdate {
   const actor = valid(RadarActorSchema, row.actor);
   const decided = row.status === "decided";
+  const account = accountLabel(row.connection);
   return {
     id: row.id,
     source: row.source,
@@ -63,7 +77,24 @@ export function radarUpdateView(row: SignalRow): RadarUpdate {
     messageId: row.messageId ?? undefined,
     threadId: row.message?.threadId,
     trace: valid(RadarTraceSchema, row.trace),
+    deadline: row.deadline?.toISOString(),
+    ...(row.held ? { held: true } : {}),
+    ...(account ? { account } : {}),
   };
+}
+
+/** One update with its trace, scoped to its owner. */
+export async function getRadarUpdate(prisma: PrismaClient, scope: RadarOwner, input: unknown) {
+  const id =
+    typeof (input as { id?: unknown })?.id === "string" ? (input as { id: string }).id : "";
+  const row = id
+    ? await prisma.radarSignal.findFirst({
+        where: { id, ...radarOwner(scope) },
+        include: updateInclude,
+      })
+    : null;
+  if (!row) throw new RadarError("NOT_FOUND", "This update is no longer available.");
+  return radarUpdateView(row);
 }
 
 /**

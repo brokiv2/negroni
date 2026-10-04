@@ -14,11 +14,19 @@ let cached: { path: string; mtimeMs: number; excerpt: string } | undefined;
  * sandbox where the agent shell runs on the host. The routing section of its AGENTS.md is
  * inlined so a question about a project starts in the right folder without an extra turn.
  */
+/** The owner's knowledge folder (NEGRONI_KNOWLEDGE_ROOT), when it is an absolute path. */
+export function knowledgeRootPath(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  const root = env.NEGRONI_KNOWLEDGE_ROOT?.trim();
+  return root && isAbsolute(root) ? root : undefined;
+}
+
 export async function knowledgeRootInstruction(
   env: Record<string, string | undefined> = process.env,
 ): Promise<string | undefined> {
-  const root = env.NEGRONI_KNOWLEDGE_ROOT?.trim();
-  if (!root || !isAbsolute(root)) return undefined;
+  const root = knowledgeRootPath(env);
+  if (!root) return undefined;
   const map = join(root, "AGENTS.md");
   const excerpt = await routingExcerpt(map);
   return [

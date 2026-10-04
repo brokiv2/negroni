@@ -522,6 +522,8 @@ export interface BackgroundJobPayloads {
   "messaging.deliver": { runId?: string };
   /** Reconcile durable remote-agent intent; scope is loaded from the database. */
   "cloud_agent.poll": { agentId: string };
+  /** One Radar cycle for one owner; the cycle takes its own lease. */
+  "radar.cycle": { spaceId: string; userId: string };
 }
 
 export type BackgroundJobName = keyof BackgroundJobPayloads;
@@ -584,6 +586,8 @@ export interface NotificationMessage {
    * default, which for APNs is a single delivery attempt.
    */
   expiresAt?: Date;
+  /** 5 lets the device batch delivery to save power; absent or 10 sends at once. */
+  priority?: 5 | 10;
 }
 
 /** A product-authored transactional email, independent of its delivery vendor. */

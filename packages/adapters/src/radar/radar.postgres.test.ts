@@ -17,7 +17,8 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
   let prisma: PrismaClient;
   const ids: string[] = [];
   const registry = {
-    managed: (connectorId: string) => (connectorId === "composio" ? ({} as never) : undefined),
+    managed: (connectorId: string) =>
+      connectorId === "composio" ? ({ canObserve: () => true } as never) : undefined,
   };
   const now = new Date("2026-10-04T09:00:00Z");
 
@@ -141,7 +142,7 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
     expect(await prisma.radarProfile.count({ where: a.scope })).toBe(0);
   });
 
-  it("turns on with the earlier research accounts and time zone, else every supported account", async () => {
+  it("turns on with every supported account and the earlier research time zone", async () => {
     const a = await owner();
     const gmail = await a.connect("gmail");
     const calendar = await a.connect("googlecalendar");
@@ -156,13 +157,20 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
     expect(status.settings).toMatchObject({ enabled: true, timeZone: "Europe/Helsinki" });
     expect(status.nextCycleAt).toBe(now.toISOString());
     expect(status.sources.find((s) => s.connectionId === gmail.id)?.state).toBe("ok");
-    expect(status.sources.find((s) => s.connectionId === calendar.id)?.state).toBe("paused");
+    expect(status.sources.find((s) => s.connectionId === calendar.id)?.state).toBe("ok");
     const profile = await prisma.radarProfile.findUniqueOrThrow({
       where: { spaceId_userId: a.scope },
     });
     expect(profile.version).toBe(2);
 
-    // Turning off and on again never re-imports over the owner's own choices.
+    // Turning off and on again never re-selects over the owner's own choices.
+    await setRadarSource(
+      prisma,
+      registry,
+      a.scope,
+      { connectionId: calendar.id, enabled: false },
+      now,
+    );
     await configureRadar(prisma, registry, a.scope, { enabled: false }, now);
     await configureRadar(prisma, registry, a.scope, { enabled: true }, now);
     status = await getRadarStatus(prisma, registry, a.scope, now);
@@ -302,12 +310,26 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
     expect(status.today).toEqual({ seen: 4, interrupted: 1, briefed: 1, skipped: 1, deferred: 1 });
     // Noon in Helsinki: a missed morning brief is no longer sent, the next is tomorrow's.
     expect(status.nextBriefAt).toBe("2026-10-05T05:30:00.000Z");
+    const bot = await prisma.bot.create({ data: { ...a.scope, name: "Assistant", color: "test" } });
+    const thread = await prisma.thread.create({
+      data: { ...a.scope, botId: bot.id, kind: "personal" },
+    });
+    const message = await prisma.message.create({
+      data: { threadId: thread.id, role: "bot", seq: 0, blocks: [] },
+    });
     await prisma.radarBrief.create({
-      data: { ...a.scope, period: "morning", localDate: "2026-10-04", createdAt: now },
+      data: {
+        ...a.scope,
+        period: "morning",
+        localDate: "2026-10-04",
+        createdAt: now,
+        messageId: message.id,
+      },
     });
     const early = new Date("2026-10-04T06:00:00Z");
     const morning = await getRadarStatus(prisma, registry, a.scope, early);
     expect(morning.lastBriefAt).toBe(now.toISOString());
+    expect(morning.lastBriefMessageId).toBe(message.id);
     expect(morning.nextBriefAt).toBe("2026-10-05T05:30:00.000Z");
   });
 

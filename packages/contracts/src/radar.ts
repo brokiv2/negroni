@@ -36,6 +36,12 @@ export const RADAR_UPDATES_MAX_LIMIT = 100;
 
 export const RadarLevel = z.enum(["urgent", "important", "more"]);
 export type RadarLevel = z.infer<typeof RadarLevel>;
+/** Daily interrupt cap each level starts with; the cap follows the level until changed. */
+export const RADAR_LEVEL_DEFAULT_CAP: Record<RadarLevel, number> = {
+  urgent: 2,
+  important: 4,
+  more: 8,
+};
 
 const ClockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a 24-hour HH:MM time");
 const RadarLanguage = z.string().trim().max(40);
@@ -77,7 +83,7 @@ export const RadarSettingsSchema = z.object({
   eveningBrief: z
     .object({ enabled: z.boolean().default(false), time: ClockTime.default("18:30") })
     .prefault({}),
-  maxInterruptsPerDay: InterruptCap.default(6),
+  maxInterruptsPerDay: InterruptCap.default(RADAR_LEVEL_DEFAULT_CAP.important),
   meetingPrep: z.boolean().default(true),
   contextPaths: ContextPaths.default([]),
   /** Paused until this time; null or absent means running. */
@@ -182,6 +188,8 @@ export const RadarSourceStatusSchema = z.object({
   nextCheckAt: IsoDate.optional(),
   lastError: z.string().optional(),
   seenToday: z.number().int().nonnegative(),
+  /** Items the last check left unread because of its cap. */
+  overflow: z.number().int().nonnegative().optional(),
 });
 export type RadarSourceStatus = z.infer<typeof RadarSourceStatusSchema>;
 export const RadarSourceInput = z.object({ connectionId: Id, enabled: z.boolean() });
@@ -239,6 +247,48 @@ export const RadarCostOfDelay = z.enum(["none", "low", "high", "critical"]);
 export const RadarVerdict = z.enum(["scored", "unclear"]);
 export const RadarWhoMustAct = z.enum(["owner", "someone_else", "nobody", "unclear"]);
 
+/**
+ * Reasons that shaped a decision, as written to `trace.gates` in evaluation order. Traces are
+ * read tolerantly, so a client should treat a name it does not know as no explanation.
+ */
+export const RadarGate = z.enum([
+  // Explicit rules.
+  "rule_never",
+  "rule_digest",
+  "rule_always",
+  // Judgement.
+  "unclear",
+  "not_owner",
+  "below_threshold",
+  "low_confidence",
+  "already_seen",
+  "second_opinion",
+  // Delivery gates.
+  "critical",
+  "paused",
+  "quiet_hours",
+  "in_meeting",
+  "daily_cap",
+  "story_limit",
+  "spacing",
+  "folded_into_brief",
+  // Fresh look at the source right before sending.
+  "handled_in_source",
+  "seen_in_source",
+  // Screened before any model call.
+  "own",
+  "security_code",
+  "bulk",
+  "declined",
+  "calendar_window",
+  "backoff",
+  "duplicate",
+  "stale",
+  "unevaluated",
+  "meeting_prep",
+]);
+export type RadarGate = z.infer<typeof RadarGate>;
+
 /** What triage and the policy saw and applied, so the app can answer "why now" and "why not". */
 export const RadarTraceSchema = z.object({
   level: RadarLevel.optional(),
@@ -254,9 +304,11 @@ export const RadarTraceSchema = z.object({
   thresholds: z.object({ interrupt: z.number(), brief: z.number() }).optional(),
   /** Ids of the rules that matched. */
   rules: z.array(z.string()).optional(),
-  /** Gates that changed the outcome, in evaluation order. */
+  /** Gates that changed the outcome, in evaluation order (`RadarGate` names). */
   gates: z.array(z.string()).optional(),
   result: RadarDisposition.optional(),
+  /** Version of the decision policy that produced this trace. */
+  policyVersion: z.number().int().optional(),
 });
 export type RadarTrace = z.infer<typeof RadarTraceSchema>;
 
@@ -287,6 +339,12 @@ export const RadarUpdateSchema = z.object({
   messageId: Id.optional(),
   threadId: Id.optional(),
   trace: RadarTraceSchema.optional(),
+  /** When the story stops mattering (event start, task due). */
+  deadline: IsoDate.optional(),
+  /** An interrupt that pause, quiet hours, a meeting or the budget postponed. */
+  held: z.boolean().optional(),
+  /** The account it came from: provider-verified address or the connection's name. */
+  account: z.string().optional(),
 });
 export type RadarUpdate = z.infer<typeof RadarUpdateSchema>;
 
@@ -312,6 +370,14 @@ export const RadarFeedbackInput = z
   });
 export type RadarFeedbackInput = z.infer<typeof RadarFeedbackInput>;
 
+/** Forget a person Radar learned or was told about, by one of their addresses or their name. */
+export const RadarPersonRemove = z
+  .object({
+    address: z.string().trim().toLowerCase().min(1).max(320).optional(),
+    name: z.string().trim().min(1).max(120).optional(),
+  })
+  .refine((value) => Boolean(value.address || value.name), "Name the person to forget");
+
 export const RadarRuleChange = z
   .object({ add: RadarRuleInput.optional(), removeId: z.string().min(1).max(100).optional() })
   .refine((value) => Boolean(value.add) !== Boolean(value.removeId), "Add or remove one rule");
@@ -334,6 +400,8 @@ export const RadarStatusSchema = z.object({
   lastCycleAt: IsoDate.optional(),
   nextCycleAt: IsoDate.optional(),
   lastBriefAt: IsoDate.optional(),
+  /** The message that carried the latest brief. */
+  lastBriefMessageId: Id.optional(),
   nextBriefAt: IsoDate.optional(),
   error: z.string().optional(),
   /** Short synthesized description of the owner Radar works from. */

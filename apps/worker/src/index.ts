@@ -42,6 +42,7 @@ import {
   reconcileComputerUpdates,
   reconcileDelegations,
   reconcileFeedResearch,
+  reconcileRadar,
   resolveDeploymentModel,
   resolvePiSessionRoot,
   resolveSandboxProvider,
@@ -220,6 +221,8 @@ async function main() {
     deploymentModelKey,
     messaging,
     cloudAgent,
+    connectors: stack.connector,
+    notifications: new ExpoPushProvider(dataDir, { apns: apnsConfigFromEnv(process.env) }),
   });
   // graphile-worker run() connects through the shared pool. createPool already
   // retries connect() on 53300 a finite number of times. Keep retrying start
@@ -248,6 +251,7 @@ async function main() {
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileAssistantWork: () => reconcileAssistantWork({ prisma, jobs }),
     reconcileFeedResearch: () => reconcileFeedResearch({ prisma, jobs }),
+    reconcileRadar: () => reconcileRadar({ prisma, jobs }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
     reconcileDelegations: () => reconcileDelegations({ prisma }),
   });

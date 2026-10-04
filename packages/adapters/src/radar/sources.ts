@@ -17,7 +17,22 @@ async function ownerConnections(db: RadarTx, registry: RadarRegistry, scope: Rad
     where: { ...radarOwner(scope), status: { in: ["connected", "revoked", "error"] } },
     orderBy: { createdAt: "asc" },
   });
-  return rows.filter((row) => !registry || registry.managed(row.connectorId));
+  return Promise.all(
+    rows
+      .filter((row) => !registry || registry.managed(row.connectorId))
+      .map(async (row) => ({ ...row, supported: await readable(registry, row) })),
+  );
+}
+
+/** Radar has an observer for the toolkit and the account's connector can run it. */
+async function readable(
+  registry: RadarRegistry,
+  connection: { connectorId: string; provider: string },
+): Promise<boolean> {
+  if (!isRadarSource(connection.provider)) return false;
+  if (!registry) return true;
+  const managed = registry.managed(connection.connectorId);
+  return Boolean(managed?.canObserve && (await managed.canObserve(connection.provider)));
 }
 
 function sourceState(
@@ -47,8 +62,9 @@ export async function radarSourceStatuses(
   const today = localDate(now, timeZone);
   return connections.map((connection) => {
     const source = byConnection.get(connection.id);
-    const supported = isRadarSource(connection.provider);
+    const supported = connection.supported;
     const enabled = supported && Boolean(source?.enabled);
+    const overflow = Number((source?.cursor as Record<string, unknown> | undefined)?.overflow) || 0;
     const account = connectionAccountLabel(connection.metadata);
     return {
       connectionId: connection.id,
@@ -62,6 +78,7 @@ export async function radarSourceStatuses(
       ...(enabled && source?.nextCheckAt ? { nextCheckAt: source.nextCheckAt.toISOString() } : {}),
       ...(source?.lastError ? { lastError: source.lastError } : {}),
       seenToday: source && source.seenDate === today ? source.seenCount : 0,
+      ...(enabled && overflow > 0 ? { overflow } : {}),
     };
   });
 }
@@ -81,7 +98,7 @@ export async function setRadarSource(
     const connection = await tx.connection.findFirst({ where: { ...key, id: connectionId } });
     if (!connection || (registry && !registry.managed(connection.connectorId)))
       throw new RadarError("NOT_FOUND", "This account is not connected.");
-    if (enabled && !isRadarSource(connection.provider))
+    if (enabled && !(await readable(registry, connection)))
       throw new RadarError("BAD_REQUEST", "Radar cannot read this account yet.");
     if (enabled && connection.status !== "connected")
       throw new RadarError("BAD_REQUEST", "Reconnect this account first.");
@@ -99,25 +116,18 @@ export async function setRadarSource(
   });
 }
 
-/**
- * The first time Radar is turned on with nothing selected yet: watch the accounts chosen
- * for the earlier connected-account research, or every supported connected account when
- * none were chosen.
- */
+/** The first time Radar is turned on with nothing selected yet: every supported connected account. */
 export async function selectFirstRadarSources(
   tx: RadarTx,
   registry: RadarRegistry,
   scope: RadarOwner,
-  researchIds: string[],
   now: Date,
 ) {
   const key = radarOwner(scope);
   if (await tx.radarSource.count({ where: key })) return;
-  const readable = (await ownerConnections(tx, registry, key)).filter(
-    (connection) => connection.status === "connected" && isRadarSource(connection.provider),
+  const selected = (await ownerConnections(tx, registry, key)).filter(
+    (connection) => connection.status === "connected" && connection.supported,
   );
-  const chosen = readable.filter((connection) => researchIds.includes(connection.id));
-  const selected = chosen.length ? chosen : readable;
   if (!selected.length) return;
   await tx.radarSource.createMany({
     data: selected.map((connection) => ({

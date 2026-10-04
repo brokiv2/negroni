@@ -1,5 +1,6 @@
 import type { RadarSettings } from "@rakazo/contracts";
-import { hoursAfter, localDate, nextLocalDate, zonedInstant } from "./clock.js";
+import { hoursAfter, localDate, localMinutes, nextLocalDate, zonedInstant } from "./clock.js";
+import type { AgendaEvent } from "./observers/types.js";
 
 export type BriefSlot = {
   period: "morning" | "evening";
@@ -64,4 +65,40 @@ export function nextBriefAt(
 export function radarPushExpiry(kind: "update" | "brief", now: Date, deadline?: Date | null): Date {
   const cap = hoursAfter(now, kind === "brief" ? 12 : 24);
   return kind === "update" && deadline && deadline > now && deadline < cap ? deadline : cap;
+}
+
+const minutesOf = (time: string) => {
+  const [hour, minute] = time.split(":").map(Number);
+  return (hour ?? 0) * 60 + (minute ?? 0);
+};
+
+/** When the quiet hours that contain `now` end; nothing outside them or when they are off. */
+export function quietHoursEnd(settings: RadarSettings, now: Date): Date | undefined {
+  const { enabled, start, end } = settings.quietHours;
+  if (!enabled || start === end) return undefined;
+  const zone = settings.timeZone;
+  const minute = localMinutes(now, zone);
+  const from = minutesOf(start);
+  const to = minutesOf(end);
+  const today = localDate(now, zone);
+  if (from < to) return minute >= from && minute < to ? zonedInstant(today, end, zone) : undefined;
+  if (minute >= from) return zonedInstant(nextLocalDate(today), end, zone);
+  return minute < to ? zonedInstant(today, end, zone) : undefined;
+}
+
+/**
+ * The end of a meeting in progress: an accepted, timed event with other attendees.
+ * Overlapping meetings extend each other.
+ */
+export function meetingEnd(agenda: AgendaEvent[], now: Date): Date | undefined {
+  let end: Date | undefined;
+  for (const event of agenda) {
+    if (event.allDay || !event.attendees.length || event.response !== "accepted") continue;
+    const from = Date.parse(event.start);
+    const to = Date.parse(event.end ?? "");
+    if (!Number.isFinite(from) || !Number.isFinite(to)) continue;
+    const reach = end ? end.getTime() : now.getTime();
+    if (from <= reach && to > reach) end = new Date(to);
+  }
+  return end;
 }

@@ -1,5 +1,10 @@
 import type { RadarSettings } from "@rakazo/contracts";
-import { FeedProfileSchema, RadarSettingsPatch, RadarSettingsSchema } from "@rakazo/contracts";
+import {
+  FeedProfileSchema,
+  RADAR_LEVEL_DEFAULT_CAP,
+  RadarSettingsPatch,
+  RadarSettingsSchema,
+} from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import type { RadarOwner } from "./profile.js";
 import { commitRadarProfile, lockRadarProfile, radarOwner, readRadarSettings } from "./profile.js";
@@ -13,9 +18,17 @@ export function mergeRadarSettings(
 ): RadarSettings {
   const defined = <T extends object>(value: T | undefined) =>
     Object.fromEntries(Object.entries(value ?? {}).filter(([, item]) => item !== undefined));
+  // The daily cap follows the level until the owner sets it.
+  const followsLevel =
+    patch.level !== undefined &&
+    patch.maxInterruptsPerDay === undefined &&
+    previous.maxInterruptsPerDay === RADAR_LEVEL_DEFAULT_CAP[previous.level];
   return RadarSettingsSchema.parse({
     ...previous,
     ...defined(patch),
+    ...(followsLevel && patch.level
+      ? { maxInterruptsPerDay: RADAR_LEVEL_DEFAULT_CAP[patch.level] }
+      : {}),
     quietHours: { ...previous.quietHours, ...defined(patch.quietHours) },
     morningBrief: { ...previous.morningBrief, ...defined(patch.morningBrief) },
     eveningBrief: { ...previous.eveningBrief, ...defined(patch.eveningBrief) },
@@ -27,8 +40,8 @@ export const isRadarPaused = (settings: RadarSettings, now: Date) =>
 
 /**
  * Applies a settings patch. Turning Radar on or resuming it schedules a cycle now; the
- * first time it is turned on, it carries over the time zone and accounts of the earlier
- * connected-account research.
+ * first time it is turned on, it watches every supported connected account and carries
+ * over the time zone of the earlier connected-account research.
  */
 export async function configureRadar(
   prisma: PrismaClient,
@@ -50,13 +63,7 @@ export async function configureRadar(
       );
       if (feed.success && patch.timeZone === undefined && settings.timeZone === "UTC")
         settings = { ...settings, timeZone: feed.data.accountTimeZone };
-      await selectFirstRadarSources(
-        tx,
-        registry,
-        key,
-        feed.success ? feed.data.accountResearchIds : [],
-        now,
-      );
+      await selectFirstRadarSources(tx, registry, key, now);
     }
     if (!enabling && JSON.stringify(settings) === JSON.stringify(previous)) return;
     const resuming =

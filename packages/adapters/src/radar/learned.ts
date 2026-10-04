@@ -17,8 +17,17 @@ import type { ZodType } from "zod";
 import { topicKey } from "../feed-profile.js";
 import { RadarError } from "./errors.js";
 
+/** What nightly synthesis found besides people: the owner's language and focus. */
+export type RadarSynthesis = { language?: string; priorities: string[]; noise: string[] };
+
 /** Rules (explicit and learned) and people who matter, as stored on the profile. */
-export type RadarLearned = { rules: RadarRule[]; people: RadarPerson[] };
+export type RadarLearned = {
+  rules: RadarRule[];
+  people: RadarPerson[];
+  synthesis?: RadarSynthesis;
+  /** People the owner removed; synthesis does not add them back. Addresses or names. */
+  forgotten?: string[];
+};
 /** Who an update came from, as learning keys it. */
 export type RadarSender = { address: string; name?: string };
 /** This sender's updates marked important or not important inside the learning window. */
@@ -30,9 +39,54 @@ export const LEARNING_WINDOW_MS = 30 * 86_400_000;
 /** Read tolerantly: an entry that does not validate is dropped instead of failing the profile. */
 export function parseLearned(value: unknown): RadarLearned {
   const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const synthesis =
+    raw.synthesis && typeof raw.synthesis === "object"
+      ? (raw.synthesis as Record<string, unknown>)
+      : undefined;
+  const strings = (value: unknown, max: number, length: number) =>
+    (Array.isArray(value) ? value : [])
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .map((item) => item.trim().slice(0, length))
+      .slice(0, max);
+  const language =
+    typeof synthesis?.language === "string" ? synthesis.language.trim().slice(0, 40) : "";
+  const forgotten = strings(raw.forgotten, 200, 320);
   return {
     rules: validEntries(raw.rules, RadarRuleSchema).slice(-RADAR_MAX_RULES),
     people: validEntries(raw.people, RadarPersonSchema).slice(-RADAR_MAX_PEOPLE),
+    ...(synthesis
+      ? {
+          synthesis: {
+            ...(language ? { language } : {}),
+            priorities: strings(synthesis.priorities, 10, 200),
+            noise: strings(synthesis.noise, 10, 200),
+          },
+        }
+      : {}),
+    ...(forgotten.length ? { forgotten } : {}),
+  };
+}
+
+/** Removes every person matching the address or name and remembers not to relearn them. */
+export function withoutPerson(
+  learned: RadarLearned,
+  key: { address?: string; name?: string },
+): RadarLearned {
+  const name = key.name?.trim().toLowerCase();
+  const matches = (person: RadarPerson) =>
+    Boolean(
+      (key.address && person.addresses.includes(key.address)) ||
+        (name && person.name.trim().toLowerCase() === name),
+    );
+  const removed = learned.people.filter(matches);
+  if (!removed.length) return learned;
+  const keys = removed.flatMap((person) =>
+    person.addresses.length ? person.addresses : [person.name.trim().toLowerCase()],
+  );
+  return {
+    ...learned,
+    people: learned.people.filter((person) => !matches(person)),
+    forgotten: [...new Set([...(learned.forgotten ?? []), ...keys])].slice(-200),
   };
 }
 
@@ -117,6 +171,7 @@ export function withoutRule(learned: RadarLearned, id: string): RadarLearned {
 
 /** A learned person gains weight; people the owner described are left as they are. */
 export function withImportantSender(learned: RadarLearned, sender: RadarSender): RadarLearned {
+  if (learned.forgotten?.includes(sender.address)) return learned;
   const index = learned.people.findIndex((person) => person.addresses.includes(sender.address));
   const known = learned.people[index];
   if (known) {
