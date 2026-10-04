@@ -11,6 +11,7 @@
   /// only: it never reads the Keychain or the network.
   enum PreviewMode {
     static let enabled = UserDefaults.standard.bool(forKey: "NegroniPreview")
+      || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     static var screen: String { UserDefaults.standard.string(forKey: "NegroniPreviewScreen") ?? "" }
     static var radarOff: Bool { UserDefaults.standard.bool(forKey: "NegroniPreviewRadarOff") }
     static var older: Bool { UserDefaults.standard.bool(forKey: "NegroniPreviewOlder") }

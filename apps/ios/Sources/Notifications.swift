@@ -84,31 +84,42 @@ import UserNotifications
   }
 
   nonisolated func userNotificationCenter(
-    _ center: UNUserNotificationCenter, willPresent notification: UNNotification
-  ) async -> UNNotificationPresentationOptions {
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
     let info = notification.request.content.userInfo
-    // A reply that could not be sent always shows, even over its own conversation.
-    if info["kind"] as? String == "radar_draft" { return [.banner, .list] }
+    let kind = info["kind"] as? String
     let threadID = info["threadId"] as? String
     let spaceID = info["spaceId"] as? String
-    return await MainActor.run {
-      // Reconcile the conversation even when its notification stays silent.
-      NotificationCenter.default.post(name: Self.threadUpdated, object: nil)
-      let visibleChats = UIApplication.shared.connectedScenes
-        .filter { $0.activationState == .foregroundActive }
-        .compactMap { ($0.delegate as? SceneDelegate)?.topController as? ChatController }
-      let alreadyVisible = visibleChats.contains { chat in
-        ChatNotificationPolicy.suppress(
-          threadID: threadID, spaceID: spaceID, visibleThreadID: chat.notificationThreadID,
-          visibleSpaceID: API.shared.spaceID,
-          foreground: UIApplication.shared.applicationState == .active)
-      }
-      return alreadyVisible ? [] : [.banner, .list]
+    present(kind: kind, threadID: threadID, spaceID: spaceID, completionHandler: completionHandler)
+  }
+  private nonisolated func present(kind: String?, threadID: String?, spaceID: String?,
+    completionHandler: @escaping (UNNotificationPresentationOptions) -> Void)
+  {
+    Task { @MainActor in
+      completionHandler(presentationOptions(kind: kind, threadID: threadID, spaceID: spaceID))
     }
   }
+  private func presentationOptions(kind: String?, threadID: String?, spaceID: String?) -> UNNotificationPresentationOptions {
+    // A reply that could not be sent always shows, even over its own conversation.
+    if kind == "radar_draft" { return [.banner, .list] }
+    // Reconcile the conversation even when its notification stays silent.
+    NotificationCenter.default.post(name: Self.threadUpdated, object: nil)
+    let visibleChats = UIApplication.shared.connectedScenes
+      .filter { $0.activationState == .foregroundActive }
+      .compactMap { ($0.delegate as? SceneDelegate)?.topController as? ChatController }
+    let alreadyVisible = visibleChats.contains { chat in
+      ChatNotificationPolicy.suppress(
+        threadID: threadID, spaceID: spaceID, visibleThreadID: chat.notificationThreadID,
+        visibleSpaceID: API.shared.spaceID,
+        foreground: UIApplication.shared.applicationState == .active)
+    }
+    return alreadyVisible ? [] : [.banner, .list]
+  }
   nonisolated func userNotificationCenter(
-    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
-  ) async {
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
     let content = response.notification.request.content
     var fields: [String: String] = [:]
     for (key, value) in content.userInfo {
@@ -117,7 +128,18 @@ import UserNotifications
     let action = response.actionIdentifier
     let typed = (response as? UNTextInputNotificationResponse)?.userText
     let title = content.title
-    await receive(fields: fields, category: content.categoryIdentifier, action: action, typed: typed, title: title)
+    respond(fields: fields, category: content.categoryIdentifier, action: action,
+      typed: typed, title: title, completionHandler: completionHandler)
+  }
+  // Finish iOS's response on the main thread as well as navigation. Avoid the async ObjC
+  // bridge returning the system completion to a generic executor.
+  private nonisolated func respond(fields: [String: String], category: String, action: String,
+    typed: String? = nil, title: String = "", completionHandler: @escaping () -> Void)
+  {
+    Task { @MainActor in
+      defer { completionHandler() }
+      await receive(fields: fields, category: category, action: action, typed: typed, title: title)
+    }
   }
   func receive(fields: [String: String], category: String, action: String, typed: String? = nil, title: String = "") async {
     guard action != UNNotificationDismissActionIdentifier else { return }
