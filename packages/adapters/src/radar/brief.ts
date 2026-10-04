@@ -19,9 +19,12 @@ type BriefAgenda = NonNullable<Extract<MessageBlock, { kind: "brief" }>["agenda"
 const PRIMARY_CAP = 7;
 const NEEDS_YOU_CAP = 3;
 const CALENDAR = ["invite", "event_changed", "event_cancelled", "prep"];
-/** An opening greeting adds nothing to a brief and would become the push text. */
+/**
+ * An opening greeting adds nothing to a brief and would become the push text. Only the greeting,
+ * at most a two-word name and the end of the sentence go: "Hello again, the budget is due." stays.
+ */
 const GREETING =
-  /^(?:good (?:morning|afternoon|evening)|hi|hello|hey|доброе утро|добрый (?:день|вечер)|привет|guten (?:morgen|tag|abend)|bonjour|bonsoir|buenos días|buenas (?:tardes|noches))(?=[\s,.!?])[^.!?]{0,40}[.!?]\s+/iu;
+  /^(?:good (?:morning|afternoon|evening)|hi|hello|hey|доброе утро|добрый (?:день|вечер)|привет|guten (?:morgen|tag|abend)|bonjour|bonsoir|buenos días|buenas (?:tardes|noches))(?=[\s,.!?])(?:[\s,]+[\p{L}'’-]+){0,2}[.!?]+\s+/iu;
 export const withoutGreeting = (text: string) => text.replace(GREETING, "").trim();
 
 const WEEKDAY = `(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|понедельник|вторник|сред[ауыеой]|четверг|пятниц[ауыеой]|суббот[ауыеой]|воскресень[еяю]|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|lunes|martes|miércoles|jueves|viernes|sábado|domingo)`;

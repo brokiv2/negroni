@@ -432,6 +432,11 @@ describe("brief text", () => {
     expect(withoutGreeting("Good morning, Sam! Two things need you.")).toBe("Two things need you.");
     expect(withoutGreeting("All quiet. Nothing needs you.")).toBe("All quiet. Nothing needs you.");
     expect(withoutGreeting("History repeats. Again.")).toBe("History repeats. Again.");
+    expect(withoutGreeting("Привет, Анна! Сегодня тихо.")).toBe("Сегодня тихо.");
+    // A sentence that starts with a greeting word but carries the point stays whole.
+    expect(withoutGreeting("Hello again, the budget is due. Plus a call.")).toBe(
+      "Hello again, the budget is due. Plus a call.",
+    );
   });
 
   it("drops an opening weekday and the current time, and only that", () => {
