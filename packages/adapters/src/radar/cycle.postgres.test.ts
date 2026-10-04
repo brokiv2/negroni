@@ -92,6 +92,13 @@ function fakeModel(): AgentRuntime & {
         scores: scores(1, { actionRequired: 2 }),
         title: "FYI from a colleague",
       });
+    if (prompt.includes("TEAMWORK"))
+      return judgement({
+        evidence: "",
+        whoMustAct: "someone_else",
+        scores: scores(1, { actionRequired: 2 }),
+        title: "The team ships the update",
+      });
     return judgement({ scores: scores(0) });
   };
   return {
@@ -128,6 +135,10 @@ function fakeModel(): AgentRuntime & {
   };
 }
 
+type BriefBlock = { kind: string; items?: Array<{ title: string }>; more?: number };
+const blocksOf = (message: { blocks: unknown } | undefined) =>
+  (Array.isArray(message?.blocks) ? message.blocks : []) as BriefBlock[];
+
 suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
   let db: ReturnType<typeof createDb>;
   let prisma: PrismaClient;
@@ -144,7 +155,10 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     await db.pool.end();
   });
 
-  async function setup(settings: Record<string, unknown> = {}) {
+  async function setup(
+    settings: Record<string, unknown> = {},
+    options: { followUp?: boolean } = {},
+  ) {
     const id = randomUUID();
     ids.push(id);
     await prisma.user.create({
@@ -218,6 +232,12 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       { enabled: true, morningBrief: { enabled: false }, ...settings },
       clock,
     );
+    // Most scenarios start after the follow-up to turning Radar on has gone out.
+    if (!options.followUp)
+      await prisma.radarProfile.update({
+        where: { spaceId_userId: scope },
+        data: { briefRequestedAt: null },
+      });
     const at = (minutes: number) => new Date(clock.getTime() + minutes * MINUTE);
     return {
       id,
@@ -416,12 +436,55 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     expect(s.pushes).toHaveLength(2);
   });
 
+  it("follows up on turning Radar on once the first catch-up is judged", async () => {
+    const s = await setup({}, { followUp: true });
+    s.deps.judgeCap = 1;
+    s.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    s.mail("Agenda", "FYI the agenda for Thursday.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await s.cycle();
+    // One item still waits to be judged, so the follow-up waits for it.
+    expect(await prisma.radarSignal.count({ where: { ...s.scope, status: "pending" } })).toBe(1);
+    expect(await prisma.radarBrief.count({ where: s.scope })).toBe(0);
+    s.advance(1);
+    await s.cycle();
+    expect(await prisma.radarBrief.findMany({ where: s.scope })).toMatchObject([{ period: "now" }]);
+    const followUp = (await s.messages()).at(-1);
+    expect(followUp?.blocks).toMatchObject([{ kind: "text" }, { kind: "brief", period: "now" }]);
+    expect(blocksOf(followUp)[1]?.items).toHaveLength(2);
+    const profile = () =>
+      prisma.radarProfile.findUniqueOrThrow({ where: { spaceId_userId: s.scope } });
+    expect((await profile()).briefRequestedAt).toBeNull();
+
+    // Asking for a brief when nothing needs the owner still gets an answer.
+    await prisma.radarSignal.updateMany({ where: s.scope, data: { state: "done" } });
+    await prisma.radarProfile.update({
+      where: { spaceId_userId: s.scope },
+      data: { briefRequestedAt: s.now() },
+    });
+    s.advance(1);
+    await s.cycle();
+    const answer = (await s.messages()).at(-1);
+    expect(answer?.id).not.toBe(followUp?.id);
+    expect(answer?.blocks).toMatchObject([
+      { kind: "text" },
+      { kind: "brief", period: "now", items: [] },
+    ]);
+    expect((await profile()).briefRequestedAt).toBeNull();
+  });
+
   it("sends one morning brief per day with what stayed quiet", async () => {
     const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
     s.mail("Notes", "FYI the slides are attached.", {
       sender: "Colleague <colleague@example.test>",
     });
     s.mail("Big sale", "Sale ends soon.", { sender: "no-reply@shop.example.test" });
+    s.mail("Release", "TEAMWORK: the design team ships the update on Thursday.", {
+      sender: "Colleague <colleague@example.test>",
+    });
     await s.cycle();
     const briefs = await prisma.radarBrief.findMany({ where: s.scope });
     expect(briefs).toMatchObject([{ period: "morning", localDate: "2026-10-05" }]);
@@ -430,6 +493,10 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       { kind: "text", text: "A calm day with one thing that matters." },
       { kind: "brief", period: "morning", title: "Morning brief", quiet: { skipped: 1 } },
     ]);
+    // Someone else's task is briefed but never listed under "Needs you".
+    const brief = blocksOf(message)[1];
+    expect(brief?.items?.map((item) => item.title)).toEqual(["FYI from a colleague"]);
+    expect(brief?.more).toBe(1);
     expect(s.pushes.at(-1)).toMatchObject({
       category: "RADAR_BRIEF",
       interruptionLevel: "passive",

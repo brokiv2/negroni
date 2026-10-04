@@ -308,8 +308,16 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
     await signal(a.scope, gmail.id, { disposition: "silent", createdAt: earlier });
     const status = await getRadarStatus(prisma, registry, a.scope, now);
     expect(status.today).toEqual({ seen: 4, interrupted: 1, briefed: 1, skipped: 1, deferred: 1 });
+    // Turning Radar on asks for a brief that follows up on the first catch-up.
+    expect(status.nextBriefAt).toBe(now.toISOString());
+    await prisma.radarProfile.update({
+      where: { spaceId_userId: a.scope },
+      data: { briefRequestedAt: null },
+    });
     // Noon in Helsinki: a missed morning brief is no longer sent, the next is tomorrow's.
-    expect(status.nextBriefAt).toBe("2026-10-05T05:30:00.000Z");
+    expect((await getRadarStatus(prisma, registry, a.scope, now)).nextBriefAt).toBe(
+      "2026-10-05T05:30:00.000Z",
+    );
     const bot = await prisma.bot.create({ data: { ...a.scope, name: "Assistant", color: "test" } });
     const thread = await prisma.thread.create({
       data: { ...a.scope, botId: bot.id, kind: "personal" },
@@ -525,6 +533,11 @@ suite("radar profile, sources, updates and learning (PostgreSQL)", () => {
       "BAD_REQUEST",
     );
     await configureRadar(prisma, registry, a.scope, { enabled: true }, now);
+    // The follow-up to turning Radar on has gone out.
+    await prisma.radarProfile.update({
+      where: { spaceId_userId: a.scope },
+      data: { briefRequestedAt: null },
+    });
     const later = new Date(now.getTime() + 600_000);
     await prisma.radarSource.update({
       where: { connectionId: gmail.id },

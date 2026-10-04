@@ -567,10 +567,11 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
     }
     await saveDecision(prisma, cycle, signal, result, decision, hits);
   }
-  return Math.max(
-    0,
-    toJudge.length - scored.length - answered.filter((entry) => entry.result === null).length,
-  );
+  // What failed but will be tried again still counts as waiting; what was given up does not.
+  const givenUp = answered.filter(
+    (entry) => entry.result === null && entry.signal.attempts + 1 >= MAX_ATTEMPTS,
+  ).length;
+  return Math.max(0, toJudge.length - scored.length - givenUp);
 }
 
 async function saveDecision(

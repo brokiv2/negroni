@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it } from "vitest";
-import { briefAgenda } from "./brief.js";
+import { briefAgenda, withoutGreeting } from "./brief.js";
 import type { JudgeContext, JudgeItem } from "./judge.js";
 import { judgeItems, judgePrompt, parseJudgement } from "./judge.js";
 import { applySynthesis, isAutomatedAddress, readContextFiles } from "./synthesis.js";
@@ -356,6 +356,15 @@ describe("profile synthesis", () => {
       new Set(["noreply@service.example.test", "colleague@example.test"]),
     );
     expect(applied.learned.people.map((person) => person.name)).toEqual(["Colleague"]);
+  });
+});
+
+describe("brief text", () => {
+  it("drops an opening greeting but keeps a short first sentence with substance", () => {
+    expect(withoutGreeting("Доброе утро. Сегодня одна встреча.")).toBe("Сегодня одна встреча.");
+    expect(withoutGreeting("Good morning, Sam! Two things need you.")).toBe("Two things need you.");
+    expect(withoutGreeting("All quiet. Nothing needs you.")).toBe("All quiet. Nothing needs you.");
+    expect(withoutGreeting("History repeats. Again.")).toBe("History repeats. Again.");
   });
 });
 

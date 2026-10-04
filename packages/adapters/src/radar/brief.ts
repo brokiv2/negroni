@@ -18,6 +18,10 @@ type BriefAgenda = NonNullable<Extract<MessageBlock, { kind: "brief" }>["agenda"
 const PRIMARY_CAP = 7;
 const NEEDS_YOU_CAP = 3;
 const CALENDAR = ["invite", "event_changed", "event_cancelled", "prep"];
+/** An opening greeting adds nothing to a brief and would become the push text. */
+const GREETING =
+  /^(?:good (?:morning|afternoon|evening)|hi|hello|hey|доброе утро|добрый (?:день|вечер)|привет|guten (?:morgen|tag|abend)|bonjour|bonsoir|buenos días|buenas (?:tardes|noches))(?=[\s,.!?])[^.!?]{0,40}[.!?]\s+/iu;
+export const withoutGreeting = (text: string) => text.replace(GREETING, "").trim();
 const short = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value;
 
@@ -91,6 +95,8 @@ export async function deliverRadarBrief(
     localTime: string;
     lastBriefAt?: Date;
     presenceAt?: Date | null;
+    /** The owner asked for it: answer even when nothing needs them. */
+    requested?: boolean;
   },
 ): Promise<"sent" | "empty" | "exists"> {
   const owner = radarOwner(scope);
@@ -124,8 +130,16 @@ export async function deliverRadarBrief(
     (signal) => CALENDAR.includes(signal.kind) && !heldIds.has(signal.id) && !signal.deliveredAt,
   );
   const calendarIds = new Set(calendar.map((signal) => signal.id));
+  // Someone else's task or nobody's never sits under "Needs you"; it is counted in "more".
+  const ownersTurn = (signal: (typeof open)[number]) =>
+    signal.feedback === "important" ||
+    !["someone_else", "nobody"].includes(
+      String((signal.trace as Record<string, unknown> | null)?.whoMustAct ?? ""),
+    );
   const needsYou = open
-    .filter((signal) => !heldIds.has(signal.id) && !calendarIds.has(signal.id))
+    .filter(
+      (signal) => !heldIds.has(signal.id) && !calendarIds.has(signal.id) && ownersTurn(signal),
+    )
     .sort(
       (a, b) =>
         (a.deadline?.getTime() ?? Number.POSITIVE_INFINITY) -
@@ -159,7 +173,7 @@ export async function deliverRadarBrief(
     }),
   ]);
   const agenda = briefAgenda(input.agenda, period, settings.timeZone, now);
-  if (!primary.length && (period === "evening" || !agenda.length)) {
+  if (!input.requested && !primary.length && (period === "evening" || !agenda.length)) {
     if (period !== "now")
       await prisma.radarBrief.createMany({
         data: [{ ...owner, period, localDate: periodKey, signalIds: [] }],
@@ -207,8 +221,9 @@ export async function deliverRadarBrief(
     period === "morning" ? "Morning brief" : period === "evening" ? "Evening wrap" : "Brief";
   const title = short(narration?.title?.trim() || fallbackTitle, 280);
   const narrative =
-    narration?.narrative?.trim() ||
-    [...items.map((item) => item.title), ...agenda.map((event) => event.title)].join(" · ");
+    withoutGreeting(narration?.narrative?.trim() ?? "") ||
+    [...items.map((item) => item.title), ...agenda.map((event) => event.title)].join(" · ") ||
+    "Nothing needs you right now.";
   const summary = short(narrative.split(/(?<=[.!?])\s/)[0] || title, 280);
   const outcome = await prisma.$transaction(async (tx) => {
     const claimed = await tx.radarBrief.createMany({
