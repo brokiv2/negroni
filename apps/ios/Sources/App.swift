@@ -10,7 +10,11 @@ import UIKit
   func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-  ) -> Bool { true }
+  ) -> Bool {
+    // Before launch finishes, so the response that launched the app reaches the delegate.
+    Notifications.shared.prepare()
+    return true
+  }
   func application(
     _ application: UIApplication, configurationForConnecting session: UISceneSession,
     options: UIScene.ConnectionOptions
@@ -162,6 +166,31 @@ final class MainTabController: UITabBarController {
       return nav
     }
     tabBar.tintColor = Theme.ink
+  }
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    Notifications.shared.flush(self)
+  }
+  /// Brings the personal conversation to the front, closing any sheet first.
+  func showPersonalChat(_ then: @escaping (ChatController) -> Void = { _ in }) {
+    let show = { [weak self] in
+      guard let self else { return }
+      selectedIndex = 0
+      guard let nav = viewControllers?.first as? UINavigationController else { return }
+      nav.popToRootViewController(animated: false)
+      if let chat = nav.viewControllers.first as? ChatController { then(chat) }
+    }
+    if presentedViewController != nil {
+      dismiss(animated: true, completion: show)
+    } else {
+      show()
+    }
+  }
+  func sendRadar(_ text: String, updateID: String) {
+    showPersonalChat { $0.sendRadar(text, updateID: updateID) }
+  }
+  func replyRadar(_ item: RadarItem) {
+    showPersonalChat { $0.reply(to: item) }
   }
   func ask(_ text: String) {
     selectedIndex = 0

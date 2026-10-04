@@ -129,8 +129,11 @@ enum Keychain {
     }
     return (json, response)
   }
+  /// `interactive: false` never asks for consent: a notification action in the background
+  /// cannot show the alert, so a missing permission fails instead.
   func rpc(
-    _ procedure: String, _ body: JSON = [:], requireConsent: Bool = true, timeout: TimeInterval = 30
+    _ procedure: String, _ body: JSON = [:], requireConsent: Bool = true, interactive: Bool = true,
+    timeout: TimeInterval = 30
   ) async throws -> JSON {
     let context = base
     let contextToken = token
@@ -142,7 +145,9 @@ enum Keychain {
           "routines/create", "routines/testRun",
         ].contains(procedure) || (procedure == "routines/update" && body["active"] != false)
         ? ["model", "memory"] : []
-      if !uses.isEmpty { try await ensureConsent(uses, target: body) }
+      if !uses.isEmpty {
+        try await ensureConsent(uses, target: body, interactive: interactive, timeout: timeout)
+      }
     }
     guard base == context, token == contextToken, spaceID == contextSpace else {
       throw CancellationError()
@@ -163,15 +168,20 @@ enum Keychain {
       return response["json"].isNull ? response : response["json"]
     }
   }
-  func ensureConsent(_ uses: [JSON], target: JSON = [:]) async throws {
+  func ensureConsent(
+    _ uses: [JSON], target: JSON = [:], interactive: Bool = true, timeout: TimeInterval = 30
+  ) async throws {
     var input: JSON = ["uses": .array(uses)]
     for key in ["botId", "groupId"] where !target[key].isNull { input[key] = target[key] }
     let origin = base
     let sessionToken = token
     let scope = spaceID
-    let status = try await rpc("aiConsent/status", input, requireConsent: false)
+    let status = try await rpc("aiConsent/status", input, requireConsent: false, timeout: timeout)
     for recipient in status["recipients"].array
     where !recipient["allowed"].bool && uses.contains(recipient["use"]) {
+      guard interactive else {
+        throw APIError(status: 0, message: "Open Negroni to allow AI data sharing.")
+      }
       guard await consent?(recipient) == true, base == origin, token == sessionToken,
         spaceID == scope
       else { throw CancellationError() }

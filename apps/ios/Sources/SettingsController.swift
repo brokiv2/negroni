@@ -363,10 +363,7 @@ final class ConnectionsController: ListController, UISearchResultsUpdating {
     super.init(title: provider.map(Self.serviceName) ?? (browsing ? "Add app" : "Connections"))
   }
   required init?(coder: NSCoder) { fatalError() }
-  private static func serviceName(_ value: String) -> String {
-    let names = ["gmail": "Gmail", "googlecalendar": "Google Calendar", "googledrive": "Google Drive", "granola_mcp": "Granola", "youtube": "YouTube", "linkedin": "LinkedIn"]
-    return names[value.lowercased()] ?? value.replacingOccurrences(of: "_", with: " ").capitalized
-  }
+  private static func serviceName(_ value: String) -> String { ConnectedApp.name(value) }
   override func viewDidLoad() {
     super.viewDidLoad()
     search.searchResultsUpdater = self

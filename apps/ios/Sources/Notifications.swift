@@ -5,6 +5,15 @@ import UserNotifications
 @MainActor final class Notifications: NSObject, UNUserNotificationCenterDelegate {
   static let shared = Notifications()
   static let threadUpdated = Notification.Name("negroni.threadUpdated")
+  /// A notification opened while the app was still starting; handled once the tabs appear.
+  private var pending: (push: RadarPush, response: RadarPush.Response)?
+
+  /// Runs before launch finishes so the response that launched the app is delivered.
+  func prepare() {
+    let center = UNUserNotificationCenter.current()
+    center.delegate = self
+    center.setNotificationCategories(Self.radarCategories)
+  }
   func configure() {
     UNUserNotificationCenter.current().delegate = self
     Task {
@@ -37,10 +46,46 @@ import UserNotifications
         ["provider": "apns", "token": .string(token), "environment": .string(environment)])
     }
   }
+
+  /// Radar actions by category: the primary step opens the app, Later and Not important run in
+  /// the background, and "Tell Negroni…" sends a typed instruction without opening it.
+  private static var radarCategories: Set<UNNotificationCategory> {
+    func action(
+      _ id: RadarPush.Action, _ title: String, _ symbol: String,
+      _ options: UNNotificationActionOptions = []
+    ) -> UNNotificationAction {
+      UNNotificationAction(
+        identifier: id.rawValue, title: title, options: options,
+        icon: UNNotificationActionIcon(systemImageName: symbol))
+    }
+    let later = action(.later, "Later", "clock")
+    let notImportant = action(.notImportant, "Not important", "hand.thumbsdown", [.destructive])
+    let tell = UNTextInputNotificationAction(
+      identifier: RadarPush.Action.tell.rawValue, title: "Tell Negroni…", options: [],
+      icon: UNNotificationActionIcon(systemImageName: "text.bubble"), textInputButtonTitle: "Send",
+      textInputPlaceholder: "Message…")
+    func category(_ id: RadarPush.Category, _ actions: [UNNotificationAction])
+      -> UNNotificationCategory
+    {
+      UNNotificationCategory(
+        identifier: id.rawValue, actions: actions, intentIdentifiers: [], options: [])
+    }
+    let primary = [
+      RadarPush.Category.reply: ("Draft reply", "arrowshape.turn.up.left"),
+      .decide: ("Handle it", "checkmark.circle"), .generic: ("Open", "arrow.up.forward.app"),
+    ]
+    return Set(
+      primary.map { id, label in
+        category(id, [action(.primary, label.0, label.1, [.foreground]), later, notImportant, tell])
+      } + [category(.brief, [action(.brief, "Open brief", "sun.horizon", [.foreground]), tell])])
+  }
+
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, willPresent notification: UNNotification
   ) async -> UNNotificationPresentationOptions {
     let info = notification.request.content.userInfo
+    // A reply that could not be sent always shows, even over its own conversation.
+    if info["kind"] as? String == "radar_draft" { return [.banner, .list] }
     let threadID = info["threadId"] as? String
     let spaceID = info["spaceId"] as? String
     return await MainActor.run {
@@ -61,14 +106,24 @@ import UserNotifications
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
   ) async {
-    let info = response.notification.request.content.userInfo
-    let botID = info["botId"] as? String ?? info["rakazo.botId"] as? String
-    let groupID = info["groupId"] as? String
+    let content = response.notification.request.content
+    var fields: [String: String] = [:]
+    for (key, value) in content.userInfo {
+      if let key = key as? String, let value = value as? String { fields[key] = value }
+    }
+    let action = response.actionIdentifier
+    let typed = (response as? UNTextInputNotificationResponse)?.userText
+    let title = content.title
+    if let push = RadarPush(fields, category: content.categoryIdentifier) {
+      guard action != UNNotificationDismissActionIdentifier else { return }
+      // Returning ends the system's time for a background action, so the work is awaited.
+      await handle(push, RadarPush.response(action: action, text: typed), title: title)
+      return
+    }
+    let botID = fields["botId"] ?? fields["rakazo.botId"]
+    let groupID = fields["groupId"]
     await MainActor.run {
-      guard
-        let tabs = (UIApplication.shared.connectedScenes.first?.delegate as? SceneDelegate)?.window?
-          .rootViewController as? MainTabController
-      else { return }
+      guard let tabs = Self.tabs else { return }
       tabs.selectedIndex = 0
       guard let nav = tabs.selectedViewController as? UINavigationController else { return }
       if let groupID {
@@ -76,6 +131,92 @@ import UserNotifications
           ChatController(target: ["groupId": .string(groupID)], title: "Group"), animated: true)
       } else if let botID, botID != tabs.botID {
         nav.pushViewController(ChatController(target: ["botId": .string(botID)]), animated: true)
+      }
+    }
+  }
+
+  private static var tabs: MainTabController? {
+    (UIApplication.shared.connectedScenes.first?.delegate as? SceneDelegate)?.window?
+      .rootViewController as? MainTabController
+  }
+  private func handle(_ push: RadarPush, _ response: RadarPush.Response, title: String) async {
+    switch response {
+    case .later, .notImportant, .tell:
+      // A background launch has not read the account yet; the push names its space. While the
+      // app starts in front, startup sets it instead.
+      if API.shared.spaceID.isEmpty, Self.tabs == nil,
+        UIApplication.shared.applicationState != .active
+      {
+        API.shared.spaceID = push.spaceID
+      }
+    case .open, .primary:
+      break
+    }
+    switch response {
+    case .later:
+      try? await RadarStore.shared.feedback(
+        push.updateID, "snooze", until: Date().addingTimeInterval(3600), timeout: 20)
+    case .notImportant:
+      try? await RadarStore.shared.feedback(push.updateID, "not_important", timeout: 20)
+    case .tell(let text):
+      await tell(text, push, title: title)
+    case .open, .primary:
+      if let tabs = Self.tabs {
+        open(push, response, in: tabs)
+      } else {
+        pending = (push, response)
+      }
+    }
+  }
+  /// "Tell Negroni…": the typed text goes to the personal conversation with the update
+  /// attached. What could not be sent is kept in a notification that reopens it in the chat.
+  private func tell(_ text: String, _ push: RadarPush, title: String) async {
+    guard !text.isEmpty else { return }
+    var input = push.target.merging([
+      "text": .string(text), "clientNonce": .string(UUID().uuidString),
+    ])
+    if !push.updateID.isEmpty { input["radarUpdateId"] = .string(push.updateID) }
+    do {
+      _ = try await API.shared.rpc("threads/send", input, interactive: false, timeout: 12)
+    } catch {
+      let content = UNMutableNotificationContent()
+      content.title = "Not sent"
+      content.body = text
+      content.userInfo = push.draftFields(text, title: title)
+      try? await UNUserNotificationCenter.current().add(
+        UNNotificationRequest(
+          identifier: "radar-draft-" + UUID().uuidString, content: content, trigger: nil))
+    }
+  }
+  func flush(_ tabs: MainTabController) {
+    guard let pending else { return }
+    self.pending = nil
+    open(pending.push, pending.response, in: tabs)
+  }
+  /// The personal conversation at the update's message; the primary action also sends the
+  /// offer (or opens the source) as the card's button would.
+  private func open(_ push: RadarPush, _ response: RadarPush.Response, in tabs: MainTabController)
+  {
+    tabs.showPersonalChat { chat in
+      if push.isDraft {
+        chat.restoreDraft(push)
+        return
+      }
+      chat.focus(messageID: push.messageID)
+      guard !push.updateID.isEmpty else { return }
+      guard response == .primary else {
+        Task { try? await RadarStore.shared.feedback(push.updateID, "opened") }
+        return
+      }
+      Task {
+        let item = await RadarStore.shared.item(for: push)
+        if let item, item.primary.kind == .open {
+          chat.openRadarSource(item)
+        } else if let text = item?.primary.title ?? push.fallbackInstruction {
+          chat.sendRadar(text, updateID: push.updateID)
+        } else {
+          try? await RadarStore.shared.feedback(push.updateID, "opened")
+        }
       }
     }
   }
