@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { localDate, localTimeLabel, nextLocalDate, startOfLocalDay } from "./clock.js";
+import { localDate, localTimeLabel, localWhen, nextLocalDate, startOfLocalDay } from "./clock.js";
 import type { RadarCycle } from "./context.js";
 import type { JudgeItem, JudgeResult } from "./judge.js";
 import { judgeItems } from "./judge.js";
@@ -401,10 +401,22 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
     (slot) => sent.has(`${slot.period}:${slot.localDate}`),
     now,
   );
+  // Times reach the model as local labels; it misconverts UTC timestamps.
+  const when = (at: Date | string) => localWhen(at, settings.timeZone, now);
   const items: JudgeItem[] = batch.map((signal) => {
     const meta = asRecord(signal.meta);
+    const allDay = meta.allDay === true;
+    const local = (value: unknown) =>
+      typeof value === "string" ? localWhen(value, settings.timeZone, now, allDay) : value;
     const facts = Object.fromEntries(
-      FACT_KEYS.filter((key) => meta[key] !== undefined).map((key) => [key, meta[key]]),
+      FACT_KEYS.filter((key) => meta[key] !== undefined).map((key) => [
+        key,
+        key === "start" || key === "end"
+          ? local(meta[key])
+          : key === "previous"
+            ? { ...asRecord(meta[key]), start: local(asRecord(meta[key]).start) }
+            : meta[key],
+      ]),
     );
     const hits = matchRules(learned.rules, screened(signal));
     const matched = new Set(ruleIds(hits));
@@ -415,10 +427,10 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
       ...(from(signal.actor) ? { from: from(signal.actor) } : {}),
       direct: signal.direct,
       unread: signal.unread,
-      occurredAt: signal.occurredAt.toISOString(),
+      occurredAt: when(signal.occurredAt),
       title: signal.title,
       excerpt: signal.excerpt,
-      ...(signal.deadline ? { deadline: signal.deadline.toISOString() } : {}),
+      ...(signal.deadline ? { deadline: when(signal.deadline) } : {}),
       facts,
       story: stories
         .filter((row) => row.storyKey === signal.storyKey)
@@ -426,7 +438,7 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
         .map((row) => ({
           title: row.headline || row.title,
           kind: row.kind,
-          at: row.occurredAt.toISOString(),
+          at: when(row.occurredAt),
           ...(row.disposition
             ? { decision: row.reason ? `${row.disposition}: ${row.reason}` : row.disposition }
             : {}),
@@ -441,7 +453,7 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
     now: now.toISOString(),
     localTime: localTimeLabel(now, settings.timeZone),
     timeZone: settings.timeZone,
-    ...(nextBrief ? { nextBrief: nextBrief.toISOString() } : {}),
+    ...(nextBrief ? { nextBrief: when(nextBrief) } : {}),
     language: cycle.language,
     owner: {
       ...(cycle.summary ? { summary: cycle.summary } : {}),
@@ -457,8 +469,8 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
       .slice(0, 12)
       .map((event) => ({
         title: event.title,
-        start: event.start,
-        ...(event.end ? { end: event.end } : {}),
+        start: localWhen(event.start, settings.timeZone, now, event.allDay),
+        ...(event.end && !event.allDay ? { end: when(event.end) } : {}),
       })),
   };
   let results: Map<string, JudgeResult | null>;
@@ -555,10 +567,11 @@ export async function assessPending(cycle: RadarCycle): Promise<number> {
     }
     await saveDecision(prisma, cycle, signal, result, decision, hits);
   }
-  return Math.max(
-    0,
-    toJudge.length - scored.length - answered.filter((entry) => entry.result === null).length,
-  );
+  // What failed but will be tried again still counts as waiting; what was given up does not.
+  const givenUp = answered.filter(
+    (entry) => entry.result === null && entry.signal.attempts + 1 >= MAX_ATTEMPTS,
+  ).length;
+  return Math.max(0, toJudge.length - scored.length - givenUp);
 }
 
 async function saveDecision(

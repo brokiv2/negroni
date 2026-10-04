@@ -43,6 +43,14 @@ export function matchRules(rules: RadarRule[], signal: ScreenedSignal): RuleHits
 const SECURITY_CODE =
   /\b(?:one[- ]time (?:pass(?:code|word)|code)|verification code|security code|confirmation code|log ?in code|sign[- ]in (?:code|link)|magic link|2fa|two[- ]factor code|passcode|otp|reset (?:your )?password|password reset|verify your (?:email|sign[- ]in))\b|код (?:подтверждения|для входа|доступа|верификации)|одноразов[а-яё]* (?:код|пароль)|сброс[а-яё]* парол|ссылк[а-яё]* для входа|bestätigungscode|code de vérification|código de verificación/i;
 
+/**
+ * An account security event (a new sign-in or device, suspicious activity, a changed
+ * password). Unlike a code the owner asked for, it may need them, so it reaches the judge
+ * even from an automated sender; the judge's phishing rule still applies.
+ */
+const SECURITY_ALERT =
+  /\b(?:new (?:sign[- ]?in|log[- ]?in|device)|(?:suspicious|unusual|unrecognized|unknown) (?:activity|sign[- ]?in|log[- ]?in|device)|security (?:alert|warning|notice)|sign[- ]?in attempt|password (?:was |has been )?changed|account (?:was |has been )?(?:locked|suspended|compromised|disabled)|(?:2fa|two[- ]factor)[a-z ]* (?:disabled|turned off))\b|нов(?:ый|ого) вход|вход в (?:аккаунт|учётн|учетн)|подозрительн|необычн[а-яё]* (?:активност|вход)|оповещени[а-яё]* (?:о |системы )?безопасност|пароль (?:был )?измен[её]н|аккаунт (?:был )?(?:заблокирован|взломан)|neue anmeldung|sicherheitswarnung|verdächtig|nouvelle connexion|alerte de sécurité|activité suspecte|nuevo inicio de sesión|alerta de seguridad|actividad sospechosa/i;
+
 export type PrefilterVerdict = { reason: string; gate: string; closesThread?: boolean };
 
 /**
@@ -65,14 +73,15 @@ export function prefilter(
   const address = signal.actor?.address?.toLowerCase();
   if (signal.kind === "email_sent" || (address && context.ownerAddresses.includes(address)))
     return { reason: "You sent this.", gate: "own", closesThread: true };
-  if (SECURITY_CODE.test(`${signal.title}\n${signal.excerpt}`))
+  const alert = SECURITY_ALERT.test(signal.title) && !SECURITY_CODE.test(signal.title);
+  if (!alert && SECURITY_CODE.test(`${signal.title}\n${signal.excerpt}`))
     return { reason: "Sign-in or security code.", gate: "security_code" };
   if (context.rules.never.length) return { reason: "Muted by your rule.", gate: "rule_never" };
   const known =
     context.rules.always.length > 0 ||
     context.rules.digest.length > 0 ||
     Boolean(address && context.people.some((person) => person.addresses.includes(address)));
-  if (signal.meta?.bulk === true && !known)
+  if (signal.meta?.bulk === true && !known && !alert)
     return { reason: "Mailing list or automated mail.", gate: "bulk" };
   if (signal.meta?.response === "declined")
     return { reason: "You declined this event.", gate: "declined" };

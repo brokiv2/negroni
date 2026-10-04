@@ -41,7 +41,8 @@ export const isRadarPaused = (settings: RadarSettings, now: Date) =>
 /**
  * Applies a settings patch. Turning Radar on or resuming it schedules a cycle now; the
  * first time it is turned on, it watches every supported connected account and carries
- * over the time zone of the earlier connected-account research.
+ * over the time zone of the earlier connected-account research. Turning it on also asks for
+ * a brief, which follows up once the first catch-up has been judged.
  */
 export async function configureRadar(
   prisma: PrismaClient,
@@ -70,7 +71,11 @@ export async function configureRadar(
       settings.enabled && isRadarPaused(previous, now) && !isRadarPaused(settings, now);
     await commitRadarProfile(tx, row, {
       settings,
-      ...(enabling ? { nextCycleAt: now, error: null } : resuming ? { nextCycleAt: now } : {}),
+      ...(enabling
+        ? { nextCycleAt: now, error: null, briefRequestedAt: now }
+        : resuming
+          ? { nextCycleAt: now }
+          : {}),
       ...(previous.enabled && !settings.enabled ? { nextCycleAt: null } : {}),
     });
   });

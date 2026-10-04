@@ -2,7 +2,7 @@ import type { MessageBlock, RadarSettings } from "@rakazo/contracts";
 import { MAX_BRIEF_AGENDA } from "@rakazo/contracts";
 import { appendEventInTransaction, createThreadMessageInTransaction } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { localDate, nextLocalDate, zonedInstant } from "./clock.js";
+import { localDate, localMinutes, localWhen, nextLocalDate, zonedInstant } from "./clock.js";
 import type { RadarDeliveryDeps } from "./deliver.js";
 import { blockActor, PRESENCE_WINDOW_MS, sendPush } from "./deliver.js";
 import type { AgendaEvent } from "./observers/types.js";
@@ -10,6 +10,7 @@ import { RADAR_LEVELS } from "./policy.js";
 import type { RadarOwner } from "./profile.js";
 import { radarOwner } from "./profile.js";
 import { radarPushExpiry } from "./schedule.js";
+import { plainDashes } from "./text.js";
 
 export type BriefPeriod = "morning" | "evening" | "now";
 type BriefItem = Extract<MessageBlock, { kind: "brief" }>["items"][number];
@@ -18,6 +19,51 @@ type BriefAgenda = NonNullable<Extract<MessageBlock, { kind: "brief" }>["agenda"
 const PRIMARY_CAP = 7;
 const NEEDS_YOU_CAP = 3;
 const CALENDAR = ["invite", "event_changed", "event_cancelled", "prep"];
+/**
+ * An opening greeting adds nothing to a brief and would become the push text. Only the greeting,
+ * at most a two-word name and the end of the sentence go: "Hello again, the budget is due." stays.
+ */
+const GREETING =
+  /^(?:good (?:morning|afternoon|evening)|hi|hello|hey|доброе утро|добрый (?:день|вечер)|привет|guten (?:morgen|tag|abend)|bonjour|bonsoir|buenos días|buenas (?:tardes|noches))(?=[\s,.!?])(?:[\s,]+[\p{L}'’-]+){0,2}[.!?]+\s+/iu;
+export const withoutGreeting = (text: string) => text.replace(GREETING, "").trim();
+
+const WEEKDAY = `(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|понедельник|вторник|сред[ауыеой]|четверг|пятниц[ауыеой]|суббот[ауыеой]|воскресень[еяю]|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|lunes|martes|miércoles|jueves|viernes|sábado|domingo)`;
+const DAY_PART = `(?:morning|afternoon|evening|night|утро|утром|день|днём|вечер|вечером|ночь|ночью|vormittag|nachmittag|abend|matin|après-midi|soir|mañana|tarde|noche)`;
+const TODAY_IS = `(?:today is|it(?:'|’)?s|it is|today|now|сегодня|сейчас|на часах|heute ist|heute|jetzt|aujourd(?:'|’)hui(?: c(?:'|’)est)?|hoy es|hoy|ahora)`;
+/** "Sunday" or "Sunday morning". */
+const DAY = `${WEEKDAY}(?:\\s+${DAY_PART})?`;
+const SEPARATOR = String.raw`[\s,;:-]`;
+/** "Today is Sunday, 10:29," and its translations: the weekday and the clock time as an opener. */
+const CLOCK_OPENER = new RegExp(
+  String.raw`^(?:${TODAY_IS}\s+)?(?:${DAY}${SEPARATOR}+)?(?<hour>\d{1,2})[:.](?<minute>\d{2})(?:${SEPARATOR}+(?:(?:в|on|am|le|el)\s+)?${DAY})?\s*[,;.!?:-]+\s*`,
+  "iu",
+);
+/** "Today is Sunday." (or "Today is Sunday - ...") as an opener of its own. */
+const DAY_OPENER = new RegExp(String.raw`^${TODAY_IS}\s+${DAY}(?:\s*[.!:]+|\s+-)\s*`, "iu");
+const CONJUNCTION = /^(?:and|but|so|и|а|но|und|aber|et|mais|y|pero)\s+/iu;
+
+/**
+ * A brief does not open with the weekday or the time it is being written at: the agenda already
+ * carries times, and the owner knows what day it is. Only an opener that is exactly that (the
+ * weekday, or the current clock time) is dropped, so "11:00, standup" is never touched.
+ */
+export function withoutTimeOpener(text: string, clock: { hour: number; minute: number }): string {
+  const found = CLOCK_OPENER.exec(text);
+  const match =
+    found &&
+    Number(found.groups?.hour) === clock.hour &&
+    Number(found.groups?.minute) === clock.minute
+      ? found
+      : DAY_OPENER.exec(text);
+  if (!match) return text;
+  const rest = text.slice(match[0].length).replace(CONJUNCTION, "");
+  return rest.charAt(0).toLocaleUpperCase() + rest.slice(1);
+}
+
+/** What the narrator wrote, cleaned the same way every time. */
+export const briefNarrative = (text: string, clock: { hour: number; minute: number }) =>
+  withoutTimeOpener(withoutGreeting(plainDashes(text.trim())), clock);
+
 const short = (value: string, max: number) =>
   value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value;
 
@@ -91,6 +137,8 @@ export async function deliverRadarBrief(
     localTime: string;
     lastBriefAt?: Date;
     presenceAt?: Date | null;
+    /** The owner asked for it: answer even when nothing needs them. */
+    requested?: boolean;
   },
 ): Promise<"sent" | "empty" | "exists"> {
   const owner = radarOwner(scope);
@@ -124,8 +172,16 @@ export async function deliverRadarBrief(
     (signal) => CALENDAR.includes(signal.kind) && !heldIds.has(signal.id) && !signal.deliveredAt,
   );
   const calendarIds = new Set(calendar.map((signal) => signal.id));
+  // Someone else's task or nobody's never sits under "Needs you"; it is counted in "more".
+  const ownersTurn = (signal: (typeof open)[number]) =>
+    signal.feedback === "important" ||
+    !["someone_else", "nobody"].includes(
+      String((signal.trace as Record<string, unknown> | null)?.whoMustAct ?? ""),
+    );
   const needsYou = open
-    .filter((signal) => !heldIds.has(signal.id) && !calendarIds.has(signal.id))
+    .filter(
+      (signal) => !heldIds.has(signal.id) && !calendarIds.has(signal.id) && ownersTurn(signal),
+    )
     .sort(
       (a, b) =>
         (a.deadline?.getTime() ?? Number.POSITIVE_INFINITY) -
@@ -159,7 +215,7 @@ export async function deliverRadarBrief(
     }),
   ]);
   const agenda = briefAgenda(input.agenda, period, settings.timeZone, now);
-  if (!primary.length && (period === "evening" || !agenda.length)) {
+  if (!input.requested && !primary.length && (period === "evening" || !agenda.length)) {
     if (period !== "now")
       await prisma.radarBrief.createMany({
         data: [{ ...owner, period, localDate: periodKey, signalIds: [] }],
@@ -190,19 +246,30 @@ export async function deliverRadarBrief(
         title: signal.headline || signal.title,
         ...(signal.why ? { why: signal.why } : {}),
         ...(signal.offer ? { offer: signal.offer } : {}),
-        ...(signal.deadline ? { deadline: signal.deadline.toISOString() } : {}),
+        ...(signal.deadline
+          ? { deadline: localWhen(signal.deadline, settings.timeZone, now) }
+          : {}),
       })),
-      agenda: agenda.map((event) => ({ title: event.title, start: event.start })),
+      // Local labels: models misconvert UTC timestamps.
+      agenda: agenda.map((event) => ({
+        title: event.title,
+        start: localWhen(event.start, settings.timeZone, now, event.allDay),
+      })),
       more,
       quiet: { skipped, borderline },
     })
     .catch(() => null);
   const fallbackTitle =
     period === "morning" ? "Morning brief" : period === "evening" ? "Evening wrap" : "Brief";
-  const title = short(narration?.title?.trim() || fallbackTitle, 280);
+  const title = short(plainDashes(narration?.title?.trim() ?? "") || fallbackTitle, 280);
+  const minutes = localMinutes(now, settings.timeZone);
   const narrative =
-    narration?.narrative?.trim() ||
-    [...items.map((item) => item.title), ...agenda.map((event) => event.title)].join(" · ");
+    briefNarrative(narration?.narrative ?? "", {
+      hour: Math.floor(minutes / 60),
+      minute: minutes % 60,
+    }) ||
+    [...items.map((item) => item.title), ...agenda.map((event) => event.title)].join(" · ") ||
+    "Nothing needs you right now.";
   const summary = short(narrative.split(/(?<=[.!?])\s/)[0] || title, 280);
   const outcome = await prisma.$transaction(async (tx) => {
     const claimed = await tx.radarBrief.createMany({

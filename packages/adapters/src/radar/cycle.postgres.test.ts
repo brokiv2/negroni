@@ -15,6 +15,9 @@ const suite =
   process.env.VERIFY_DATABASE && process.env.DATABASE_URL ? describe.sequential : describe.skip;
 
 const MINUTE = 60_000;
+const EM = String.fromCharCode(0x2014);
+const EN = String.fromCharCode(0x2013);
+const LONG_DASH = new RegExp(`[${String.fromCharCode(0x2012)}-${String.fromCharCode(0x2015)}]`);
 const scores = (value: number, patch: Record<string, number> = {}) => ({
   addressed: value,
   actionRequired: value,
@@ -40,9 +43,20 @@ const judgement = (patch: Record<string, unknown>) => ({
   ...patch,
 });
 
-/** A deterministic model: the source text says how it should be judged. */
-function fakeModel(): AgentRuntime & { calls: string[] } {
+type Answers = Partial<Record<"brief" | "synthesis" | "prep", unknown>>;
+
+/**
+ * A deterministic model: the source text says how it should be judged. `requests` keeps what
+ * each pass was asked; `answers` replaces the canned brief, synthesis or prep answer.
+ */
+function fakeModel(): AgentRuntime & {
+  calls: string[];
+  requests: AgentRunRequest[];
+  answers: Answers;
+} {
   const calls: string[] = [];
+  const requests: AgentRunRequest[] = [];
+  const answers: Answers = {};
   const judge = (prompt: string, second: boolean) => {
     if (prompt.includes('"kind":"event_cancelled"')) return judgement({ scores: scores(0) });
     if (prompt.includes("URGENT"))
@@ -55,6 +69,17 @@ function fakeModel(): AgentRuntime & { calls: string[] } {
         action: "decide",
         offer: "Approve it now?",
         lead: "The contract is waiting for you.",
+      });
+    if (prompt.includes("DASHES"))
+      return judgement({
+        evidence: "DASHES",
+        scores: scores(3),
+        costOfDelay: "high",
+        title: `Partner ${EM} contract`,
+        why: `Needs a decision ${EM} by 7${EN}8 October.`,
+        action: "decide",
+        offer: `Approve it ${EN} now?`,
+        lead: `One thing ${EM} the contract.`,
       });
     if (prompt.includes("INJECT"))
       return judgement({
@@ -81,35 +106,52 @@ function fakeModel(): AgentRuntime & { calls: string[] } {
         scores: scores(1, { actionRequired: 2 }),
         title: "FYI from a colleague",
       });
+    if (prompt.includes("TEAMWORK"))
+      return judgement({
+        evidence: "",
+        whoMustAct: "someone_else",
+        scores: scores(1, { actionRequired: 2 }),
+        title: "The team ships the update",
+      });
     return judgement({ scores: scores(0) });
   };
   return {
     calls,
+    requests,
+    answers,
     describe: () =>
       ({ id: "fake", contractVersion: "1", adapterVersion: "0", capabilities: {} }) as never,
     abort: async () => undefined,
     async *run(request: AgentRunRequest) {
       const kind = request.runId.split(":").at(-1) ?? "";
       calls.push(kind);
+      requests.push(request);
       const answer = kind.startsWith("judge")
         ? judge(request.prompt, false)
         : kind.startsWith("second")
           ? judge(request.prompt, true)
           : kind.startsWith("brief")
-            ? { title: "Morning brief", narrative: "A calm day with one thing that matters." }
+            ? (answers.brief ?? {
+                title: "Morning brief",
+                narrative: "A calm day with one thing that matters.",
+              })
             : kind === "synthesis"
-              ? {
+              ? (answers.synthesis ?? {
                   summary: "Runs a small team.",
                   language: "English",
                   priorities: [],
                   noise: [],
                   people: [],
-                }
-              : { useful: false };
+                })
+              : (answers.prep ?? { useful: false });
       yield { type: "text", text: JSON.stringify(answer) };
     },
   };
 }
+
+type BriefBlock = { kind: string; items?: Array<{ title: string }>; more?: number };
+const blocksOf = (message: { blocks: unknown } | undefined) =>
+  (Array.isArray(message?.blocks) ? message.blocks : []) as BriefBlock[];
 
 suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
   let db: ReturnType<typeof createDb>;
@@ -127,7 +169,10 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     await db.pool.end();
   });
 
-  async function setup(settings: Record<string, unknown> = {}) {
+  async function setup(
+    settings: Record<string, unknown> = {},
+    options: { followUp?: boolean } = {},
+  ) {
     const id = randomUUID();
     ids.push(id);
     await prisma.user.create({
@@ -201,6 +246,12 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       { enabled: true, morningBrief: { enabled: false }, ...settings },
       clock,
     );
+    // Most scenarios start after the follow-up to turning Radar on has gone out.
+    if (!options.followUp)
+      await prisma.radarProfile.update({
+        where: { spaceId_userId: scope },
+        data: { briefRequestedAt: null },
+      });
     const at = (minutes: number) => new Date(clock.getTime() + minutes * MINUTE);
     return {
       id,
@@ -399,12 +450,55 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     expect(s.pushes).toHaveLength(2);
   });
 
+  it("follows up on turning Radar on once the first catch-up is judged", async () => {
+    const s = await setup({}, { followUp: true });
+    s.deps.judgeCap = 1;
+    s.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    s.mail("Agenda", "FYI the agenda for Thursday.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await s.cycle();
+    // One item still waits to be judged, so the follow-up waits for it.
+    expect(await prisma.radarSignal.count({ where: { ...s.scope, status: "pending" } })).toBe(1);
+    expect(await prisma.radarBrief.count({ where: s.scope })).toBe(0);
+    s.advance(1);
+    await s.cycle();
+    expect(await prisma.radarBrief.findMany({ where: s.scope })).toMatchObject([{ period: "now" }]);
+    const followUp = (await s.messages()).at(-1);
+    expect(followUp?.blocks).toMatchObject([{ kind: "text" }, { kind: "brief", period: "now" }]);
+    expect(blocksOf(followUp)[1]?.items).toHaveLength(2);
+    const profile = () =>
+      prisma.radarProfile.findUniqueOrThrow({ where: { spaceId_userId: s.scope } });
+    expect((await profile()).briefRequestedAt).toBeNull();
+
+    // Asking for a brief when nothing needs the owner still gets an answer.
+    await prisma.radarSignal.updateMany({ where: s.scope, data: { state: "done" } });
+    await prisma.radarProfile.update({
+      where: { spaceId_userId: s.scope },
+      data: { briefRequestedAt: s.now() },
+    });
+    s.advance(1);
+    await s.cycle();
+    const answer = (await s.messages()).at(-1);
+    expect(answer?.id).not.toBe(followUp?.id);
+    expect(answer?.blocks).toMatchObject([
+      { kind: "text" },
+      { kind: "brief", period: "now", items: [] },
+    ]);
+    expect((await profile()).briefRequestedAt).toBeNull();
+  });
+
   it("sends one morning brief per day with what stayed quiet", async () => {
     const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
     s.mail("Notes", "FYI the slides are attached.", {
       sender: "Colleague <colleague@example.test>",
     });
     s.mail("Big sale", "Sale ends soon.", { sender: "no-reply@shop.example.test" });
+    s.mail("Release", "TEAMWORK: the design team ships the update on Thursday.", {
+      sender: "Colleague <colleague@example.test>",
+    });
     await s.cycle();
     const briefs = await prisma.radarBrief.findMany({ where: s.scope });
     expect(briefs).toMatchObject([{ period: "morning", localDate: "2026-10-05" }]);
@@ -413,6 +507,10 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       { kind: "text", text: "A calm day with one thing that matters." },
       { kind: "brief", period: "morning", title: "Morning brief", quiet: { skipped: 1 } },
     ]);
+    // Someone else's task is briefed but never listed under "Needs you".
+    const brief = blocksOf(message)[1];
+    expect(brief?.items?.map((item) => item.title)).toEqual(["FYI from a colleague"]);
+    expect(brief?.more).toBe(1);
     expect(s.pushes.at(-1)).toMatchObject({
       category: "RADAR_BRIEF",
       interruptionLevel: "passive",
@@ -566,5 +664,147 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       "expired",
     );
     expect(s.pushes).toHaveLength(1);
+  });
+
+  it("writes in the language the profile found, from the very first cycle", async () => {
+    const synthesis = {
+      summary: "Runs a small team.",
+      language: "Russian",
+      priorities: [],
+      noise: [],
+      people: [],
+    };
+    const instructions = (s: Awaited<ReturnType<typeof setup>>, kind: string) =>
+      s.model.requests.find((request) => request.runId.split(":").at(-1)?.startsWith(kind))
+        ?.instructions ?? "";
+    const found = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+    found.model.answers.synthesis = synthesis;
+    found.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await found.cycle();
+    expect(instructions(found, "judge")).toContain("in Russian");
+    expect(instructions(found, "brief")).toContain("Write in Russian");
+    // A language the owner chose wins over the one the profile found.
+    const chosen = await setup({
+      language: "German",
+      morningBrief: { enabled: true, time: "09:30" },
+    });
+    chosen.model.answers.synthesis = synthesis;
+    chosen.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await chosen.cycle();
+    expect(instructions(chosen, "judge")).toContain("in German");
+    expect(instructions(chosen, "brief")).toContain("Write in German");
+  });
+
+  it("gives the model local times, not UTC", async () => {
+    const s = await setup({
+      timeZone: "Europe/Helsinki",
+      morningBrief: { enabled: true, time: "12:00" },
+    });
+    s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+      items: [
+        {
+          id: "e1",
+          status: "confirmed",
+          summary: "Planning",
+          start: { dateTime: "2026-10-05T15:00:00Z" },
+          end: { dateTime: "2026-10-05T16:00:00Z" },
+          updated: "2026-10-05T09:00:00Z",
+          organizer: { email: "partner@example.test" },
+          attendees: [
+            { email: "me@example.test", self: true, responseStatus: "accepted" },
+            { email: "partner@example.test", responseStatus: "accepted" },
+          ],
+        },
+      ],
+    });
+    s.mail("Notes", "FYI the slides are attached.", {
+      sender: "Colleague <colleague@example.test>",
+    });
+    await s.cycle();
+    const prompt = (kind: string) =>
+      s.model.requests.find((request) => request.runId.split(":").at(-1)?.startsWith(kind))
+        ?.prompt ?? "";
+    // Helsinki is three hours ahead in October: 09:55Z is 12:55, 15:00Z is 18:00.
+    expect(prompt("judge")).toContain('"at":"today 12:55"');
+    expect(prompt("judge")).toContain('"start":"today 18:00"');
+    expect(prompt("brief")).toContain('"start":"today 18:00"');
+  });
+
+  it("keeps long dashes and a time opener out of what Radar writes", async () => {
+    const s = await setup({ morningBrief: { enabled: true, time: "09:30" } });
+    s.model.answers.brief = {
+      title: `Calm ${EM} one call`,
+      narrative: `Good morning! Today is Monday, 10:00 ${EM} one call matters ${EN} the rest is free.`,
+    };
+    s.mail("Contract", "DASHES: please decide on the contract.");
+    await s.cycle();
+    const [signal] = await s.signals();
+    expect(signal).toMatchObject({
+      headline: "Partner - contract",
+      why: "Needs a decision - by 7-8 October.",
+      offer: "Approve it - now?",
+      meta: { lead: "One thing - the contract." },
+    });
+    const messages = await s.messages();
+    expect(messages[0]?.blocks).toMatchObject([
+      { kind: "text", text: "One thing - the contract." },
+      { kind: "update", title: "Partner - contract", why: "Needs a decision - by 7-8 October." },
+    ]);
+    expect(messages.at(-1)?.blocks).toMatchObject([
+      { kind: "text", text: "One call matters - the rest is free." },
+      { kind: "brief", title: "Calm - one call" },
+    ]);
+    expect(s.pushes[0]).toMatchObject({
+      title: "Partner - contract",
+      body: "Needs a decision - by 7-8 October. Approve it - now?",
+    });
+    expect(JSON.stringify([messages.map((message) => message.blocks), s.pushes])).not.toMatch(
+      LONG_DASH,
+    );
+  });
+
+  it("keeps long dashes out of the meeting prep", async () => {
+    const s = await setup();
+    s.model.answers.prep = {
+      useful: true,
+      title: `Prep ${EM} planning`,
+      why: `Two open points ${EM} one decision.`,
+      points: [`Budget ${EN} draft is ready`, `Owner ${EM} still unknown`],
+      offer: `Draft an agenda ${EN} now?`,
+      lead: `Heads up ${EM} planning soon.`,
+    };
+    s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+      items: [
+        {
+          id: "p1",
+          status: "confirmed",
+          summary: "Planning",
+          start: { dateTime: "2026-10-05T10:17:00Z" },
+          end: { dateTime: "2026-10-05T11:00:00Z" },
+          updated: "2026-10-05T09:00:00Z",
+          organizer: { email: "outside@elsewhere.test" },
+          attendees: [
+            { email: "me@example.test", self: true, responseStatus: "accepted" },
+            { email: "outside@elsewhere.test", responseStatus: "accepted" },
+          ],
+        },
+      ],
+    });
+    await s.cycle();
+    const prep = (await s.signals()).find((signal) => signal.kind === "prep");
+    expect(prep).toMatchObject({
+      headline: "Prep - planning",
+      why: "Two open points - one decision.",
+      offer: "Draft an agenda - now?",
+      excerpt: "• Budget - draft is ready\n• Owner - still unknown",
+      meta: { lead: "Heads up - planning soon." },
+    });
+    const messages = await s.messages();
+    expect(messages).toHaveLength(1);
+    expect(JSON.stringify([messages[0]?.blocks, s.pushes])).not.toMatch(LONG_DASH);
   });
 });
