@@ -40,6 +40,7 @@ enum ToolPresentation {
 final class ToolActivityView: UIView {
   private let stack = UIStackView()
   private var shown: [JSON] = []
+  private var compact = false
   var onOpen: (() -> Void)?
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -55,19 +56,20 @@ final class ToolActivityView: UIView {
     ])
   }
   required init?(coder: NSCoder) { fatalError() }
-  func configure(_ items: [JSON]) {
-    guard items != shown else { return }
+  func configure(_ items: [JSON], compact: Bool = false) {
+    guard items != shown || compact != self.compact else { return }
     shown = items
+    self.compact = compact
     for view in stack.arrangedSubviews { view.removeFromSuperview() }
-    for item in items.suffix(3) {
+    for item in compact ? [] : Array(items.suffix(3)) {
       let row = ToolActivityRow(item: item)
       row.addAction(UIAction { [weak self] _ in self?.onOpen?() }, for: .touchUpInside)
       stack.addArrangedSubview(row)
     }
-    if items.count > 3 {
+    if items.count > 3 || (compact && !items.isEmpty) {
       let all = UIButton(type: .system)
       var configuration = UIButton.Configuration.plain()
-      configuration.title = "View all \(items.count) actions"
+      configuration.title = compact ? "\(items.count) actions" : "View all \(items.count) actions"
       configuration.image = UIImage(systemName: "chevron.right")
       configuration.preferredSymbolConfigurationForImage = .init(pointSize: 10, weight: .medium)
       configuration.imagePlacement = .trailing

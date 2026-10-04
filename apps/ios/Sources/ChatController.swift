@@ -27,6 +27,9 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private let toolActivity = ToolActivityView()
   private let activityFooter = UIStackView()
   private let activityCell = UITableViewCell()
+  private let actionsCell = UITableViewCell()
+  private var timeline: [ChatTimelineRow] = []
+  private var activityRunID = ""
   private var hasActivity = false
   private var followsLatest = true
   private var adjustingScroll = false
@@ -102,7 +105,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let workingHeight = workingIndicator.heightAnchor.constraint(equalToConstant: 64)
     workingHeight.priority = .init(999)
     workingHeight.isActive = true
-    activityFooter.addArrangedSubview(toolActivity)
+    actionsCell.backgroundColor = .clear
+    actionsCell.selectionStyle = .none
+    actionsCell.contentView.addSubview(toolActivity)
+    toolActivity.pin(to: actionsCell.contentView)
     activityFooter.addArrangedSubview(workingIndicator)
     errorContainer.addArrangedSubview(runError)
     errorContainer.isLayoutMarginsRelativeArrangement = true
@@ -300,7 +306,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   }
   private func render(_ next: JSON) {
     let nearBottom = followsLatest && !table.isDragging && !table.isDecelerating
-    let hadActivity = hasActivity
+    let previousTimeline = timeline
     let wasAdjusting = adjustingScroll
     adjustingScroll = true
     defer { adjustingScroll = wasAdjusting }
@@ -329,6 +335,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       main: target["threadKind"].string == "personal")
     let currentRun = next["run"]["id"].string
     let activityRun = currentRun.isEmpty ? latest.last?["runId"].string ?? "" : currentRun
+    activityRunID = activityRun
     let actions = activities.filter { $0["runId"].string == activityRun }
     toolActivity.isHidden = actions.isEmpty || !outgoing.isEmpty
     workingIndicator.isHidden = !working
@@ -341,8 +348,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     renderedError = errorText
     renderedActions = actions
     renderedWorking = working
-    toolActivity.configure(actions)
-    hasActivity = !toolActivity.isHidden || working || !errorContainer.isHidden
+    toolActivity.configure(actions, compact: !working)
+    hasActivity = working || !errorContainer.isHidden
     if rows.isEmpty {
       let empty = UIView()
       let welcome = Theme.stack(spacing: 18)
@@ -362,43 +369,13 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     } else {
       table.backgroundView = nil
     }
-    guard rows != messages || hasActivity != hadActivity else {
-      if activityChanged {
-        // Tool text can change height without changing any chat message.
-        UIView.performWithoutAnimation {
-          table.performBatchUpdates(nil) { [weak self] _ in
-            if nearBottom { self?.scrollToEnd(animated: false) }
-          }
-        }
-      }
-      return
-    }
-    let previous = messages
+    let nextTimeline = ChatTimeline.rows(messages: rows, runID: activityRunID,
+      actions: !toolActivity.isHidden, status: hasActivity)
+    guard rows != messages || nextTimeline != previousTimeline || activityChanged else { return }
     messages = rows
-    if previous.count <= rows.count && zip(previous, rows).allSatisfy({ $0["id"] == $1["id"] }) {
-      let changed = previous.indices.filter { previous[$0] != rows[$0] }.map {
-        IndexPath(row: $0, section: 0)
-      }
-      let inserted = (previous.count..<rows.count).map { IndexPath(row: $0, section: 0) }
-      UIView.performWithoutAnimation {
-        table.performBatchUpdates {
-          if hasActivity != hadActivity {
-            let path = IndexPath(row: 0, section: 1)
-            if hasActivity {
-              table.insertRows(at: [path], with: .none)
-            } else {
-              table.deleteRows(at: [path], with: .none)
-            }
-          }
-          if !changed.isEmpty { table.reloadRows(at: changed, with: .none) }
-          if !inserted.isEmpty { table.insertRows(at: inserted, with: .none) }
-        } completion: { [weak self] _ in
-          if nearBottom || first { self?.scrollToEnd(animated: false) }
-        }
-      }
-    } else {
-      table.reloadData()
-    }
+    timeline = nextTimeline
+    UIView.performWithoutAnimation { table.reloadData() }
+
     table.layoutIfNeeded()
     if nearBottom || first { scrollToEnd(animated: false) }
   }
@@ -480,6 +457,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     olderCursor = page["olderCursor"]
     snapshot["olderCursor"] = olderCursor
     snapshot["messages"] = .array(messages)
+    rebuildTimeline()
     table.reloadData()
     table.layoutIfNeeded()
     table.contentOffset.y += table.contentSize.height - height
@@ -743,7 +721,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     pendingFocus = nil
     followsLatest = false
     table.layoutIfNeeded()
-    table.scrollToRow(at: IndexPath(row: row, section: 0), at: .top, animated: false)
+    guard let index = timeline.firstIndex(of: .message(row)) else { return }
+    table.scrollToRow(at: IndexPath(row: index, section: 0), at: .top, animated: false)
   }
   @objc private func radarChanged() {
     guard isViewLoaded else { return }
@@ -754,7 +733,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     }
     guard !rows.isEmpty else { return }
     UIView.performWithoutAnimation {
-      table.reloadRows(at: rows.map { IndexPath(row: $0, section: 0) }, with: .none)
+      table.reloadData()
     }
   }
 
@@ -984,7 +963,11 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       } catch { showError(error) }
     }
   }
-  func numberOfSections(in tableView: UITableView) -> Int { 2 }
+  private func rebuildTimeline() {
+    timeline = ChatTimeline.rows(messages: messages, runID: activityRunID,
+      actions: !toolActivity.isHidden, status: hasActivity)
+  }
+  func numberOfSections(in tableView: UITableView) -> Int { 1 }
   func scrollViewDidScroll(_ scrollView: UIScrollView) {
     guard !adjustingScroll, abs(scrollView.bounds.height - previousViewportHeight) < 1 else {
       return
@@ -994,11 +977,17 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
       - scrollView.bounds.height + scrollView.adjustedContentInset.bottom < 80
   }
   func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-    section == 0 ? messages.count : (hasActivity ? 1 : 0)
+    timeline.count
   }
   func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-    if indexPath.section == 1 { return activityCell }
-    let message = messages[indexPath.row]
+    guard timeline.indices.contains(indexPath.row) else { return UITableViewCell() }
+    let messageIndex: Int
+    switch timeline[indexPath.row] {
+    case .actions: return actionsCell
+    case .status: return activityCell
+    case .message(let index): messageIndex = index
+    }
+    let message = messages[messageIndex]
     let cell =
       tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
     cell.configure(
@@ -1011,14 +1000,19 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
         self?.navigationController?.pushViewController(
           AttachmentController(target: self?.target ?? [:], block: block), animated: true)
       }, answer: { [weak self] block, value in self?.answer(message, block, value: value) },
-      connect: { [weak self] block in self?.connectApp(message: message, block: block) })
+      connect: { [weak self] block in self?.connectApp(message: message, block: block) },
+      openComputer: { [weak self] in
+        guard let self else { return }
+        let botID = message["botId"].string.isEmpty ? target["botId"].string : message["botId"].string
+        navigationController?.pushViewController(ComputerController(botID: botID), animated: true)
+      })
     return cell
   }
   func tableView(
     _ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint
   ) -> UIContextMenuConfiguration? {
-    guard indexPath.section == 0 else { return nil }
-    let text = ThreadLogic.plainText(messages[indexPath.row])
+    guard timeline.indices.contains(indexPath.row), case .message(let index) = timeline[indexPath.row] else { return nil }
+    let text = ThreadLogic.plainText(messages[index])
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
       UIMenu(children: [
         UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { _ in
@@ -1061,7 +1055,8 @@ final class MessageCell: UITableViewCell {
     relayout: @escaping () -> Void, canAnswer: Bool,
     open: @escaping (JSON) -> Void,
     answer: @escaping (JSON, String?) -> Void,
-    connect: @escaping (JSON) -> Void
+    connect: @escaping (JSON) -> Void,
+    openComputer: @escaping () -> Void
   ) {
     imageTasks.forEach { $0.cancel() }
     imageTasks = []
@@ -1091,6 +1086,32 @@ final class MessageCell: UITableViewCell {
         continue
       }
       switch block["kind"].string {
+      case "computer":
+        let card = Theme.stack(spacing: 10)
+        card.backgroundColor = Theme.card
+        card.layer.cornerRadius = 18
+        card.isLayoutMarginsRelativeArrangement = true
+        card.directionalLayoutMargins = .init(top: 14, leading: 14, bottom: 14, trailing: 14)
+        let state = block["state"].string
+        let label = ["waiting_takeover": "Needs you", "waiting_input": "Needs you",
+          "running": "Working", "completed": "Done", "failed": "Couldn’t finish",
+          "cancelled": "Stopped", "Needs you": "Needs you", "Working": "Working",
+          "Done": "Done", "Ready": "Ready"][state] ?? ""
+        let heading = ["Computer", label].filter { !$0.isEmpty }.joined(separator: " · ")
+        card.addArrangedSubview(Theme.label(heading, style: .headline))
+        let text = UITextView()
+        text.isEditable = false
+        text.isSelectable = true
+        text.isScrollEnabled = false
+        text.backgroundColor = .clear
+        text.textContainerInset = .zero
+        text.textContainer.lineFragmentPadding = 0
+        text.attributedText = Markdown.render(block["text"].string)
+        text.adjustsFontForContentSizeCategory = true
+        text.linkTextAttributes = [.foregroundColor: UIColor.link]
+        card.addArrangedSubview(text)
+        card.addArrangedSubview(Theme.button("Open", symbol: "desktopcomputer", action: openComputer))
+        stack.addArrangedSubview(card)
       case "card":
         if !block["weather"].isNull {
           stack.addArrangedSubview(WeatherCardView(block["weather"]))
@@ -1250,9 +1271,14 @@ enum Markdown {
       if block.kind == "code" {
         font = UIFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
       }
-      if block.kind == "list" || block.kind == "quote" { paragraph.headIndent = 18 }
+      if block.kind == "list" { paragraph.headIndent = 18 }
+      if block.kind == "quote" {
+        paragraph.firstLineHeadIndent = 14
+        paragraph.headIndent = 14
+        paragraph.paragraphSpacing = 10
+      }
       let base: [NSAttributedString.Key: Any] = [
-        .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
+        .font: font, .foregroundColor: block.kind == "quote" ? Theme.muted : color, .paragraphStyle: paragraph,
       ]
       if !block.prefix.isEmpty {
         result.append(NSAttributedString(string: block.prefix, attributes: base))
@@ -1325,6 +1351,37 @@ final class AttachmentController: UIViewController, QLPreviewControllerDataSourc
         let url = try await API.shared.downloadFile(
           id: block["artifactId"].string, name: block["name"].string)
         localURL = url
+        navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .action,
+          primaryAction: UIAction { [weak self] _ in
+            guard let self, let localURL else { return }
+            let share = UIActivityViewController(activityItems: [localURL], applicationActivities: nil)
+            share.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+            present(share, animated: true)
+          })
+        if AttachmentPreview.text(url),
+           (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 4 * 1024 * 1024,
+           let content = try? String(contentsOf: url, encoding: .utf8) {
+          let text = UITextView()
+          text.isEditable = false
+          text.isSelectable = true
+          text.backgroundColor = Theme.canvas
+          text.textContainerInset = .init(top: 20, left: 20, bottom: 24, right: 20)
+          text.attributedText = ["md", "markdown"].contains(url.pathExtension.lowercased())
+            ? Markdown.render(content)
+            : NSAttributedString(string: content, attributes: [.font: UIFont.preferredFont(forTextStyle: .body), .foregroundColor: Theme.ink])
+          text.adjustsFontForContentSizeCategory = true
+          text.contentInsetAdjustmentBehavior = .never
+          view.addSubview(text)
+          text.translatesAutoresizingMaskIntoConstraints = false
+          NSLayoutConstraint.activate([
+            text.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            text.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            text.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            text.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+          ])
+          spinner.removeFromSuperview()
+          return
+        }
         let preview = QLPreviewController()
         preview.dataSource = self
         addChild(preview)

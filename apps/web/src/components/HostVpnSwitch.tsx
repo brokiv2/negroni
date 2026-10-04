@@ -1,6 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { HostVpnStatus } from "@rakazo/contracts";
-import { switchHostVpn } from "@rakazo/core";
+import { switchHostVpn, vpnSettled } from "@rakazo/core";
 import { Switch } from "@rakazo/ui-web";
 import { useEffect, useId, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
@@ -20,6 +20,28 @@ export function HostVpnSwitch({ initialStatus }: { initialStatus: HostVpnStatus 
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    if (target !== null) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const next = await rpc.computer.vpnStatus(undefined, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setStatus(next);
+        if (vpnSettled(next, null)) setError(null);
+      } catch {
+        // Keep the last known state while the host tunnel reconnects.
+      }
+      if (!controller.signal.aborted) timer = setTimeout(() => void refresh(), 3_000);
+    }
+    void refresh();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [target]);
+
   async function toggle(enabled: boolean) {
     const signal = abortRef.current?.signal;
     if (target !== null || !signal) return;
@@ -34,7 +56,7 @@ export function HostVpnSwitch({ initialStatus }: { initialStatus: HostVpnStatus 
         signal,
       });
       if (signal.aborted) return;
-      if (!settled || settled.state !== (enabled ? "connected" : "disconnected")) {
+      if (!settled || !vpnSettled(settled, enabled)) {
         setError(t`Could not switch the VPN`);
       }
     } catch (failure) {

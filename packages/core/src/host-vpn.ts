@@ -2,7 +2,7 @@ import type { HostVpnStatus } from "@rakazo/contracts";
 import { abortableDelay } from "./async.js";
 
 /** How long a client keeps reading status after a switch while the tunnel reconnects. */
-export const VPN_SETTLE_TIMEOUT_MS = 20_000;
+export const VPN_SETTLE_TIMEOUT_MS = 45_000;
 /** Waits between status reads; the last value repeats until the deadline. */
 export const VPN_SETTLE_BACKOFF_MS = [800, 1_200, 1_800, 2_500, 3_000] as const;
 

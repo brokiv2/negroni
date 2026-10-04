@@ -46,6 +46,18 @@
       }
       let contract = RadarItem(PreviewData.shared.view("u-contract"))!
       switch screen {
+      case "push-warm":
+        later(1) {
+          Task {
+            for _ in 0..<3 {
+              await Notifications.shared.receive(fields: ["botId": "bot-preview", "messageId": "m-brief", "spaceId": "space-preview"],
+                category: "", action: UNNotificationDefaultActionIdentifier)
+            }
+          }
+        }
+      case "report":
+        chat?.pushViewController(AttachmentController(target: ["botId": "bot-preview"],
+          block: ["kind": "file", "artifactId": "report-preview", "name": "Research report"]), animated: false)
       case "foryou", "foryou-brief", "foryou-tabs", "foryou-automations":
         tabs.selectedIndex = 1
         guard screen != "foryou" else { return }
@@ -117,6 +129,14 @@
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
       guard let url = request.url else { return }
+      if url.path.hasPrefix("/api/artifacts/") {
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+          headerFields: ["Content-Type": "text/markdown", "Content-Disposition": "attachment; filename=Report"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("# Research report\n\nA **formatted** report inside Negroni.\n\n> First paragraph\n>\n> Second paragraph\n\n- Evidence\n- Next step".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+        return
+      }
       let path = url.path.hasPrefix("/rpc/") ? String(url.path.dropFirst(5)) : url.path
       let headers =
         path == "threads/subscribe"
@@ -450,6 +470,26 @@
       case "aiConsent/status":
         return ["recipients": [], "scope": "space", "version": 1]
       case "threads/get":
+        if PreviewMode.screen == "login" {
+          return ["threadId": "thread-preview", "cursor": 2, "botId": "bot-preview", "messages": [
+            ["id": "login-preview", "role": "bot", "runId": "run-preview", "seq": 1, "blocks": [
+              ["kind": "computer", "state": "Needs you", "text": "Please sign in to Threads in the browser on your Mac. Negroni will continue after you sign in."],
+            ]],
+          ], "run": ["id": "run-preview", "status": "waiting_takeover"], "activeRuns": []]
+        }
+        if PreviewMode.screen == "choices" || PreviewMode.screen == "markdown" {
+          let content: [JSON] = PreviewMode.screen == "choices" ? [
+            ["kind": "text", "text": "The report is ready."],
+            ["kind": "choice", "id": "choice-preview", "question": "How should we start?", "options": [
+              ["id": "small", "label": "Start with a small experiment"],
+              ["id": "large", "label": "Try the full plan"],
+            ]],
+          ] : [["kind": "text", "text": "# Ready for Monday\n\n> A team of three built the agent.\n>\n> The workflow mattered.\n\n**Next step**\n\n- Read the report\n- Choose a plan"]]
+          return ["threadId": "thread-preview", "cursor": 4, "botId": "bot-preview", "messages": [
+            ["id": "user-preview", "role": "user", "seq": 1, "blocks": [["kind": "text", "text": "Look at the options."]]],
+            ["id": "choice-preview", "role": "bot", "runId": "run-preview", "seq": 2, "blocks": .array(content)],
+          ], "run": ["id": "run-preview", "status": "waiting_input"], "activeRuns": []]
+        }
         // With `-NegroniPreviewOlder YES` the window starts at the Radar message.
         return [
           "threadId": "thread-preview", "kind": "personal",
@@ -457,6 +497,12 @@
           "messages": .array(PreviewMode.older ? messages.filter { $0["seq"].int >= 4 } : messages),
           "olderCursor": PreviewMode.older ? 4 : .null, "botId": "bot-preview", "run": .null,
           "activeRuns": [],
+        ]
+      case "threads/activity":
+        guard PreviewMode.screen == "choices" else { return [] }
+        return [
+          ["id": "one", "runId": "run-preview", "name": "attach_file", "label": "Attach file", "status": "succeeded"],
+          ["id": "two", "runId": "run-preview", "name": "ask_user", "label": "Ask user", "status": "waiting"],
         ]
       case "threads/messages":
         // The page before a message, or the messages around one.

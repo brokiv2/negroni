@@ -3,6 +3,22 @@ import { projectToolTimeline } from "./tool-timeline.js";
 
 const base = { id: "event", runId: "run", createdAt: "2026-09-29T10:00:00Z" };
 describe("tool activity timeline", () => {
+  it("shows a paused question as waiting even before the tool completion arrives", () => {
+    const events = [
+      {
+        ...base,
+        type: "agent.tool.called",
+        payload: { name: "ask_user", executionId: "question" },
+      },
+    ];
+    expect(projectToolTimeline(events, new Map([["run", "waiting_input"]]))[0]?.status).toBe(
+      "waiting",
+    );
+    expect(projectToolTimeline(events, new Map([["run", "waiting_takeover"]]))[0]?.status).toBe(
+      "waiting",
+    );
+    expect(projectToolTimeline(events, new Map([["run", "running"]]))[0]?.status).toBe("running");
+  });
   it("pairs calls and completions, distinguishes repeated tools, and excludes payload contents", () => {
     const events = [
       {

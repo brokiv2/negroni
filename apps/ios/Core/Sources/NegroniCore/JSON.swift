@@ -185,7 +185,7 @@ public enum ThreadLogic {
       case "progress":
         return !block["text"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
           && block["pendingToolNames"].array.isEmpty && !block["text"].string.hasPrefix("Using ")
-      case "ask", "choice", "file", "image", "app_connect", "card": return true
+      case "ask", "choice", "file", "image", "app_connect", "card", "computer": return true
       case "subagent", "child_bot", "cloud_agent":
         return ["name", "title", "result", "progress", "status"].contains {
           !block[$0].string.isEmpty
@@ -221,7 +221,7 @@ public enum ThreadLogic {
   public static func plainText(_ message: JSON) -> String {
     message["blocks"].array.compactMap { block in
       switch block["kind"].string {
-      case "text", "ask", "progress", "channel_message": return block["text"].string
+      case "text", "ask", "progress", "channel_message", "computer": return block["text"].string
       case "subagent":
         return [block["name"].string, block["result"].string, block["progress"].string].filter {
           !$0.isEmpty

@@ -331,8 +331,9 @@ enum Keychain {
     }
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let safeName = URL(fileURLWithPath: name).lastPathComponent
-    let url = directory.appendingPathComponent(safeName.isEmpty ? "Attachment" : safeName)
+    let safeName = AttachmentPreview.filename(name: name, suggested: response.suggestedFilename,
+      mimeType: response.mimeType)
+    let url = directory.appendingPathComponent(safeName)
     try FileManager.default.moveItem(at: temporary, to: url)
     try FileManager.default.setAttributes(
       [.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)

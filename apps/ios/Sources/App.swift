@@ -55,6 +55,13 @@ import UIKit
         presenter.present(alert, animated: true)
       }
     }
+    #if DEBUG
+      if PreviewMode.enabled, PreviewMode.screen == "push-cold",
+        let push = ChatPush(["botId": "bot-preview", "messageId": "m-brief", "spaceId": "space-preview"])
+      {
+        Notifications.shared.receiveChat(push)
+      }
+    #endif
     showRoot()
     window.makeKeyAndVisible()
   }
@@ -85,6 +92,11 @@ import UIKit
 
 final class BootstrapController: UIViewController {
   private let spinner = UIActivityIndicatorView(style: .medium)
+  private var loadTask: Task<Void, Never>?
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    loadTask?.cancel()
+  }
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = Theme.canvas
@@ -98,11 +110,19 @@ final class BootstrapController: UIViewController {
     load()
   }
   private func load() {
-    Task {
+    loadTask?.cancel()
+    loadTask = Task { [weak self] in
+      guard let self else { return }
       do {
-        let me = try await API.shared.rpc("me")
-        API.shared.spaceID = me["spaceId"].string
-        let personal = try await API.shared.rpc("personal/thread")
+        let personal = try await ConnectionRecovery.read(
+          operation: {
+            let me = try await API.shared.rpc("me", timeout: 5)
+            API.shared.spaceID = me["spaceId"].string
+            return try await API.shared.rpc("personal/thread", timeout: 5)
+          }, shouldRetry: { error in
+            ConnectionRecovery.transient(error, httpStatus: (error as? APIError)?.status)
+          })
+        try Task.checkCancellation()
         let tabs = MainTabController(botID: personal["botId"].string)
         Notifications.shared.configure()
         view.window?.rootViewController = tabs
@@ -110,6 +130,7 @@ final class BootstrapController: UIViewController {
         API.shared.invalidateSession()
         SceneDelegate.restart()
       } catch {
+        guard !Task.isCancelled else { return }
         spinner.stopAnimating()
         let stack = Theme.stack()
         stack.addArrangedSubview(Theme.label(error.localizedDescription, style: .body))

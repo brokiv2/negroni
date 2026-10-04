@@ -35,6 +35,7 @@ final class HostVpnTests: XCTestCase {
     XCTAssertTrue(HostVpn.failed(nil, enabled: false))
     XCTAssertTrue(HostVpn.failed(HostVpnStatus(state: .connected), enabled: false))
     XCTAssertFalse(HostVpn.failed(HostVpnStatus(state: .disconnected), enabled: false))
+    XCTAssertTrue(HostVpn.failed(HostVpnStatus(state: .connected, switching: true), enabled: true))
   }
 
   func testRowHidesWithoutWarpAndKeepsConnectingSwitchable() {
@@ -90,8 +91,10 @@ final class HostVpnTests: XCTestCase {
       readStatus: { throw URLError(.timedOut) },
       sleep: clock.sleep, now: { clock.time })
     XCTAssertNil(result)
-    XCTAssertEqual(clock.waits, [0.8, 1.2, 1.8, 2.5, 3, 3, 3, 3])
+    XCTAssertEqual(Array(clock.waits.prefix(5)), HostVpn.backoff)
+    XCTAssertTrue(clock.waits.dropFirst(5).allSatisfy { $0 == 3 })
     XCTAssertLessThanOrEqual(clock.time, HostVpn.settleTimeout)
+    XCTAssertGreaterThan(clock.time, HostVpn.settleTimeout - 3)
     XCTAssertTrue(HostVpn.failed(result, enabled: false))
   }
 

@@ -50,10 +50,14 @@ export function projectToolTimeline(
         complete && typeof payload.durationMs === "number" ? Math.max(0, payload.durationMs) : null,
     });
   }
-  return [...rows.values()].map((row) =>
-    row.status === "running" &&
-    ["completed", "failed", "cancelled"].includes(runStates.get(row.runId) ?? "")
+  return [...rows.values()].map((row) => {
+    if (row.status !== "running") return row;
+    const state = runStates.get(row.runId) ?? "";
+    if (["waiting_input", "waiting_takeover"].includes(state)) {
+      return { ...row, status: "waiting" as const };
+    }
+    return ["completed", "failed", "cancelled"].includes(state)
       ? { ...row, status: "interrupted" as const }
-      : row,
-  );
+      : row;
+  });
 }

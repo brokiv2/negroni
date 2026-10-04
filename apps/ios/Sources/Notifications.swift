@@ -6,7 +6,10 @@ import UserNotifications
   static let shared = Notifications()
   static let threadUpdated = Notification.Name("negroni.threadUpdated")
   /// A notification opened while the app was still starting; handled once the tabs appear.
-  private var pending: (push: RadarPush, response: RadarPush.Response)?
+  private enum PendingOpen {
+    case radar(RadarPush, RadarPush.Response), chat(ChatPush)
+  }
+  private var pending: PendingOpen?
 
   /// Runs before launch finishes so the response that launched the app is delivered.
   func prepare() {
@@ -114,25 +117,20 @@ import UserNotifications
     let action = response.actionIdentifier
     let typed = (response as? UNTextInputNotificationResponse)?.userText
     let title = content.title
-    if let push = RadarPush(fields, category: content.categoryIdentifier) {
-      guard action != UNNotificationDismissActionIdentifier else { return }
+    await receive(fields: fields, category: content.categoryIdentifier, action: action, typed: typed, title: title)
+  }
+  func receive(fields: [String: String], category: String, action: String, typed: String? = nil, title: String = "") async {
+    guard action != UNNotificationDismissActionIdentifier else { return }
+    if let push = RadarPush(fields, category: category) {
       // Returning ends the system's time for a background action, so the work is awaited.
       await handle(push, RadarPush.response(action: action, text: typed), title: title)
       return
     }
-    let botID = fields["botId"] ?? fields["rakazo.botId"]
-    let groupID = fields["groupId"]
-    await MainActor.run {
-      guard let tabs = Self.tabs else { return }
-      tabs.selectedIndex = 0
-      guard let nav = tabs.selectedViewController as? UINavigationController else { return }
-      if let groupID {
-        nav.pushViewController(
-          ChatController(target: ["groupId": .string(groupID)], title: "Group"), animated: true)
-      } else if let botID, botID != tabs.botID {
-        nav.pushViewController(ChatController(target: ["botId": .string(botID)]), animated: true)
-      }
-    }
+    guard let push = ChatPush(fields) else { return }
+    receiveChat(push)
+  }
+  func receiveChat(_ push: ChatPush) {
+    if let tabs = Self.tabs { openChat(push, in: tabs) } else { pending = .chat(push) }
   }
 
   private static var tabs: MainTabController? {
@@ -164,7 +162,7 @@ import UserNotifications
       if let tabs = Self.tabs {
         open(push, response, in: tabs)
       } else {
-        pending = (push, response)
+        pending = .radar(push, response)
       }
     }
   }
@@ -191,13 +189,34 @@ import UserNotifications
   func flush(_ tabs: MainTabController) {
     guard let pending else { return }
     self.pending = nil
-    open(pending.push, pending.response, in: tabs)
+    switch pending {
+    case .radar(let push, let response): open(push, response, in: tabs)
+    case .chat(let push): openChat(push, in: tabs)
+    }
+  }
+  private func openChat(_ push: ChatPush, in tabs: MainTabController) {
+    guard push.spaceID.isEmpty || push.spaceID == API.shared.spaceID else { return }
+    let target = push.target(mainBotID: tabs.botID)
+    tabs.showPersonalChat { personal in
+      guard let nav = personal.navigationController else { return }
+      if target == personal.target {
+        personal.loadViewIfNeeded()
+        personal.focus(messageID: push.messageID)
+      } else {
+        let chat = ChatController(target: target, title: push.groupID.isEmpty ? nil : "Group")
+        chat.loadViewIfNeeded()
+        nav.pushViewController(chat, animated: false)
+        chat.focus(messageID: push.messageID)
+      }
+    }
   }
   /// The personal conversation at the update's message; the primary action also sends the
   /// offer (or opens the source) as the card's button would.
   private func open(_ push: RadarPush, _ response: RadarPush.Response, in tabs: MainTabController)
   {
+    guard push.spaceID.isEmpty || push.spaceID == API.shared.spaceID else { return }
     tabs.showPersonalChat { chat in
+      chat.loadViewIfNeeded()
       if push.isDraft {
         chat.restoreDraft(push)
         return

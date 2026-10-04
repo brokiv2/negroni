@@ -3,6 +3,16 @@ import XCTest
 @testable import NegroniCore
 
 final class CoreTests: XCTestCase {
+  func testComputerLoginRequestSurvivesLiveEventsAndHistoryRefresh() {
+    let block: JSON = ["kind": "computer", "state": "Needs you", "text": "Sign in on the Mac."]
+    let message: JSON = ["id": "login", "role": "bot", "blocks": .array([block])]
+    let live = ThreadLogic.apply(["type": "message.created", "payload": ["message": message]], to: [:])
+    XCTAssertEqual(ThreadLogic.visibleBlocks(live["messages"].array[0]), [block])
+    XCTAssertEqual(ThreadLogic.visibleBlocks(message), [block])
+    XCTAssertEqual(ThreadLogic.plainText(message), "Sign in on the Mac.")
+    XCTAssertTrue(ThreadLogic.running(["run": ["status": "waiting_takeover"]]))
+    XCTAssertFalse(ThreadLogic.working(["run": ["status": "waiting_takeover"]]))
+  }
   func testChatReusesTheExactAccountWhileSettingsCanAddAnother() {
     let app: JSON = ["connectorId": "catalog", "provider": "notes"]
     let connected = app.merging(["id": "account", "status": "connected"])

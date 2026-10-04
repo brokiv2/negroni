@@ -27,7 +27,7 @@ public struct HostVpnRow: Equatable, Sendable {
 /// Mirrors `packages/core/src/host-vpn.ts` (`switchHostVpn`).
 public enum HostVpn {
   /// How long the client keeps reading status after a switch while the tunnel reconnects.
-  public static let settleTimeout: TimeInterval = 20
+  public static let settleTimeout: TimeInterval = 45
   /// Waits between status reads; the last value repeats until the deadline.
   public static let backoff: [TimeInterval] = [0.8, 1.2, 1.8, 2.5, 3.0]
 
@@ -40,7 +40,8 @@ public enum HostVpn {
 
   /// True when the switch did not end in the wanted state before the deadline.
   public static func failed(_ settled: HostVpnStatus?, enabled: Bool) -> Bool {
-    settled?.state != (enabled ? .connected : .disconnected)
+    guard let settled else { return true }
+    return !Self.settled(settled, enabled: enabled)
   }
 
   /// `nil` hides the row: no status (not the owner, or unreachable) or no WARP on the host.

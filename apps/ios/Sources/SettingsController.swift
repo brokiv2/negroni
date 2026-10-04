@@ -10,24 +10,46 @@ final class SettingsController: ListController {
   private var vpnTarget: Bool?
   private var vpnError: String?
   private static let vpnReadTimeout: TimeInterval = 5
+  private var vpnStatusTask: Task<Void, Never>?
   init(botID: String) {
     self.botID = botID
     super.init(title: "Settings")
   }
   required init?(coder: NSCoder) { fatalError() }
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    vpnStatusTask?.cancel()
+    vpnStatusTask = Task { [weak self] in
+      while !Task.isCancelled {
+        do { try await Task.sleep(for: .seconds(3)) } catch { return }
+        guard let self, !Task.isCancelled else { return }
+        try? await self.load()
+      }
+    }
+  }
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    vpnStatusTask?.cancel()
+    vpnStatusTask = nil
+  }
   override func load() async throws {
-    render()
+    if sections.isEmpty { render() }
     // A running switch owns the status; its reads go through a tunnel that is reconnecting.
     guard vpnTarget == nil else { return }
     do {
-      vpnStatus = HostVpnStatus(
+      let status = HostVpnStatus(
         try await API.shared.rpc("computer/vpnStatus", timeout: Self.vpnReadTimeout))
+      guard !Task.isCancelled, vpnTarget == nil else { return }
+      let changed = vpnStatus != status || (vpnError != nil && HostVpn.settled(status, enabled: nil))
+      vpnStatus = status
+      if HostVpn.settled(status, enabled: nil) { vpnError = nil }
+      if changed { render() }
     } catch let error as APIError where (400..<500).contains(error.status) {
       vpnStatus = nil  // FORBIDDEN for everyone but the deployment owner.
+      render()
     } catch {
       return  // Transient: keep the last known state.
     }
-    render()
   }
   private func render() {
     var result = [

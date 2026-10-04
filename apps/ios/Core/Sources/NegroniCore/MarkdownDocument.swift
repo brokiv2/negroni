@@ -10,6 +10,13 @@ public enum MarkdownDocument {
     var paragraph: [String] = []
     var code: [String] = []
     var fence: String?
+    var quote: [String] = []
+    func flushQuote() {
+      if !quote.isEmpty {
+        result.append(Block(kind: "quote", text: quote.joined(separator: "\n")))
+        quote = []
+      }
+    }
     func flush() {
       if !paragraph.isEmpty {
         result.append(Block(kind: "paragraph", text: paragraph.joined(separator: "\n")))
@@ -28,6 +35,14 @@ public enum MarkdownDocument {
         }
         continue
       }
+      if line.hasPrefix(">") {
+        flush()
+        var text = line
+        while text.hasPrefix(">") { text = String(text.dropFirst()).trimmingCharacters(in: .whitespaces) }
+        quote.append(text)
+        continue
+      }
+      flushQuote()
       if line.hasPrefix("```") || line.hasPrefix("~~~") {
         flush()
         fence = String(line.prefix(3))
@@ -47,11 +62,6 @@ public enum MarkdownDocument {
       }
       if line == "---" || line == "***" || line == "___" {
         flush()
-        continue
-      }
-      if line.hasPrefix("> ") {
-        flush()
-        result.append(Block(kind: "quote", text: String(line.dropFirst(2)), prefix: "│ "))
         continue
       }
       if let range = line.range(of: "^(?:[-*+] |[0-9]+[.)] )", options: .regularExpression) {
@@ -85,6 +95,7 @@ public enum MarkdownDocument {
       paragraph.append(raw)
     }
     flush()
+    flushQuote()
     if fence != nil { result.append(Block(kind: "code", text: code.joined(separator: "\n"))) }
     return result
   }
