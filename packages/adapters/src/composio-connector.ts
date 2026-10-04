@@ -18,6 +18,7 @@ import {
   withToolkitMetadata,
 } from "./composio-catalog-cache.js";
 import { DestinationEmulator } from "./destination-emulator.js";
+import { radarObserverFor } from "./radar/observers/index.js";
 import { isVitestRuntime } from "./test-runtime.js";
 
 type ComposioSession = Awaited<ReturnType<Composio["create"]>>;
@@ -473,8 +474,9 @@ export class ComposioConnector implements ComposioProvider {
     return this.listConnectedSlugs(context.userId);
   }
 
+  /** Radar has a read-only observer for this toolkit. */
   canObserve(externalId: string) {
-    return ["granola_mcp", "gmail"].includes(externalId.toLowerCase());
+    return Boolean(radarObserverFor(externalId));
   }
 
   async discoverTools(context: AdapterContext): Promise<ConnectorTool[]> {

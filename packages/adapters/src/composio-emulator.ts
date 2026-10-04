@@ -9,6 +9,7 @@ import {
   type ComposioProvider,
   filterCatalog,
 } from "./composio-connector.js";
+import { radarObserverFor } from "./radar/observers/index.js";
 import {
   DEFAULT_RAKAZO_EMULATED_RELEASES,
   type EmulatedGithubRelease,
@@ -261,6 +262,35 @@ function seedMailbox(): Mailbox {
   };
 }
 
+const GMAIL_PLACES: Record<string, string> = {
+  inbox: "INBOX",
+  sent: "SENT",
+  spam: "SPAM",
+  trash: "TRASH",
+  drafts: "DRAFT",
+};
+
+/** Gmail operators Radar relies on: after/before, in:, category:, is:unread, and negation. */
+function matchesOperator(message: MailMessage, token: string): boolean | undefined {
+  const negated = token.startsWith("-");
+  const body = negated ? token.slice(1) : token;
+  const [field, value = ""] = body.split(/:(.*)/s);
+  let result: boolean | undefined;
+  if (field === "after" || field === "before") {
+    const at = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value.replaceAll("/", "-"));
+    const sent = Number(message.internalDate);
+    if (Number.isFinite(at) && Number.isFinite(sent))
+      result = field === "after" ? sent > at : sent < at;
+  } else if (field === "in" && GMAIL_PLACES[value]) {
+    result = message.labelIds.includes(GMAIL_PLACES[value]!);
+  } else if (field === "category") {
+    result = message.labelIds.includes(`CATEGORY_${value.toUpperCase()}`);
+  } else if (field === "is" && value === "unread") {
+    result = message.labelIds.includes("UNREAD");
+  }
+  return result === undefined ? undefined : negated ? !result : result;
+}
+
 function matchesQuery(message: MailMessage, query: string): boolean {
   const trimmed = query.trim();
   if (!trimmed) return true;
@@ -278,6 +308,8 @@ function matchesQuery(message: MailMessage, query: string): boolean {
     .toLowerCase()
     .split(/\s+/)
     .every((token) => {
+      const operator = matchesOperator(message, token);
+      if (operator !== undefined) return operator;
       const labeled = token.match(/^(from|to|subject|label):(.*)$/);
       if (!labeled) return haystack.includes(token);
       const [, field, value] = labeled;
@@ -369,6 +401,7 @@ function findAccountIndex(refs: readonly string[], connectionRef: string): numbe
 export class ComposioEmulator implements ComposioProvider {
   private readonly connectedByUser = new Map<string, string[]>();
   private readonly mailboxesByUser = new Map<string, Mailbox>();
+  private readonly radarByUser = new Map<string, Map<string, unknown>>();
   private githubReleases: EmulatedGithubRelease[] = [...DEFAULT_RAKAZO_EMULATED_RELEASES];
   private nextAccountSeq = 0;
   readonly executions: Array<{
@@ -439,12 +472,15 @@ export class ComposioEmulator implements ComposioProvider {
 
   async *execute(call: ConnectorCall, context: AdapterContext): AsyncIterable<ConnectorEvent> {
     const args = call.args ?? {};
-    const result = call.tool.startsWith("GMAIL_")
-      ? this.executeGmail(call.tool, args, context.userId)
-      : (RELEASE_WATCH_GITHUB_TOOL_NAMES as readonly string[]).includes(call.tool) ||
-          call.tool === "GITHUB_EMULATED_ACTION"
-        ? this.executeGithub(call.tool, args)
-        : { ok: true, tool: call.tool, args };
+    const radar = this.radarResponse(call.tool, context.userId);
+    const result = radar
+      ? radar
+      : call.tool.startsWith("GMAIL_")
+        ? this.executeGmail(call.tool, args, context.userId)
+        : (RELEASE_WATCH_GITHUB_TOOL_NAMES as readonly string[]).includes(call.tool) ||
+            call.tool === "GITHUB_EMULATED_ACTION"
+          ? this.executeGithub(call.tool, args)
+          : { ok: true, tool: call.tool, args };
     this.executions.push({ userId: context.userId, tool: call.tool, args });
     yield { type: "result", data: result };
   }
@@ -486,6 +522,60 @@ export class ComposioEmulator implements ComposioProvider {
     if (slug === "GMAIL" && refsForProvider(connected, "GMAIL").length === 0) {
       this.mailboxesByUser.delete(context.userId);
     }
+  }
+
+  /** Radar observes every toolkit it has an observer for. */
+  canObserve(externalId: string) {
+    return Boolean(radarObserverFor(externalId));
+  }
+
+  /** Test helper: replace what one read-only Radar operation returns for a user. */
+  seedRadar(userId: string, tool: string, data: unknown): void {
+    const seeded = this.radarByUser.get(userId) ?? new Map<string, unknown>();
+    seeded.set(tool, data);
+    this.radarByUser.set(userId, seeded);
+  }
+
+  /** Test helper: a new message arrives in the user's mailbox. */
+  deliverMail(
+    userId: string,
+    message: Partial<MailMessage> & { subject: string; sender: string },
+  ): string {
+    const mailbox = this.ensureMailbox(userId);
+    const ids = this.nextIds(mailbox);
+    const full: MailMessage = {
+      messageId: message.messageId ?? ids.messageId,
+      threadId: message.threadId ?? ids.threadId,
+      subject: message.subject,
+      sender: message.sender,
+      to: message.to ?? "me@example.test",
+      snippet: message.snippet ?? (message.messageText ?? "").slice(0, 200),
+      messageText: message.messageText ?? message.snippet ?? "",
+      labelIds: message.labelIds ?? ["INBOX", "UNREAD"],
+      internalDate: message.internalDate ?? String(Date.now()),
+    };
+    mailbox.messages.unshift(full);
+    return full.messageId;
+  }
+
+  private radarResponse(tool: string, userId: string): Record<string, unknown> | undefined {
+    const seeded = this.radarByUser.get(userId)?.get(tool);
+    if (seeded !== undefined) return { successful: true, data: seeded };
+    const defaults: Record<string, unknown> = {
+      GMAIL_GET_PROFILE: { response_data: { emailAddress: "me@example.test" } },
+      GOOGLECALENDAR_EVENTS_LIST: { kind: "calendar#events", items: [] },
+      GRANOLA_MCP_LIST_MEETINGS: { meetings: [] },
+      GRANOLA_MCP_GET_MEETINGS: { meetings: [] },
+      SLACK_SEARCH_MESSAGES: { ok: true, messages: { matches: [], total: 0 } },
+      TODOIST_GET_ALL_TASKS: { tasks: [] },
+      GOOGLEDRIVE_GET_CHANGES_START_PAGE_TOKEN: {
+        kind: "drive#startPageToken",
+        startPageToken: "1",
+      },
+      GOOGLEDRIVE_LIST_CHANGES: { kind: "drive#changeList", changes: [], newStartPageToken: "1" },
+      GOOGLEDRIVE_LIST_COMMENTS: { kind: "drive#commentList", comments: [] },
+    };
+    return tool in defaults ? { successful: true, data: defaults[tool] } : undefined;
   }
 
   /** Test helper: inspect the in-memory mailbox for a user. */
