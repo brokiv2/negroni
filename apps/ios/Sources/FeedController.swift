@@ -12,6 +12,8 @@ final class FeedController: ListController {
   /// latest brief), then the Feed / Saved / Automations control. They belong to For you, not
   /// to the Feed tab, so they stay while the tabs change.
   private var leadingSections = 0
+  /// Set when only the tab changed: what is already above the control is kept, not read again.
+  private var keepRadar = false
   private var showAllOpen = false
   init(botID: String) {
     self.botID = botID
@@ -76,13 +78,16 @@ final class FeedController: ListController {
     // you and the control stay; the old tab's sections go while the new tab loads.
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
+      keepRadar = leadingSections > 0
       sections = Array(sections.prefix(leadingSections))
       reloadData()
     }
   }
   override func load() async throws {
     // Needs you comes first, whichever tab is selected.
-    async let radarBlock = radarContent()
+    let kept = keepRadar ? Array(sections.prefix(leadingSections - 1)) : nil
+    keepRadar = false
+    async let radarBlock = radarSections(keeping: kept)
     var tab: [ListSection]
     var articles: [JSON] = []
     if categories.selectedSegmentIndex == 2 {
@@ -193,6 +198,10 @@ final class FeedController: ListController {
     feedItems = articles
     leadingSections = leading.count
     sections = leading + tab
+  }
+  private func radarSections(keeping kept: [ListSection]?) async -> [ListSection] {
+    if let kept { return kept }
+    return await radarContent()
   }
   /// Feed / Saved / Automations, a row of its own with no card behind it.
   private func tabsSection() -> ListSection {
