@@ -170,6 +170,9 @@ final class MainTabController: UITabBarController {
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     Notifications.shared.flush(self)
+    #if DEBUG
+      PreviewMode.open(in: self)
+    #endif
   }
   /// Brings the personal conversation to the front, closing any sheet first.
   func showPersonalChat(_ then: @escaping (ChatController) -> Void = { _ in }) {

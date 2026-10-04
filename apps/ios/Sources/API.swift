@@ -71,6 +71,17 @@ enum Keychain {
   private init() {
     let path = Bundle.main.url(forResource: "ClientConfiguration", withExtension: "plist")
     configuration = path.flatMap { NSDictionary(contentsOf: $0) as? [String: String] } ?? [:]
+    #if DEBUG
+      // Fixture data for screenshots and simulator review; never reads or writes the Keychain.
+      if PreviewMode.enabled {
+        base = URL(string: "http://preview.invalid")!
+        token = "preview"
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PreviewServer.self]
+        session = URLSession(configuration: config)
+        return
+      }
+    #endif
     let fallback = configuration["APIBaseURL"] ?? "http://localhost:3100"
     let stored = Keychain.read("server") ?? Keychain.legacy("rakazo.api_base") ?? fallback
     base = Endpoint.normalize(stored) ?? Endpoint.normalize(fallback)!
