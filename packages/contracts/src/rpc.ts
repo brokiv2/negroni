@@ -174,6 +174,8 @@ const threadSendInput = threadTarget
       .optional(),
     replyToMessageId: Id.optional(),
     replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
+    /** A Radar update this message is about; the run receives its details as context. */
+    radarUpdateId: Id.optional(),
     clientNonce: z.string().min(1).max(200).optional(),
   })
   .superRefine((input, ctx) => {
