@@ -419,6 +419,8 @@ describe("voice instructions", () => {
       expect(instructions).toContain("no greeting");
     }
     expect(SYNTHESIS_INSTRUCTIONS).toContain("em dashes or en dashes");
+    // The profile shows the owner their own language, not whatever the model picks.
+    expect(SYNTHESIS_INSTRUCTIONS).toContain('in the language you name in "language"');
     // The agenda carries the times, so a brief does not open with the day or the clock.
     expect(BRIEF_INSTRUCTIONS).toContain(
       "never open with the weekday, the date or the current time",
