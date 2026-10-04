@@ -74,3 +74,10 @@ export async function appConnectionCard(
     },
   };
 }
+
+/** Provider-verified account name stored on a connection, independent of its nickname. */
+export function connectionAccountLabel(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const label = (metadata as { accountLabel?: unknown }).accountLabel;
+  return typeof label === "string" ? label : undefined;
+}

@@ -81,6 +81,8 @@ export const VESPER_BLOCK_RENDERERS = {
   pdf: "pdf",
   plan: "plan",
   finance: "finance",
+  update: "card",
+  brief: "card",
 } as const satisfies Record<MessageBlock["kind"], VesperBlockRenderer>;
 
 /**

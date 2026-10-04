@@ -31,6 +31,7 @@ import type {
 import {
   acquireComputerExecutionLease,
   appendOverride,
+  applyRadarFeedback,
   applyTeachingDesktopInput,
   archiveBot,
   assertSafeRemoteUrl,
@@ -38,10 +39,13 @@ import {
   buildModelConnectPlaintext,
   ComputerBusyError,
   cancelComputerRunWork,
+  changeRadarRule,
   checkpointAndRecordComputerWorkspace,
   clearInactiveUserComputerControl,
   computerSupportsUpdate,
   computerUpdateView,
+  configureRadar,
+  connectionAccountLabel,
   controlAssistantWork,
   createVoiceProvider,
   defaultCatalogModelId,
@@ -53,6 +57,7 @@ import {
   expireComputerControl,
   getFeedProfile,
   getFeedResearchStatus,
+  getRadarStatus,
   hasActiveComputerControl,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
@@ -61,6 +66,8 @@ import {
   listAssistantWork,
   listAvailablePiCatalog,
   listPiCatalog,
+  listRadarRules,
+  listRadarUpdates,
   listScratchpadItems,
   McpOAuthBroker,
   mapFeedItem,
@@ -78,10 +85,12 @@ import {
   provisionComputer,
   publishFeed,
   queueComputerUpdate,
+  RadarError,
   rasterizeConnectorLogo,
   readStoredModelAuth,
   releaseComputerExecutionLease,
   replaceComputer,
+  requestRadarCycle,
   resolveAutoReviewChecker,
   resolveBotWorkspacePath,
   sanitizeComposioError,
@@ -92,6 +101,7 @@ import {
   scriptedCatalogEntry,
   selectDefaultCredentialId,
   serializeModelSecret,
+  setRadarSource,
   takeoverLeaseMs,
   toComputerRef,
   touchRunningComputer,
@@ -540,6 +550,16 @@ function mapSpaceLifecycleError(error: unknown): unknown {
     return new ORPCError("BAD_REQUEST", { message: error.message });
   }
   return error;
+}
+
+/** Radar refusals are written for the owner; everything else stays an internal error. */
+async function radarCall<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof RadarError) throw new ORPCError(error.code, { message: error.message });
+    throw error;
+  }
 }
 
 const BOT_INTRO_PROMPT =
@@ -3016,6 +3036,47 @@ export function createRouter(deps: RouterDeps) {
           }),
         );
       }),
+    },
+    radar: {
+      status: authed.radar.status.handler(({ context }) =>
+        getRadarStatus(deps.prisma, deps.connectors, context.actor),
+      ),
+      configure: authed.radar.configure.handler(({ context, input }) =>
+        radarCall(async () => {
+          await configureRadar(deps.prisma, deps.connectors, context.actor, input);
+          return getRadarStatus(deps.prisma, deps.connectors, context.actor);
+        }),
+      ),
+      source: authed.radar.source.handler(({ context, input }) =>
+        radarCall(async () => {
+          await setRadarSource(deps.prisma, deps.connectors, context.actor, input);
+          return getRadarStatus(deps.prisma, deps.connectors, context.actor);
+        }),
+      ),
+      updates: authed.radar.updates.handler(({ context, input }) =>
+        radarCall(() => listRadarUpdates(deps.prisma, context.actor, input)),
+      ),
+      feedback: authed.radar.feedback.handler(({ context, input }) =>
+        radarCall(() => applyRadarFeedback(deps.prisma, context.actor, input)),
+      ),
+      rules: authed.radar.rules.handler(({ context }) =>
+        listRadarRules(deps.prisma, context.actor),
+      ),
+      rule: authed.radar.rule.handler(({ context, input }) =>
+        radarCall(() => changeRadarRule(deps.prisma, context.actor, input)),
+      ),
+      check: authed.radar.check.handler(({ context }) =>
+        radarCall(async () => {
+          await requestRadarCycle(deps.prisma, context.actor, { brief: false });
+          return getRadarStatus(deps.prisma, deps.connectors, context.actor);
+        }),
+      ),
+      brief: authed.radar.brief.handler(({ context }) =>
+        radarCall(async () => {
+          await requestRadarCycle(deps.prisma, context.actor, { brief: true });
+          return getRadarStatus(deps.prisma, deps.connectors, context.actor);
+        }),
+      ),
     },
     personal: {
       thread: authed.personal.thread.handler(async ({ context }) =>
@@ -6014,10 +6075,4 @@ async function messagingConnectionDto(
     status: connection.status as "pending" | "approved" | "declined" | "revoked",
     incoming,
   };
-}
-
-function connectionAccountLabel(metadata: unknown): string | undefined {
-  if (!metadata || typeof metadata !== "object") return undefined;
-  const label = (metadata as { accountLabel?: unknown }).accountLabel;
-  return typeof label === "string" ? label : undefined;
 }

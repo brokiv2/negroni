@@ -353,11 +353,18 @@ export function financeCardBlock(input: {
 
 /* ------------------------------- summaries ------------------------------ */
 
-const CARD_KINDS = new Set(["browser", "mail", "pdf", "plan", "finance"]);
+// Radar `update` and `brief` cards carry a summary too, so history and speech keep them.
+const CARD_KINDS = new Set(["browser", "mail", "pdf", "plan", "finance", "update", "brief"]);
 
 export function isToolCardBlock(
   block: MessageBlock,
-): block is BrowserCardBlock | MailCardBlock | PdfCardBlock | PlanCardBlock | FinanceCardBlock {
+): block is
+  | BrowserCardBlock
+  | MailCardBlock
+  | PdfCardBlock
+  | PlanCardBlock
+  | FinanceCardBlock
+  | Extract<MessageBlock, { kind: "update" | "brief" }> {
   return CARD_KINDS.has(block.kind);
 }
 

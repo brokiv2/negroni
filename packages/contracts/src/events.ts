@@ -2,8 +2,15 @@ import * as z from "zod";
 import { ARTIFACT_NAME_MAX_LENGTH } from "./attachments.js";
 import { botSecretDestinationSchema } from "./bot-secrets.js";
 import { EmailDraftWidget, WeatherWidget } from "./chat-widgets.js";
-import { Id } from "./ids.js";
+import { Id, IsoDate } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
+import {
+  RADAR_EVIDENCE_MAX,
+  RADAR_OFFER_MAX,
+  RadarAction,
+  RadarBriefPeriod,
+  RadarUrgency,
+} from "./radar.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -118,6 +125,8 @@ export const MAX_PLAN_STEPS = 64;
 export const MAX_PDF_FORM_FIELDS = 32;
 export const MAX_FINANCE_CATEGORIES = 32;
 export const MAX_FINANCE_TRANSACTIONS = 200;
+export const MAX_BRIEF_ITEMS = 50;
+export const MAX_BRIEF_AGENDA = 30;
 
 /**
  * Required on every card kind. A client that does not know the kind —
@@ -127,6 +136,8 @@ export const MAX_FINANCE_TRANSACTIONS = 200;
 const ToolCardSummary = z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH);
 const ToolCardText = z.string().max(TOOL_CARD_TEXT_MAX_LENGTH);
 const ToolCardUrl = z.string().max(TOOL_CARD_URL_MAX_LENGTH);
+/** Radar cards open the source app; any other scheme is refused when the block is written. */
+const HttpUrl = ToolCardUrl.regex(/^https?:\/\/\S+$/i, "Use an http(s) link");
 
 /**
  * An image held as an artifact. `width`/`height` let a card reserve its
@@ -438,6 +449,65 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     transactionCount: z.number().int().nonnegative().optional(),
     /** The imported statement, so the full data stays reachable. */
     artifactId: Id.optional(),
+  }),
+  z.object({
+    /** One thing Radar decided the owner should know now, with the reason. */
+    kind: z.literal("update"),
+    summary: ToolCardSummary,
+    /** The Radar update this card is about; feedback and "why now" address it. */
+    updateId: Id,
+    /** Toolkit slug of the source account, for its mark. */
+    source: z.string().min(1).max(64),
+    title: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
+    actor: z
+      .object({
+        name: z.string().max(TOOL_CARD_SUMMARY_MAX_LENGTH).optional(),
+        address: z.string().max(320).optional(),
+      })
+      .optional(),
+    why: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
+    nextStep: z.string().max(TOOL_CARD_SUMMARY_MAX_LENGTH).optional(),
+    /** The one thing the assistant offers to do, as a short question. */
+    offer: z.string().min(1).max(RADAR_OFFER_MAX).optional(),
+    /** Verbatim words from the source that ground `why`. */
+    evidence: z.string().min(1).max(RADAR_EVIDENCE_MAX).optional(),
+    url: HttpUrl.optional(),
+    urgency: RadarUrgency,
+    action: RadarAction,
+    occurredAt: IsoDate,
+  }),
+  z.object({
+    /** A morning, evening or on-demand Radar brief. The narrative is the message's text
+        block; this carries the rows the app makes tappable. */
+    kind: z.literal("brief"),
+    summary: ToolCardSummary,
+    briefId: Id,
+    period: RadarBriefPeriod,
+    title: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
+    items: z
+      .array(
+        z.object({
+          updateId: Id,
+          title: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
+          why: z.string().max(TOOL_CARD_SUMMARY_MAX_LENGTH).optional(),
+          source: z.string().min(1).max(64),
+          url: HttpUrl.optional(),
+          action: RadarAction.optional(),
+        }),
+      )
+      .max(MAX_BRIEF_ITEMS),
+    agenda: z
+      .array(
+        z.object({
+          title: z.string().min(1).max(TOOL_CARD_SUMMARY_MAX_LENGTH),
+          start: IsoDate,
+          end: IsoDate.optional(),
+          allDay: z.boolean().optional(),
+          location: z.string().max(TOOL_CARD_SUMMARY_MAX_LENGTH).optional(),
+        }),
+      )
+      .max(MAX_BRIEF_AGENDA)
+      .optional(),
   }),
   z.object({
     /** Approval card for an agent-created MCP server. The user completes the

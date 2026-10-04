@@ -241,6 +241,18 @@ export function VesperBlock({
       if (block.kind === "card") {
         return <KeyValueCard lines={block.lines} title={block.title} subtitle={block.subtitle} />;
       }
+      // Radar cards: the plain reading until this client gets their own renderer.
+      if (block.kind === "update") {
+        return <KeyValueCard lines={[]} title={block.title} subtitle={block.why} />;
+      }
+      if (block.kind === "brief") {
+        return (
+          <KeyValueCard
+            lines={block.items.map((item) => ({ k: item.title, v: item.why ?? "" }))}
+            title={block.title}
+          />
+        );
+      }
       if (block.kind === "skill_draft") {
         return (
           <ToolCard>

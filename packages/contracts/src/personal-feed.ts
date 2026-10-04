@@ -58,6 +58,19 @@ export function xPostId(url: string | null): string | null {
   }
 }
 
+/** An IANA time zone this runtime can format dates in. */
+export const TimeZoneSchema = z
+  .string()
+  .max(100)
+  .refine((v) => {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: v });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
 export const FeedInterestSchema = z.object({
   topic: z.string().min(1).max(100),
   reason: z.string().max(300),
@@ -72,18 +85,7 @@ export const FeedProfileSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, "Choose each account once")
     .default([]),
   accountAlerts: z.boolean().default(false),
-  accountTimeZone: z
-    .string()
-    .max(100)
-    .refine((v) => {
-      try {
-        new Intl.DateTimeFormat("en", { timeZone: v });
-        return true;
-      } catch {
-        return false;
-      }
-    })
-    .default("UTC"),
+  accountTimeZone: TimeZoneSchema.default("UTC"),
   researchEnabled: z.boolean().default(false),
   researchChecksPerDay: z.number().int().min(1).max(96).default(3),
   learningEnabled: z.boolean().default(false),

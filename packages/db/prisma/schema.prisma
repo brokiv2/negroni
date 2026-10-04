@@ -23,6 +23,7 @@ model AiDataConsent {
 
 model User {
   feedProfiles FeedProfile[]
+  radarProfiles RadarProfile[]
   feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
@@ -166,6 +167,7 @@ model Member {
 model Space {
   assistantWork AssistantWork[]
   feedProfiles FeedProfile[]
+  radarProfiles RadarProfile[]
   feedItems FeedItem[]
   aiDataConsents AiDataConsent[]
   id                          String                       @id
@@ -511,6 +513,8 @@ enum ThreadKind {
 
 model Message {
   assignedWork AssistantWork[]
+  radarSignals RadarSignal[]
+  radarBriefs RadarBrief[]
   id               String    @id @default(cuid())
   threadId         String
   thread           Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
@@ -822,6 +826,8 @@ model AgentSkill {
 
 model Connection {
   observations AccountObservation[]
+  radarSource RadarSource?
+  radarSignals RadarSignal[]
   id          String   @id @default(cuid())
   spaceId     String
   space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
@@ -1481,4 +1487,142 @@ model AccountObservation {
   checkedAt DateTime @default(now())
   @@id([connectionId, documentId])
   @@map("account_observations")
+}
+
+// Radar: background watch over the owner's connected accounts (docs/proactive-layer.md).
+model RadarProfile {
+  spaceId          String
+  userId           String
+  space            Space         @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  settings         Json          @default("{}")
+  // Rules (explicit and learned) and people who matter.
+  learned          Json          @default("{}")
+  summary          String        @default("") @db.Text
+  summaryAt        DateTime?
+  // Bumped by every settings, source or learning change; a cycle decides against one version.
+  version          Int           @default(1)
+  leaseOwner       String?
+  leaseExpiresAt   DateTime?
+  lastCycleAt      DateTime?
+  nextCycleAt      DateTime?
+  briefRequestedAt DateTime?
+  // Local date of the last brief per period.
+  lastBriefs       Json          @default("{}")
+  // Daily budgets (model passes, interrupts), keyed by local date.
+  counters         Json          @default("{}")
+  error            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  sources          RadarSource[]
+  signals          RadarSignal[]
+  briefs           RadarBrief[]
+
+  @@id([spaceId, userId])
+  @@index([nextCycleAt])
+  @@map("radar_profiles")
+}
+
+model RadarSource {
+  connectionId String       @id
+  connection   Connection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  spaceId      String
+  userId       String
+  profile      RadarProfile @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
+  enabled      Boolean      @default(true)
+  cursor       Json         @default("{}")
+  lastCheckAt  DateTime?
+  nextCheckAt  DateTime?
+  failures     Int          @default(0)
+  lastError    String?
+  // Local date and count of items seen that day.
+  seenDate     String?
+  seenCount    Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([spaceId, userId])
+  @@index([enabled, nextCheckAt])
+  @@map("radar_sources")
+}
+
+// One observed change. Raw content stays local, bounded and expiring.
+model RadarSignal {
+  id           String       @id @default(cuid())
+  spaceId      String
+  userId       String
+  profile      RadarProfile @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
+  connectionId String
+  connection   Connection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  source       String
+  externalId   String
+  threadKey    String       @default("")
+  kind         String
+  occurredAt   DateTime
+  actor        Json?
+  direct       Boolean      @default(false)
+  title        String
+  excerpt      String       @default("") @db.Text
+  url          String?
+  meta         Json         @default("{}")
+  contentHash  String
+  // Pipeline progress: pending -> triaged -> decided, or failed.
+  status       String       @default("pending")
+  attempts     Int          @default(0)
+  importance   Int?
+  urgency      String?
+  action       String?
+  // Triage title in the owner's language; `title` stays the source's own.
+  headline     String?
+  why          String?
+  nextStep     String?
+  // One proposed action as a short question, and the quote that grounds `why`.
+  offer        String?
+  evidence     String?
+  storyKey     String?
+  confidence   Float?
+  disposition  String?
+  reason       String?
+  trace        Json?
+  deliverAt    DateTime?
+  deliveredAt  DateTime?
+  deliveryKey  String?      @unique
+  messageId    String?
+  message      Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  // Owner-facing lifecycle: open, done, snoozed, dismissed, expired.
+  state        String       @default("open")
+  snoozedUntil DateTime?
+  feedback     String?
+  feedbackAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([connectionId, externalId, contentHash])
+  @@index([spaceId, userId, occurredAt])
+  @@index([spaceId, userId, state, disposition])
+  @@index([spaceId, userId, status])
+  @@index([spaceId, userId, storyKey])
+  @@index([spaceId, userId, feedback, feedbackAt])
+  @@index([connectionId, threadKey])
+  @@index([deliverAt])
+  @@index([state, snoozedUntil])
+  @@index([createdAt])
+  @@map("radar_signals")
+}
+
+model RadarBrief {
+  id        String       @id @default(cuid())
+  spaceId   String
+  userId    String
+  profile   RadarProfile @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
+  period    String
+  localDate String
+  messageId String?
+  message   Message?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  signalIds Json         @default("[]")
+  createdAt DateTime     @default(now())
+
+  @@unique([spaceId, userId, period, localDate])
+  @@index([spaceId, userId, createdAt])
+  @@map("radar_briefs")
 }

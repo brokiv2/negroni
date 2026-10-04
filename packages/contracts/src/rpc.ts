@@ -99,6 +99,17 @@ import {
   FeedProfileSchema,
   FeedResearchStatus,
 } from "./personal-feed.js";
+import {
+  RadarFeedbackInput,
+  RadarRuleChange,
+  RadarRuleSchema,
+  RadarSettingsPatch,
+  RadarSourceInput,
+  RadarStatusSchema,
+  RadarUpdateSchema,
+  RadarUpdatesInput,
+  RadarUpdatesPage,
+} from "./radar.js";
 import { MessageReactionSchema } from "./reactions.js";
 import {
   EFFECTS_LIST_MAX_LIMIT,
@@ -566,6 +577,20 @@ export const appContract = {
         }),
       )
       .output(FeedItemSchema),
+  },
+  /** Background watch over the owner's connected accounts. */
+  radar: {
+    status: oc.output(RadarStatusSchema),
+    configure: oc.input(RadarSettingsPatch).output(RadarStatusSchema),
+    source: oc.input(RadarSourceInput).output(RadarStatusSchema),
+    updates: oc.input(RadarUpdatesInput).output(RadarUpdatesPage),
+    feedback: oc.input(RadarFeedbackInput).output(RadarUpdateSchema),
+    rules: oc.output(z.array(RadarRuleSchema)),
+    rule: oc.input(RadarRuleChange).output(z.array(RadarRuleSchema)),
+    /** Run the next cycle as soon as possible. */
+    check: oc.output(RadarStatusSchema),
+    /** Ask for a brief now; it does not use up the morning or evening brief. */
+    brief: oc.output(RadarStatusSchema),
   },
   personal: {
     /** The main assistant's Personal thread, created on first use. */
