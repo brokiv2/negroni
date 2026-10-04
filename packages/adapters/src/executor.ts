@@ -293,6 +293,7 @@ import {
   renderPlotSpecToSvg,
   searchChartCatalog,
 } from "./plot-tool.js";
+import { RadarError, radarRuleTool, radarStatusTool, radarUpdateContext } from "./radar/index.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import {
@@ -1888,6 +1889,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
+        // Radar belongs to the owner's own conversation; only a person can change its rules.
+        const radarToolsAllowed =
+          !messagingChannelRun &&
+          (thread.kind === "personal" || run.interactionMode === "personal");
         const builtins = [
           ...selectBuiltinToolsForRun({
             graphicalToolsAllowed,
@@ -1897,7 +1902,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             semanticMemoryEnabled,
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
-          }),
+          }).filter(
+            (tool) =>
+              !tool.name.startsWith("radar_") ||
+              (radarToolsAllowed &&
+                (tool.name !== "radar_rule" || ["user", "follow_up"].includes(run.trigger))),
+          ),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity ? agentConnectionTools : []),
         ];
@@ -3060,6 +3070,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 typeof args.path === "string" ? args.path : undefined,
               ),
             );
+          }
+          if (name === "radar_status") {
+            return finish(
+              await radarStatusTool(
+                deps.prisma,
+                deps.connectors,
+                { spaceId: run.spaceId, userId: run.userId },
+                args,
+              ),
+            );
+          }
+          if (name === "radar_rule") {
+            try {
+              return finish(
+                await radarRuleTool(
+                  deps.prisma,
+                  { spaceId: run.spaceId, userId: run.userId },
+                  args,
+                ),
+              );
+            } catch (error) {
+              return finish({
+                error:
+                  error instanceof RadarError
+                    ? error.message
+                    : "That rule could not be saved. Name a sender, domain, topic or source.",
+              });
+            }
           }
           if (name === "learn_feed_interest") {
             if (
@@ -4225,8 +4263,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
+        const radarSignalId = run.sourceMessageId
+          ? (
+              await deps.prisma.message.findFirst({
+                where: { id: run.sourceMessageId, threadId: thread.id },
+                select: { radarSignalId: true },
+              })
+            )?.radarSignalId
+          : null;
+        const radarContext = radarSignalId
+          ? await radarUpdateContext(
+              deps.prisma,
+              { spaceId: run.spaceId, userId: run.userId },
+              radarSignalId,
+            )
+          : undefined;
         const prompt = [
           replyContext,
+          radarContext ? redactSecrets(radarContext, runSecrets) : undefined,
           basePrompt,
           takeoverResume?.promptNote,
           approvalContinuation,

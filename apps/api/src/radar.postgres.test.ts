@@ -77,14 +77,14 @@ suite("radar RPC (PostgreSQL)", () => {
       email: `${id}@example.test`,
       isDeploymentOwner: false,
     };
-    const call = async (path: string, input?: unknown) => {
+    const call = async (path: string, input?: unknown, client?: "native" | "web") => {
       const { response } = await handler.handle(
-        new Request(`http://fixture.test/rpc/radar/${path}`, {
+        new Request(`http://fixture.test/rpc/${path.includes("/") ? path : `radar/${path}`}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ json: input }),
         }),
-        { prefix: "/rpc", context: { actor } },
+        { prefix: "/rpc", context: { actor, ...(client ? { client } : {}) } },
       );
       const body = (await response!.json()) as { json?: unknown };
       return { status: response!.status, body: body.json as Record<string, unknown> & any };
@@ -195,5 +195,113 @@ suite("radar RPC (PostgreSQL)", () => {
       { prefix: "/rpc", context: { actor: null } },
     );
     expect(response?.status).toBe(401);
+  });
+
+  it("reads one update, forgets a person, and notes a web client watching the personal thread", async () => {
+    const a = await owner();
+    const b = await owner();
+    const mine = await a.signal("m1");
+    let response = await a.call("update", { id: mine.id });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ id: mine.id, title: "Re: budget" });
+    expect((await b.call("update", { id: mine.id })).status).toBe(404);
+
+    await prisma.radarProfile.update({
+      where: { spaceId_userId: { spaceId: a.id, userId: a.id } },
+      data: {
+        learned: {
+          people: [
+            {
+              name: "Colleague",
+              addresses: ["colleague@example.test"],
+              relation: "",
+              weight: 2,
+              origin: "learned",
+            },
+            {
+              name: "Manager",
+              addresses: ["boss@example.test"],
+              relation: "manager",
+              weight: 3,
+              origin: "explicit",
+            },
+          ],
+        },
+      },
+    });
+    response = await a.call("person", { address: "Colleague@Example.test" });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject([{ name: "Manager" }]);
+    expect((await a.call("person", {})).status).toBe(400);
+
+    const bot = await prisma.bot.create({
+      data: { spaceId: a.id, userId: a.id, name: "Assistant", color: "test" },
+    });
+    await prisma.thread.create({
+      data: { spaceId: a.id, userId: a.id, botId: bot.id, kind: "personal" },
+    });
+    const read = (client: "native" | "web") =>
+      a.call("threads/head", { botId: bot.id, threadKind: "personal" }, client);
+    expect((await read("native")).status).toBe(200);
+    const presence = async () =>
+      (
+        await prisma.radarProfile.findUniqueOrThrow({
+          where: { spaceId_userId: { spaceId: a.id, userId: a.id } },
+        })
+      ).presenceAt;
+    expect(await presence()).toBeNull();
+    expect((await read("web")).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await presence()).toBeInstanceOf(Date);
+  });
+
+  it("sends a message about an update into the personal conversation with the update attached", async () => {
+    const a = await owner();
+    const b = await owner();
+    const bot = await prisma.bot.create({
+      data: { spaceId: a.id, userId: a.id, name: "Assistant", color: "test" },
+    });
+    const thread = await prisma.thread.create({
+      data: { spaceId: a.id, userId: a.id, botId: bot.id, kind: "personal" },
+    });
+    await prisma.thread.create({
+      data: { spaceId: a.id, userId: a.id, botId: bot.id, kind: "team" },
+    });
+    const card = await prisma.message.create({
+      data: {
+        threadId: thread.id,
+        role: "bot",
+        seq: 0,
+        blocks: [{ kind: "text", text: "Budget figures due today" }],
+      },
+    });
+    await prisma.thread.update({ where: { id: thread.id }, data: { nextMessageSeq: 1 } });
+    const update = await a.signal("m1", {
+      messageId: card.id,
+      headline: "Budget figures due today",
+    });
+    const send = (input: Record<string, unknown>) =>
+      a.call("threads/send", {
+        botId: bot.id,
+        threadKind: "personal",
+        text: "Draft the reply",
+        ...input,
+      });
+    expect((await send({ radarUpdateId: (await b.signal("t1")).id })).status).toBe(404);
+    expect(
+      (await a.call("threads/send", { botId: bot.id, text: "Draft", radarUpdateId: update.id }))
+        .status,
+    ).toBe(400);
+    const sent = await send({ radarUpdateId: update.id });
+    expect(sent.status).toBe(200);
+    const message = await prisma.message.findFirstOrThrow({
+      where: { threadId: thread.id, role: "user" },
+      orderBy: { seq: "desc" },
+    });
+    expect(message).toMatchObject({
+      radarSignalId: update.id,
+      replyToMessageId: card.id,
+      replyQuote: "Budget figures due today",
+    });
   });
 });

@@ -55,9 +55,11 @@ import {
   displayBotWorkspacePath,
   enqueueTakeoverContinuation,
   expireComputerControl,
+  forgetRadarPerson,
   getFeedProfile,
   getFeedResearchStatus,
   getRadarStatus,
+  getRadarUpdate,
   hasActiveComputerControl,
   isAutoReviewCheckerConfigured,
   isComputerScreenUnavailable,
@@ -88,6 +90,7 @@ import {
   RadarError,
   rasterizeConnectorLogo,
   readStoredModelAuth,
+  recordRadarPresence,
   releaseComputerExecutionLease,
   replaceComputer,
   requestRadarCycle,
@@ -612,7 +615,17 @@ export function createRouter(deps: RouterDeps) {
     actor: Actor | null;
     signal?: AbortSignal;
     requestOrigin?: string;
+    /** "web" for browser and desktop clients, "native" for the phone apps. */
+    client?: "native" | "web";
   }>();
+  /** A desktop or web client reading the personal thread holds back Radar pushes briefly. */
+  const notePresence = (
+    context: { actor: Actor; client?: "native" | "web" },
+    target: { kind: string; threadKind?: string },
+  ) => {
+    if (context.client === "web" && target.kind === "bot" && target.threadKind === "personal")
+      void recordRadarPresence(deps.prisma, context.actor);
+  };
   const repos = createRepos(deps.prisma);
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
@@ -1786,14 +1799,17 @@ export function createRouter(deps: RouterDeps) {
       }),
       head: authed.threads.head.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        notePresence(context, target);
         return threadHead(deps.prisma, target);
       }),
       get: authed.threads.get.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        notePresence(context, target);
         return threadSnapshot(deps, target);
       }),
       messages: authed.threads.messages.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        notePresence(context, target);
         return loadMessagePage(
           deps.prisma,
           target.threadId,
@@ -1807,11 +1823,17 @@ export function createRouter(deps: RouterDeps) {
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const peerRunCache = new Map<string, Promise<boolean>>();
+        notePresence(context, target);
+        let noted = Date.now();
         for await (const event of deps.events.follow(
           target.threadId,
           input.cursor,
           context.signal,
         )) {
+          if (Date.now() - noted > 30_000) {
+            noted = Date.now();
+            notePresence(context, target);
+          }
           if (await isPeerRun(deps.prisma, event.runId, peerRunCache)) {
             if (!shouldForwardPeerThreadEvent(event)) continue;
           }
@@ -3053,6 +3075,9 @@ export function createRouter(deps: RouterDeps) {
       updates: authed.radar.updates.handler(({ context, input }) =>
         radarCall(() => listRadarUpdates(deps.prisma, context.actor, input)),
       ),
+      update: authed.radar.update.handler(({ context, input }) =>
+        radarCall(() => getRadarUpdate(deps.prisma, context.actor, input)),
+      ),
       feedback: authed.radar.feedback.handler(({ context, input }) =>
         radarCall(() => applyRadarFeedback(deps.prisma, context.actor, input)),
       ),
@@ -3061,6 +3086,9 @@ export function createRouter(deps: RouterDeps) {
       ),
       rule: authed.radar.rule.handler(({ context, input }) =>
         radarCall(() => changeRadarRule(deps.prisma, context.actor, input)),
+      ),
+      person: authed.radar.person.handler(({ context, input }) =>
+        radarCall(() => forgetRadarPerson(deps.prisma, context.actor, input)),
       ),
       check: authed.radar.check.handler(({ context }) =>
         radarCall(async () => {

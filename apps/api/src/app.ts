@@ -560,9 +560,22 @@ export async function createApp(
     if (actor) {
       enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
     }
+    // The phone apps announce themselves; browsers and the desktop shell send a web origin.
+    const origin = c.req.header("origin") ?? "";
+    const client =
+      nativeBuild || /^(?:rakazo|exp):\/\//i.test(origin)
+        ? ("native" as const)
+        : /^https?:\/\//i.test(origin)
+          ? ("web" as const)
+          : undefined;
     const { matched, response } = await rpc.handle(c.req.raw, {
       prefix: "/rpc",
-      context: { actor, signal: c.req.raw.signal, requestOrigin: requestOrigin(c.req.raw) },
+      context: {
+        actor,
+        signal: c.req.raw.signal,
+        requestOrigin: requestOrigin(c.req.raw),
+        ...(client ? { client } : {}),
+      },
     });
     if (matched) return c.newResponse(response.body, response);
     await next();

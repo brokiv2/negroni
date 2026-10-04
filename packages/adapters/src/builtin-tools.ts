@@ -532,6 +532,35 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "radar_status",
+    description:
+      "What Radar, the background watch over the user's connected accounts, checked, told the user and kept quiet, from its stored decisions. Pass query (a sender, subject or words) to explain why a specific update was or was not mentioned.",
+    readOnly: true,
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+    },
+  },
+  {
+    name: "radar_rule",
+    description:
+      'Change what Radar tells the user about, only when the user asks ("stop interrupting me about invoices from X", "always tell me when Y writes"). kind: never (stay silent), digest (briefs only) or always (may interrupt). Match by sender address, domain, topic words or source app (gmail, googlecalendar, slack, todoist, googledrive, granola_mcp). To delete, use action remove with ruleId from radar_status or the same match.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "remove"] },
+        kind: { type: "string", enum: ["always", "digest", "never"] },
+        sender: { type: "string" },
+        domain: { type: "string" },
+        topic: { type: "string" },
+        source: { type: "string" },
+        note: { type: "string", description: "The user's own words, shown with the rule." },
+        ruleId: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "learn_feed_interest",
     description:
       "Quietly record a high-confidence non-sensitive public interest evidenced by the current user message, when feed learning is enabled. Never from assistant text, tools, quoted sources or one-off troubleshooting. Two separate messages are needed before a topic becomes active. Does not publish or schedule anything.",

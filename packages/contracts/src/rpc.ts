@@ -101,6 +101,8 @@ import {
 } from "./personal-feed.js";
 import {
   RadarFeedbackInput,
+  RadarPersonRemove,
+  RadarPersonSchema,
   RadarRuleChange,
   RadarRuleSchema,
   RadarSettingsPatch,
@@ -586,9 +588,13 @@ export const appContract = {
     configure: oc.input(RadarSettingsPatch).output(RadarStatusSchema),
     source: oc.input(RadarSourceInput).output(RadarStatusSchema),
     updates: oc.input(RadarUpdatesInput).output(RadarUpdatesPage),
+    /** One update with its trace, read only. */
+    update: oc.input(z.object({ id: Id })).output(RadarUpdateSchema),
     feedback: oc.input(RadarFeedbackInput).output(RadarUpdateSchema),
     rules: oc.output(z.array(RadarRuleSchema)),
     rule: oc.input(RadarRuleChange).output(z.array(RadarRuleSchema)),
+    /** Forget a learned or explicit person. */
+    person: oc.input(RadarPersonRemove).output(z.array(RadarPersonSchema)),
     /** Run the next cycle as soon as possible. */
     check: oc.output(RadarStatusSchema),
     /** Ask for a brief now; it does not use up the morning or evening brief. */

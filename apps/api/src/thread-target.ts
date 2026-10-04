@@ -639,6 +639,7 @@ export async function sendThreadMessage(
     mentions?: MentionTargetInput[];
     replyToMessageId?: string;
     replyQuote?: string;
+    radarUpdateId?: string;
     clientNonce?: string;
   },
 ) {
@@ -658,25 +659,45 @@ export async function sendThreadMessage(
     deps.prisma.$transaction(async (tx) => {
       let replyToMessageId: string | undefined;
       let replyQuote: string | undefined;
-      if (input.replyToMessageId) {
+      // An update from Radar: owned by this person, answered in their personal conversation,
+      // replying to the message that carried it unless the client chose another target.
+      const radar = input.radarUpdateId
+        ? await tx.radarSignal.findFirst({
+            where: { id: input.radarUpdateId, spaceId: actor.spaceId, userId: actor.userId },
+            select: { id: true, messageId: true, title: true, headline: true },
+          })
+        : null;
+      if (input.radarUpdateId) {
+        if (!radar)
+          throw new ORPCError("NOT_FOUND", { message: "This update is no longer available." });
+        if (target.kind !== "bot" || target.threadKind !== "personal")
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Radar updates belong to the personal conversation.",
+          });
+      }
+      const replyTarget = input.replyToMessageId ?? radar?.messageId ?? undefined;
+      const quoteHint =
+        requestedReplyQuote ??
+        (radar && !input.replyToMessageId ? radar.headline || radar.title : undefined);
+      if (replyTarget) {
         const reply = await tx.message.findFirst({
-          where: { id: input.replyToMessageId, threadId: target.threadId },
+          where: { id: replyTarget, threadId: target.threadId },
           select: { id: true, blocks: true, role: true },
         });
         // A deleted or paged-out parent must not lose the send: drop to a
         // plain reply, same as quote verification failing below.
         if (reply) {
-          replyToMessageId = input.replyToMessageId;
+          replyToMessageId = replyTarget;
           // Persist only text derived from the authoritative parent. A
           // mismatch or a derivation failure still sends a plain reply so
           // quote verification cannot lose a message.
-          if (requestedReplyQuote) {
+          if (quoteHint) {
             const parsedBlocks = MessageBlockSchema.array().safeParse(reply.blocks);
             if (parsedBlocks.success) {
               try {
                 replyQuote = deriveMessageQuote(
                   parsedBlocks.data,
-                  requestedReplyQuote,
+                  quoteHint,
                   reply.role === "user" ? "plain-text" : "markdown",
                 );
               } catch (error) {
@@ -710,6 +731,8 @@ export async function sendThreadMessage(
           replyQuote,
           clientNonce: input.clientNonce,
         });
+        if (radar)
+          await tx.message.update({ where: { id: message.id }, data: { radarSignalId: radar.id } });
         const activeRuns = await tx.run.findMany({
           where: {
             threadId: target.threadId,
