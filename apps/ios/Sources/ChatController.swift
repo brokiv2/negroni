@@ -45,6 +45,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private var previousViewportHeight: CGFloat = 0
   private var connectedApps: [JSON] = []
   private var active = false
+  /// The Radar update the next message from the composer is about.
+  private var replyRadar: (id: String, title: String)?
+  /// A message to bring into view once it is loaded (a notification's message).
+  private var pendingFocus: String?
   var notificationThreadID: String { snapshot["threadId"].string }
   init(target: JSON, title: String? = nil) {
     self.target = target
@@ -88,6 +92,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     composer.onVoiceSettings = { [weak self] in
       self?.navigationController?.pushViewController(VoiceSettingsController(), animated: true)
     }
+    composer.onClearContext = { [weak self] in self?.setReply(nil) }
     activityCell.backgroundColor = .clear
     activityCell.selectionStyle = .none
     activityCell.contentView.addSubview(activityFooter)
@@ -113,6 +118,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     NotificationCenter.default.addObserver(
       self, selector: #selector(foreground), name: UIApplication.willEnterForegroundNotification,
       object: nil)
+    for name in [RadarStore.outcomesChanged, RadarStore.openChanged] {
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(radarChanged), name: name, object: nil)
+    }
   }
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
@@ -199,6 +208,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   }
   private func connect() {
     guard stream == nil else { return }
+    RadarStore.shared.invalidateOpen()
     stream = Task { [weak self] in
       guard let self else { return }
       do {
@@ -267,6 +277,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     try Task.checkCancellation()
     guard next["cursor"].int >= cursor else { return }
     render(next)
+    // A message outside the loaded window is not looked for again.
+    if let id = pendingFocus, !messages.contains(where: { $0["id"].string == id }) {
+      pendingFocus = nil
+    }
     if activityTask == nil {
       activityTask = Task { [weak self] in
         guard let self else { return }
@@ -290,12 +304,23 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let wasAdjusting = adjustingScroll
     adjustingScroll = true
     defer { adjustingScroll = wasAdjusting }
+    defer { applyFocus() }
     let first = messages.isEmpty
     snapshot = next
     let latest = next["messages"].array.filter { !ThreadLogic.visibleBlocks($0).isEmpty }
     let latestIDs = Set(latest.map { $0["id"].string })
     outgoing = ThreadLogic.unconfirmed(outgoing, in: latest)
     let rows = earlierMessages.filter { !latestIDs.contains($0["id"].string) } + latest + outgoing
+    let radarCards = rows.flatMap { message in
+      ThreadLogic.visibleBlocks(message).flatMap { block -> [String] in
+        switch block["kind"].string {
+        case "update": return [block["updateId"].string]
+        case "brief": return block["items"].array.map { $0["updateId"].string }
+        default: return []
+        }
+      }.filter { !$0.isEmpty }.map { (message: message["id"].string, update: $0) }
+    }
+    if !radarCards.isEmpty { RadarStore.shared.track(radarCards) }
     if earlierMessages.isEmpty { olderCursor = next["olderCursor"] }
     composer.running = ThreadLogic.running(next) || !outgoing.isEmpty || composer.sending
     let working = ThreadLogic.working(next) || !outgoing.isEmpty || composer.sending
@@ -574,6 +599,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let nonce = UUID().uuidString
     let messageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let sentAttachments = attachments
+    let radar = replyRadar
     let blocks: [JSON] =
       (messageText.isEmpty ? [] : [["kind": "text", "text": .string(messageText)]])
       + sentAttachments.map { artifact in
@@ -588,6 +614,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     ])
     composer.sending = true
     composer.setDraft("")
+    setReply(nil)
     attachments = []
     composer.attachmentCount = 0
     composer.attachmentNames = ""
@@ -600,7 +627,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           target.merging([
             "text": .string(text), "artifactIds": .array(sentAttachments.map { $0["id"] }),
             "clientNonce": .string(nonce),
-          ]).merging(threadModel.map { ["model": $0] } ?? [:]))
+          ]).merging(threadModel.map { ["model": $0] } ?? [:])
+            .merging(radar.map { ["radarUpdateId": .string($0.id)] } ?? [:]))
         if let index = outgoing.firstIndex(where: { $0["id"].string == nonce }),
           !receipt["seq"].isNull
         {
@@ -625,11 +653,87 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           composer.setDraft(text + "\n" + composer.draft)
         }
         attachments.insert(contentsOf: sentAttachments, at: 0)
+        if replyRadar == nil, let radar { setReply(radar) }
         composer.attachmentCount = attachments.count
         composer.attachmentNames = attachments.map { $0["name"].string }.joined(separator: ", ")
         render(snapshot)
         showError(error)
       }
+    }
+  }
+
+  /// Accepting a Radar offer: the offer goes to this conversation with the update attached.
+  func sendRadar(_ text: String, updateID: String) {
+    followsLatest = true
+    let nonce = UUID().uuidString
+    outgoing.append([
+      "id": .string(nonce), "role": "user", "blocks": [["kind": "text", "text": .string(text)]],
+      "afterSeq": .number(Double(ThreadLogic.lastUserSequence(snapshot["messages"].array))),
+    ])
+    let previous = RadarStore.shared.outcomes[updateID]
+    RadarStore.shared.record(updateID, .sent)
+    render(snapshot)
+    scrollToEnd(animated: true)
+    Task {
+      do {
+        let receipt = try await API.shared.rpc(
+          "threads/send",
+          target.merging([
+            "text": .string(text), "radarUpdateId": .string(updateID),
+            "clientNonce": .string(nonce),
+          ]).merging(threadModel.map { ["model": $0] } ?? [:]))
+        if let index = outgoing.firstIndex(where: { $0["id"].string == nonce }),
+          !receipt["seq"].isNull
+        {
+          outgoing[index]["receiptSeq"] = receipt["seq"]
+        }
+        render(snapshot)
+        do { try await refresh() } catch { showConnectionError(error) }
+      } catch {
+        outgoing.removeAll { $0["id"].string == nonce }
+        RadarStore.shared.record(updateID, previous)
+        render(snapshot)
+        showError(error)
+      }
+    }
+  }
+  /// "Reply in chat": the next message is about this update.
+  func reply(to item: RadarItem) {
+    setReply((item.id, item.title))
+    composer.textView.becomeFirstResponder()
+  }
+  /// A "Tell Negroni…" reply that could not be sent from the notification.
+  func restoreDraft(_ push: RadarPush) {
+    composer.setDraft(push.draft)
+    if !push.updateID.isEmpty, !push.title.isEmpty { setReply((push.updateID, push.title)) }
+  }
+  private func setReply(_ reply: (id: String, title: String)?) {
+    replyRadar = reply
+    composer.replyContext = reply?.title
+  }
+  func focus(messageID: String) {
+    guard !messageID.isEmpty else { return }
+    pendingFocus = messageID
+    applyFocus()
+  }
+  private func applyFocus() {
+    guard let id = pendingFocus, let row = messages.firstIndex(where: { $0["id"].string == id })
+    else { return }
+    pendingFocus = nil
+    followsLatest = false
+    table.layoutIfNeeded()
+    table.scrollToRow(at: IndexPath(row: row, section: 0), at: .top, animated: false)
+  }
+  @objc private func radarChanged() {
+    guard isViewLoaded else { return }
+    let rows = messages.indices.filter { index in
+      ThreadLogic.visibleBlocks(messages[index]).contains {
+        ["update", "brief"].contains($0["kind"].string)
+      }
+    }
+    guard !rows.isEmpty else { return }
+    UIView.performWithoutAnimation {
+      table.reloadRows(at: rows.map { IndexPath(row: $0, section: 0) }, with: .none)
     }
   }
 
@@ -877,7 +981,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let cell =
       tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
     cell.configure(
-      message, target: target, connections: connectedApps,
+      message, target: target, connections: connectedApps, host: self,
+      relayout: { [weak self] in self?.table.performBatchUpdates(nil) },
       canAnswer: (snapshot["activeRuns"].array + [snapshot["run"]]).contains {
         $0["id"] == message["runId"] && $0["status"].string == "waiting_input"
       } && !answering.contains(message["id"].string),
@@ -931,7 +1036,8 @@ final class MessageCell: UITableViewCell {
     imageTasks = []
   }
   func configure(
-    _ message: JSON, target: JSON, connections: [JSON], canAnswer: Bool,
+    _ message: JSON, target: JSON, connections: [JSON], host: UIViewController?,
+    relayout: @escaping () -> Void, canAnswer: Bool,
     open: @escaping (JSON) -> Void,
     answer: @escaping (JSON, String?) -> Void,
     connect: @escaping (JSON) -> Void
@@ -952,6 +1058,15 @@ final class MessageCell: UITableViewCell {
         let card = EmailDraftCardView(block) { answer(block, nil) }
         card.isUserInteractionEnabled = canAnswer
         stack.addArrangedSubview(card)
+        continue
+      }
+      // A Radar block that does not parse falls back to its summary below.
+      if block["kind"].string == "update", let item = RadarItem(block) {
+        stack.addArrangedSubview(RadarCardView(item, host: host, relayout: relayout))
+        continue
+      }
+      if block["kind"].string == "brief", let brief = RadarBrief(block) {
+        stack.addArrangedSubview(RadarBriefView(brief, host: host, relayout: relayout))
         continue
       }
       switch block["kind"].string {

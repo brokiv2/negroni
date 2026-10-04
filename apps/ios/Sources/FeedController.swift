@@ -8,6 +8,9 @@ final class FeedController: ListController {
   private let categories = UISegmentedControl(items: ["Feed", "Saved", "Automations"])
   private var expanded = Set<String>(), hidden = false
   private var feedItems: [JSON] = []
+  /// Radar sections above the articles: the level card, or Needs you and the latest brief.
+  private var radarSections = 0
+  private var showAllOpen = false
   init(botID: String) {
     self.botID = botID
     super.init(title: "For you")
@@ -27,8 +30,22 @@ final class FeedController: ListController {
     ])
     tableView.tableHeaderView = header
     updateToolbar()
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(radarChanged), name: RadarStore.outcomesChanged, object: nil)
+  }
+  @objc private func radarChanged() {
+    if viewIfLoaded?.window != nil, categories.selectedSegmentIndex == 0 { reloadData() }
   }
   private func updateToolbar() {
+    defer {
+      let radar = UIBarButtonItem(
+        image: UIImage(systemName: "dot.radiowaves.left.and.right"),
+        primaryAction: UIAction { [weak self] _ in self?.push(RadarController()) })
+      radar.accessibilityLabel = "Radar"
+      navigationItem.rightBarButtonItems = [navigationItem.rightBarButtonItem, radar].compactMap {
+        $0
+      }
+    }
     let action: UIAction
     if categories.selectedSegmentIndex == 2 {
       action = UIAction(title: "New automation", image: UIImage(systemName: "plus")) {
@@ -82,6 +99,7 @@ final class FeedController: ListController {
       for id in ids {
         routines += try await API.shared.rpc("routines/list", ["botId": .string(id)]).array
       }
+      radarSections = 0
       sections = [
         ListSection(
           rows: routines.map { routine in
@@ -133,11 +151,14 @@ final class FeedController: ListController {
             : "Touch and hold an automation to pause, edit or delete it.")
       ]
     } else {
-      let items = try await API.shared.rpc(
+      async let list = API.shared.rpc(
         "feed/list",
         ["saved": .bool(categories.selectedSegmentIndex == 1), "hidden": .bool(hidden)])
+      let radar = categories.selectedSegmentIndex == 0 && !hidden ? await radarContent() : []
+      let items = try await list
       feedItems = items.array
-      sections = items.array.map { item in
+      radarSections = radar.count
+      sections = radar + items.array.map { item in
         ListSection(rows: [
           ListRow(
             title: item["title"].string,
@@ -164,21 +185,21 @@ final class FeedController: ListController {
             }, deleteTitle: item["hidden"].bool ? "Restore" : "Hide")
         ])
       }
-      if sections.isEmpty {
-        sections = [
-          ListSection(rows: [], footer: "Articles and posts selected for you will appear here.")
-        ]
+      if feedItems.isEmpty {
+        sections.append(
+          ListSection(rows: [], footer: "Articles and posts selected for you will appear here."))
       }
     }
   }
   override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath)
     -> UITableViewCell
   {
-    guard categories.selectedSegmentIndex != 2, feedItems.indices.contains(indexPath.section) else {
+    let index = indexPath.section - radarSections
+    guard categories.selectedSegmentIndex != 2, feedItems.indices.contains(index) else {
       return super.tableView(tableView, cellForRowAt: indexPath)
     }
     let cell = FeedCardCell(style: .default, reuseIdentifier: nil)
-    let item = feedItems[indexPath.section]
+    let item = feedItems[index]
     cell.configure(item, discuss: { [weak self] in
       self?.push(ChatController(target: ["feedItemId": item["id"]], title: item["title"].string))
     }, save: { [weak self] in
@@ -197,6 +218,107 @@ final class FeedController: ListController {
       self?.present(alert, animated: true)
     })
     return cell
+  }
+
+  /// Off: one question. On: what needs the owner, then the latest brief.
+  private func radarContent() async -> [ListSection] {
+    // A server without Radar keeps the plain feed.
+    guard let status = try? await RadarStore.shared.loadStatus() else { return [] }
+    guard status["settings"]["enabled"].bool else {
+      return [
+        ListSection(rows: [
+          ListRow(
+            title: "When should I interrupt you?",
+            cell: { [weak self] in RadarLevelCardCell { self?.enableRadar($0) } })
+        ])
+      ]
+    }
+    var result: [ListSection] = []
+    let page = try? await API.shared.rpc("radar/updates", ["view": "open", "limit": 50])
+    let open = page?["items"].array.compactMap(RadarItem.init) ?? []
+    // Right after it is turned on, nothing has been checked yet.
+    let starting = status["lastCycleAt"].isNull
+    if !open.isEmpty || starting {
+      let shown = showAllOpen ? open : Array(open.prefix(5))
+      var rows = shown.map(needsYouRow)
+      if open.count > shown.count {
+        rows.append(
+          ListRow(
+            title: "\(open.count - shown.count) more",
+            action: { [weak self] in
+              self?.showAllOpen = true
+              self?.reloadData()
+            }))
+      }
+      result.append(
+        ListSection(
+          title: "Needs you", rows: rows,
+          footer: open.isEmpty ? "Taking a look around. I’ll follow up shortly." : nil))
+    }
+    if let brief = await latestBrief(status) { result.append(brief) }
+    return result
+  }
+  private func needsYouRow(_ item: RadarItem) -> ListRow {
+    let done = UIContextualAction(style: .normal, title: "Done") { [weak self] _, _, finish in
+      finish(true)
+      self?.radarFeedback(item, "done")
+    }
+    done.image = UIImage(systemName: "checkmark")
+    done.backgroundColor = Theme.ink
+    let later = UIContextualAction(style: .normal, title: "Later") { [weak self] _, view, finish in
+      finish(true)
+      self?.presentRadarLater(item, from: view)
+    }
+    later.image = UIImage(systemName: "clock")
+    later.backgroundColor = Theme.muted
+    return ListRow(
+      title: item.title, action: { [weak self] in self?.presentRadar(item, mode: .detail) },
+      menu: radarActionsMenu(item), cell: { RadarRowCell(item, detail: item.why) },
+      swipeActions: [done, later])
+  }
+  /// The newest brief from the last day, read from the personal conversation.
+  private func latestBrief(_ status: JSON) async -> ListSection? {
+    guard let sent = RadarTime.parse(status["lastBriefAt"].string),
+      Date().timeIntervalSince(sent) < 86_400,
+      let thread = try? await API.shared.rpc(
+        "threads/get", ["botId": .string(botID), "threadKind": "personal"])
+    else { return nil }
+    for message in thread["messages"].array.reversed() {
+      let blocks = message["blocks"].array
+      guard let block = blocks.first(where: { $0["kind"].string == "brief" }),
+        let brief = RadarBrief(block)
+      else { continue }
+      let narrative = blocks.filter { $0["kind"].string == "text" }.map { $0["text"].string }
+        .joined(separator: "\n\n")
+      let id = message["id"].string
+      return ListSection(
+        title: brief.title.isEmpty ? nil : brief.title,
+        rows: [
+          ListRow(
+            title: brief.title,
+            action: { [weak self] in
+              self?.radarTabs?.showPersonalChat { $0.focus(messageID: id) }
+            }, cell: { RadarBriefCardCell(narrative: narrative, brief: brief) })
+        ])
+    }
+    return nil
+  }
+  /// Turns Radar on at a level, asks for notifications and starts the first look around.
+  private func enableRadar(_ level: String) {
+    Task {
+      do {
+        RadarStore.shared.apply(
+          try await API.shared.rpc(
+            "radar/configure",
+            [
+              "enabled": true, "level": .string(level),
+              "timeZone": .string(TimeZone.current.identifier),
+            ]))
+        try? await Notifications.shared.request()
+        _ = try? await API.shared.rpc("radar/check")
+      } catch { showError(error) }
+      reloadData()
+    }
   }
 }
 
@@ -283,12 +405,6 @@ final class FeedSettingsController: ListController {
   override func load() async throws {
     profile = try await API.shared.rpc("feed/profile")
     let research = try await API.shared.rpc("feed/research")
-    let accounts = try await API.shared.rpc("connections/list").array
-    let selectedAccounts = profile["accountResearchIds"].array.map(\.string)
-    let observableAccounts = accounts.filter {
-      $0["capabilities"].array.map(\.string).contains("background_read")
-        || selectedAccounts.contains($0["id"].string)
-    }
     let researchState = research["state"].string
     let dateFormatter = ISO8601DateFormatter()
     dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -327,34 +443,8 @@ final class FeedSettingsController: ListController {
               }
             }),
         ],
-        footer: (profile["researchEnabled"].bool || !selectedAccounts.isEmpty)
+        footer: profile["researchEnabled"].bool
           ? researchDetail : "Reads public sources and adds relevant articles to For you."),
-      ListSection(
-        title: "Connected sources",
-        rows: observableAccounts.map { account in
-          ListRow(
-            title: account["accountLabel"].string.isEmpty ? account["displayName"].string : account["accountLabel"].string,
-            detail: account["status"].string == "connected" ? "" : "Reconnect in Settings",
-            symbol: "doc.text.magnifyingglass",
-            switchValue: selectedAccounts.contains(account["id"].string),
-            onSwitch: { [weak self] enabled in
-              var ids = selectedAccounts.filter { $0 != account["id"].string }
-              if enabled { ids.append(account["id"].string) }
-              self?.mutate("feed/configure", ["accountResearchIds": .array(ids.map(JSON.string))])
-            })
-        } + [
-          ListRow(
-            title: "Connect app", symbol: "plus",
-            action: { [weak self] in
-              self?.navigationController?.pushViewController(
-                ConnectionsController(), animated: true)
-            })
-        ],
-        footer: "Reads new mail and recent meetings from selected accounts. Useful findings appear in For you."),
-      ListSection(rows: [ListRow(title: "Important updates", symbol: "bell",
-        switchValue: profile["accountAlerts"].bool,
-        onSwitch: { [weak self] value in self?.mutate("feed/configure", ["accountAlerts": .bool(value), "accountTimeZone": .string(TimeZone.current.identifier)]) })],
-        footer: "Up to two timely updates a day, between 08:00 and 22:00. Other findings stay in For you."),
       ListSection(rows: [
         ListRow(
           title: "Learn interests from conversations",

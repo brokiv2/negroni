@@ -46,6 +46,16 @@ import UIKit
     }
   }
   var draft: String { textView.text ?? "" }
+  var onClearContext: (() -> Void)?
+  /// What a reply is about (a Radar update's title), shown above the text.
+  var replyContext: String? {
+    didSet {
+      contextLabel.text = replyContext
+      contextRow.isHidden = replyContext == nil
+    }
+  }
+  private let contextRow = Theme.stack(.horizontal, spacing: 6)
+  private let contextLabel = Theme.label("", style: .caption1, color: Theme.muted)
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -96,6 +106,8 @@ import UIKit
     entry.alignment = .bottom
     attachmentLabel.isHidden = true
     attachmentLabel.numberOfLines = 2
+    setupContext()
+    content.addArrangedSubview(contextRow)
     content.addArrangedSubview(attachmentLabel)
     content.addArrangedSubview(entry)
     var modelConfig = UIButton.Configuration.plain()
@@ -131,6 +143,26 @@ import UIKit
     setupRecording()
   }
   required init?(coder: NSCoder) { fatalError() }
+  private func setupContext() {
+    let symbol = UIImage.SymbolConfiguration(textStyle: .caption1)
+    let icon = UIImageView(
+      image: UIImage(systemName: "arrowshape.turn.up.left", withConfiguration: symbol))
+    icon.tintColor = Theme.muted
+    icon.setContentHuggingPriority(.required, for: .horizontal)
+    contextLabel.numberOfLines = 1
+    let clear = UIButton(type: .system)
+    clear.setImage(UIImage(systemName: "xmark", withConfiguration: symbol), for: .normal)
+    clear.tintColor = Theme.muted
+    clear.accessibilityLabel = "Cancel reply"
+    clear.addAction(UIAction { [weak self] _ in self?.onClearContext?() }, for: .touchUpInside)
+    clear.widthAnchor.constraint(equalToConstant: 32).isActive = true
+    clear.heightAnchor.constraint(equalToConstant: 32).isActive = true
+    contextRow.alignment = .center
+    contextRow.isLayoutMarginsRelativeArrangement = true
+    contextRow.directionalLayoutMargins = .init(top: 2, leading: 8, bottom: 0, trailing: 0)
+    for view in [icon, contextLabel, clear] { contextRow.addArrangedSubview(view) }
+    contextRow.isHidden = true
+  }
   private func configure(
     _ button: UIButton, symbol: String, label: String, action: @escaping () -> Void
   ) {

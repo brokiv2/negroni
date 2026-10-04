@@ -18,6 +18,11 @@ struct ListRow {
   var switchValue: Bool? = nil
   var switchEnabled: Bool = true
   var onSwitch: ((Bool) -> Void)? = nil
+  /// A row that draws itself; its action, menu and swipes still apply.
+  var cell: (() -> UITableViewCell)? = nil
+  /// Trailing swipe actions, in place of the delete action.
+  var swipeActions: [UIContextualAction] = []
+  var accessoryView: UIView? = nil
 }
 struct ListSection {
   var title: String? = nil
@@ -90,6 +95,11 @@ class ListController: UITableViewController {
     -> UITableViewCell
   {
     let row = sections[indexPath.section].rows[indexPath.row]
+    if let make = row.cell {
+      let cell = make()
+      cell.selectionStyle = row.action == nil ? .none : .default
+      return cell
+    }
     let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
     var config = cell.defaultContentConfiguration()
     config.text = row.title
@@ -125,6 +135,7 @@ class ListController: UITableViewController {
       }, for: .valueChanged)
       cell.accessoryView = toggle
     }
+    if let view = row.accessoryView { cell.accessoryView = view }
     cell.selectionStyle = row.action == nil ? .none : .default
     return cell
   }
@@ -141,6 +152,12 @@ class ListController: UITableViewController {
   override func tableView(
     _ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
   ) -> UISwipeActionsConfiguration? {
+    let actions = sections[indexPath.section].rows[indexPath.row].swipeActions
+    if !actions.isEmpty {
+      let configuration = UISwipeActionsConfiguration(actions: actions)
+      configuration.performsFirstActionWithFullSwipe = false
+      return configuration
+    }
     guard let action = sections[indexPath.section].rows[indexPath.row].deleteAction else {
       return nil
     }
