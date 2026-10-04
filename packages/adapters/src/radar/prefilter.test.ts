@@ -82,6 +82,32 @@ describe("prefilter", () => {
     expect(screen(mail({ title, excerpt: "" }))).toMatchObject({ gate: "security_code" });
   });
 
+  it("lets account security alerts reach the judge even from automated senders", () => {
+    const alert = (title: string, excerpt = "If this wasn't you, reset your password.") =>
+      mail({
+        title,
+        excerpt,
+        actor: { address: "security@mail.service.example.test" },
+        meta: { bulk: true },
+      });
+    for (const title of [
+      "New login to your account from Chrome on Linux",
+      "Security alert: new trusted device added to your account",
+      "Suspicious sign-in attempt blocked",
+      "Your password was changed",
+      "Новый вход в аккаунт с незнакомого устройства",
+      "Neue Anmeldung bei Ihrem Konto",
+    ])
+      expect(screen(alert(title)), title).toBeUndefined();
+    // A code the owner asked for, or a plain newsletter, stays screened out.
+    expect(screen(alert("Your verification code", "482913"))).toMatchObject({
+      gate: "security_code",
+    });
+    expect(screen(alert("Security tips for your team", "Read our blog."))).toMatchObject({
+      gate: "bulk",
+    });
+  });
+
   it("drops bulk mail unless the sender matters", () => {
     const newsletter = mail({
       title: "Sale ends in 2 hours!",
