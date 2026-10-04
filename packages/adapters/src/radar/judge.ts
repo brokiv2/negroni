@@ -5,7 +5,8 @@ import type {
   AgentRuntimeEvent,
 } from "@rakazo/adapter-kit";
 import type { RadarAction, RadarScores } from "@rakazo/contracts";
-import { quoteInSource, runJsonPass } from "../background-triage.js";
+import type { JsonPassInput, JsonPassResult } from "../background-triage.js";
+import { quoteInSource, runJsonPassResult } from "../background-triage.js";
 import type { CostOfDelay, RadarJudgement } from "./policy.js";
 import { RADAR_DIMENSIONS } from "./policy.js";
 import { plainDashes } from "./text.js";
@@ -231,7 +232,9 @@ type UsageEvent = Extract<AgentRuntimeEvent, { type: "usage" }>;
 /**
  * Scores items with one tool-less pass per item, or five per pass when the queue is long
  * (batch order biases judges, so batching is the exception). Returns null for an item the
- * model did not answer usably; it stays pending for a bounded retry.
+ * model answered unusably; that counts toward its bounded retries. An item the model never got
+ * to, because the allowance ran out or the provider could not serve the pass, is absent from
+ * the map and simply stays pending; judging stops at the first pass that gets no answer.
  */
 export async function judgeItems(input: {
   runtime: AgentRuntime;
@@ -245,13 +248,16 @@ export async function judgeItems(input: {
   spendPass: () => boolean;
   onUsage?: (event: UsageEvent) => Promise<void>;
   suffix?: string;
+  /** Runs one pass; Radar's cycle passes its own, which keeps track of the provider. */
+  pass?: (input: JsonPassInput) => Promise<JsonPassResult>;
 }): Promise<Map<string, JudgeResult | null>> {
   const results = new Map<string, JudgeResult | null>();
+  const run = input.pass ?? runJsonPassResult;
   const size = Math.max(1, Math.min(5, input.batchSize));
   for (let index = 0; index < input.items.length; index += size) {
     const group = input.items.slice(index, index + size);
     if (!input.spendPass()) break;
-    const answer = await runJsonPass({
+    const pass = await run({
       runtime: input.runtime,
       request: input.request,
       suffix: `${input.suffix ?? "judge"}-${index}`,
@@ -262,6 +268,10 @@ export async function judgeItems(input: {
       onUsage: input.onUsage,
       timeoutMs: 90_000,
     });
+    // A cycle that was cut short never counts an attempt against what it was judging.
+    input.context.signal.throwIfAborted();
+    if (pass.status === "failed") break;
+    const answer = pass.status === "ok" ? pass.value : null;
     const answers =
       group.length === 1
         ? [{ ...(answer ?? {}), id: group[0]!.id }]

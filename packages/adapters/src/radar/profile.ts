@@ -3,6 +3,7 @@ import { RadarPersonRemove, RadarRuleChange, RadarSettingsSchema } from "@rakazo
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { RadarError } from "./errors.js";
 import { newRule, parseLearned, withoutPerson, withoutRule, withRule } from "./learned.js";
+import { withoutOutageWait } from "./outage.js";
 
 export type RadarOwner = { spaceId: string; userId: string };
 export type RadarTx = Prisma.TransactionClient;
@@ -72,7 +73,10 @@ export async function changeRadarRule(
   });
 }
 
-/** Ask the scheduler for a cycle (and, with `brief`, a brief) as soon as possible. */
+/**
+ * Ask the scheduler for a cycle (and, with `brief`, a brief) as soon as possible. A check also
+ * ends the wait of a model that was unavailable, so a fixed key or topped-up balance counts at once.
+ */
 export async function requestRadarCycle(
   prisma: PrismaClient,
   scope: RadarOwner,
@@ -85,11 +89,13 @@ export async function requestRadarCycle(
     if (!readRadarSettings(row.settings).enabled)
       throw new RadarError("BAD_REQUEST", "Turn on Radar first.");
     // Scheduling state only: no version bump, so a running cycle stays valid.
+    const counters = options.brief ? undefined : withoutOutageWait(row.counters, now);
     await tx.radarProfile.update({
       where: { spaceId_userId: key },
       data: {
         nextCycleAt: now,
         ...(options.brief ? { briefRequestedAt: row.briefRequestedAt ?? now } : {}),
+        ...(counters ? { counters: counters as Prisma.InputJsonValue } : {}),
       },
     });
     if (!options.brief)

@@ -264,6 +264,88 @@ describe("judging", () => {
     expect(many.get("a")).toBeNull();
     expect(many.get("b")).toMatchObject({ action: "reply" });
   });
+
+  const judging = (fake: AgentRuntime, items: JudgeItem[], extra: Record<string, unknown> = {}) =>
+    judgeItems({
+      runtime: fake,
+      model: { provider: "test", id: "judge" },
+      request: { botId: "b", threadId: "t", runId: "r" },
+      context: {
+        operationId: "o",
+        traceId: "t",
+        spaceId: "s",
+        userId: "u",
+        signal: new AbortController().signal,
+      },
+      judge: context,
+      items,
+      batchSize: 1,
+      spendPass: passes(10),
+      ...extra,
+    });
+
+  it("gives an unusable answer a null and a failed call no entry at all", async () => {
+    // Items 1 and 2 are answered, the third pass fails, so the fourth is never tried.
+    let calls = 0;
+    const flaky: AgentRuntime = {
+      describe: () =>
+        ({ id: "test", contractVersion: "1", adapterVersion: "0", capabilities: {} }) as never,
+      abort: async () => undefined,
+      async *run() {
+        calls += 1;
+        if (calls === 1) yield { type: "text", text: JSON.stringify(answer()) };
+        else if (calls === 2) yield { type: "text", text: "I could not decide." };
+        else throw Object.assign(new Error("402 Payment Required"), { status: 402 });
+      },
+    };
+    const results = await judging(flaky, [item("a"), item("b"), item("c"), item("d")]);
+    expect(calls).toBe(3);
+    expect(results.get("a")).toMatchObject({ action: "reply" });
+    // The model answered, badly: that counts as an attempt.
+    expect(results.get("b")).toBeNull();
+    // The provider could not serve the pass: nothing was learned about "c", and "d" waits too.
+    expect([...results.keys()]).toEqual(["a", "b"]);
+  });
+
+  it("runs its passes through the one it is given", async () => {
+    const seen: string[] = [];
+    const results = await judging(
+      runtime(() => answer()),
+      [item("a"), item("b")],
+      {
+        pass: async (call: { suffix: string }) => {
+          seen.push(call.suffix);
+          return { status: "failed", error: new Error("503") };
+        },
+      },
+    );
+    // A failed pass ends judging for this call.
+    expect(seen).toEqual(["judge-0"]);
+    expect(results.size).toBe(0);
+  });
+
+  it("stops at once when the cycle itself was aborted", async () => {
+    const owner = new AbortController();
+    await expect(
+      judging(
+        runtime(() => answer()),
+        [item("a")],
+        {
+          context: {
+            operationId: "o",
+            traceId: "t",
+            spaceId: "s",
+            userId: "u",
+            signal: owner.signal,
+          },
+          pass: async () => {
+            owner.abort();
+            return { status: "invalid" };
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
 });
 
 describe("profile synthesis", () => {

@@ -6,7 +6,8 @@ import { ComposioEmulator } from "../composio-emulator.js";
 import type { RadarCycleDeps } from "./context.js";
 import { runRadarCycle } from "./cycle.js";
 import { applyRadarFeedback } from "./feedback.js";
-import { recordRadarPresence } from "./profile.js";
+import { MODEL_UNAVAILABLE } from "./outage.js";
+import { recordRadarPresence, requestRadarCycle } from "./profile.js";
 import { configureRadar } from "./settings.js";
 import { getRadarStatus } from "./status.js";
 import { radarUpdateContext } from "./tools.js";
@@ -45,18 +46,29 @@ const judgement = (patch: Record<string, unknown>) => ({
 
 type Answers = Partial<Record<"brief" | "synthesis" | "prep", unknown>>;
 
+/** A provider that refuses the request, the way the HTTP clients under the runtimes report it. */
+const refused = (status: number, message: string) => Object.assign(new Error(message), { status });
+const PAYMENT_REQUIRED = refused(402, "402 Payment Required");
+
 /**
  * A deterministic model: the source text says how it should be judged. `requests` keeps what
  * each pass was asked; `answers` replaces the canned brief, synthesis or prep answer.
+ * `failure` makes passes throw, as a provider that refuses or cannot be reached does (all
+ * passes, or only those whose kind starts with one of `kinds`); `garbled` kinds answer in
+ * prose, not JSON.
  */
 function fakeModel(): AgentRuntime & {
   calls: string[];
   requests: AgentRunRequest[];
   answers: Answers;
+  failure: { error?: unknown; kinds: string[] };
+  garbled: string[];
 } {
   const calls: string[] = [];
   const requests: AgentRunRequest[] = [];
   const answers: Answers = {};
+  const failure: { error?: unknown; kinds: string[] } = { kinds: [] };
+  const garbled: string[] = [];
   const judge = (prompt: string, second: boolean) => {
     if (prompt.includes('"kind":"event_cancelled"')) return judgement({ scores: scores(0) });
     if (prompt.includes("URGENT"))
@@ -119,6 +131,8 @@ function fakeModel(): AgentRuntime & {
     calls,
     requests,
     answers,
+    failure,
+    garbled,
     describe: () =>
       ({ id: "fake", contractVersion: "1", adapterVersion: "0", capabilities: {} }) as never,
     abort: async () => undefined,
@@ -126,6 +140,15 @@ function fakeModel(): AgentRuntime & {
       const kind = request.runId.split(":").at(-1) ?? "";
       calls.push(kind);
       requests.push(request);
+      if (
+        failure.error !== undefined &&
+        (!failure.kinds.length || failure.kinds.some((prefix) => kind.startsWith(prefix)))
+      )
+        throw failure.error;
+      if (garbled.some((prefix) => kind.startsWith(prefix))) {
+        yield { type: "text", text: "I could not decide." };
+        return;
+      }
       const answer = kind.startsWith("judge")
         ? judge(request.prompt, false)
         : kind.startsWith("second")
@@ -262,6 +285,7 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
       deps,
       model,
       pushes,
+      at,
       now: () => clock,
       advance: (minutes: number) => {
         clock = at(minutes);
@@ -806,5 +830,366 @@ suite("radar cycle (PostgreSQL, emulated accounts and model)", () => {
     const messages = await s.messages();
     expect(messages).toHaveLength(1);
     expect(JSON.stringify([messages[0]?.blocks, s.pushes])).not.toMatch(LONG_DASH);
+  });
+  describe("when the model provider is unavailable", () => {
+    type Owner = Awaited<ReturnType<typeof setup>>;
+    const colleague = { sender: "Colleague <colleague@example.test>" };
+    const profile = (s: Owner) =>
+      prisma.radarProfile.findUniqueOrThrow({ where: { spaceId_userId: s.scope } });
+    const outage = async (s: Owner) =>
+      (
+        (await profile(s)).counters as {
+          passes: number;
+          outage?: { failures: number; until: string };
+        }
+      ).outage;
+    const passesUsed = async (s: Owner) =>
+      ((await profile(s)).counters as { passes: number }).passes;
+    /** The titles the judge was asked about from the nth request on, in the order it was asked. */
+    const judged = (s: Owner, from = 0) =>
+      s.model.requests
+        .slice(from)
+        .filter((request) => request.runId.split(":").at(-1)?.startsWith("judge"))
+        .map((request) => /<source>.*?"title":"([^"]*)"/s.exec(request.prompt)?.[1]);
+    /** Signals in the order they happened (they are all created at the cycle's clock). */
+    const happened = (s: Owner) =>
+      prisma.radarSignal.findMany({ where: s.scope, orderBy: { occurredAt: "asc" } });
+    const skipSynthesis = (s: Owner) =>
+      prisma.radarProfile.update({
+        where: { spaceId_userId: s.scope },
+        data: { summaryAt: s.now() },
+      });
+
+    it("keeps what arrives pending, counts no attempt, backs off and says why", async () => {
+      const s = await setup();
+      let resolved = 0;
+      const resolveModel = s.deps.resolveModel;
+      s.deps.resolveModel = async (scope) => {
+        resolved += 1;
+        return resolveModel(scope);
+      };
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.mail("Contract", "URGENT: Please approve the contract by noon.", {
+        internalDate: String(s.at(-30).getTime()),
+      });
+      s.mail("Report", "FYI the report is attached.", {
+        ...colleague,
+        internalDate: String(s.at(-20).getTime()),
+      });
+      await s.cycle();
+      const titles = async () =>
+        (await happened(s)).map(({ title, status, attempts }) => ({ title, status, attempts }));
+      const waiting = [
+        { title: "Contract", status: "pending", attempts: 0 },
+        { title: "Report", status: "pending", attempts: 0 },
+      ];
+      expect(await titles()).toEqual(waiting);
+      // The profile synthesis and one judge pass were tried, not one pass per update.
+      expect(s.model.calls).toEqual(["synthesis", "judge-0"]);
+      // The owner reads it in the status line; the wait starts at ten minutes.
+      expect(await outage(s)).toEqual({ failures: 1, until: "2026-10-05T10:10:00.000Z" });
+      const status = () => getRadarStatus(prisma, s.deps.registry, s.scope, s.now());
+      expect((await status()).error).toBe(MODEL_UNAVAILABLE);
+      // The updates are tried again when the wait ends, not a minute from now.
+      expect((await profile(s)).nextCycleAt?.toISOString()).toBe("2026-10-05T10:10:00.000Z");
+
+      // Nothing is asked of the model while it waits, not even which model to use, and the
+      // error stays.
+      const resolvedBefore = resolved;
+      s.advance(1);
+      await s.cycle();
+      expect(s.model.calls).toEqual(["synthesis", "judge-0"]);
+      expect(resolved).toBe(resolvedBefore);
+      expect((await status()).error).toBe(MODEL_UNAVAILABLE);
+
+      // After ten minutes one judge pass finds it still down, and the wait doubles.
+      s.advance(9);
+      await s.cycle();
+      expect(s.model.calls).toEqual(["synthesis", "judge-0", "synthesis", "judge-0"]);
+      expect(await outage(s)).toEqual({ failures: 2, until: "2026-10-05T10:30:00.000Z" });
+
+      // Observation carries on during the wait: mail that arrives is stored, waiting like the rest.
+      s.advance(10);
+      s.mail("Agenda", "FYI the agenda for Thursday.", {
+        ...colleague,
+        internalDate: String(s.at(-2).getTime()),
+      });
+      await s.cycle();
+      expect(s.model.calls).toHaveLength(4);
+      expect(await titles()).toEqual([
+        ...waiting,
+        { title: "Agenda", status: "pending", attempts: 0 },
+      ]);
+
+      s.advance(10);
+      await s.cycle();
+      expect(await outage(s)).toEqual({ failures: 3, until: "2026-10-05T11:10:00.000Z" });
+
+      // The provider is back: the oldest update is judged first, and the urgent one still gets through.
+      s.model.failure.error = undefined;
+      s.advance(40);
+      const before = s.model.calls.length;
+      await s.cycle();
+      expect(s.model.calls.slice(before)).toEqual(["synthesis", "judge-0", "judge-1", "judge-2"]);
+      expect(judged(s, before)).toEqual(["Contract", "Report", "Agenda"]);
+      const signals = await happened(s);
+      expect(signals.map((signal) => [signal.title, signal.status, signal.attempts])).toEqual([
+        ["Contract", "decided", 0],
+        ["Report", "decided", 0],
+        ["Agenda", "decided", 0],
+      ]);
+      expect(signals.some((signal) => signal.reason === "Could not evaluate.")).toBe(false);
+      expect(s.pushes).toHaveLength(1);
+      expect(s.pushes[0]).toMatchObject({
+        kind: "radar",
+        title: "Contract needs approval by noon",
+      });
+      // The first pass the model answered ended the outage.
+      expect(await outage(s)).toBeUndefined();
+      expect((await status()).error).toBeUndefined();
+      expect((await profile(s)).error).toBeNull();
+    });
+
+    it("treats every call that got no answer the same, whatever the provider said", async () => {
+      const errors: unknown[] = [
+        refused(402, "402 Payment Required"),
+        refused(429, "Insufficient balance or no resource package"),
+        refused(401, "Incorrect API key provided"),
+        refused(403, "Forbidden"),
+        refused(503, "Service Unavailable"),
+        new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }),
+        new DOMException("The operation timed out", "TimeoutError"),
+        // What the Codex runtime says in place of the provider's own error.
+        new Error("Codex turn failed; check the selected model connection"),
+        new Error("something nobody has seen before"),
+      ];
+      for (const error of errors) {
+        const s = await setup();
+        s.model.failure.error = error;
+        s.mail("Notes", "FYI the slides are attached.", colleague);
+        await s.cycle();
+        expect(await s.signals()).toMatchObject([{ status: "pending", attempts: 0 }]);
+        expect((await profile(s)).error).toBe(MODEL_UNAVAILABLE);
+        expect(await outage(s)).toMatchObject({ failures: 1 });
+      }
+    });
+
+    it("catches up oldest first within the day's allowance, and ends the outage on the first answer", async () => {
+      const s = await setup();
+      await skipSynthesis(s);
+      s.model.failure.error = PAYMENT_REQUIRED;
+      // Delivered newest first: the order they arrive in is not the order they happened in.
+      for (const [number, minutes] of [
+        [4, -10],
+        [3, -20],
+        [2, -30],
+        [1, -40],
+      ] as const)
+        s.mail(`Note ${number}`, "FYI the notes are attached.", {
+          ...colleague,
+          internalDate: String(s.at(minutes).getTime()),
+        });
+      await s.cycle();
+      // One failed pass, not one per update.
+      expect(s.model.calls).toEqual(["judge-0"]);
+      expect(
+        await prisma.radarSignal.count({ where: { ...s.scope, status: "pending", attempts: 0 } }),
+      ).toBe(4);
+
+      // The provider is back with two passes left in the day's allowance.
+      s.model.failure.error = undefined;
+      s.deps.maxModelPasses = (await passesUsed(s)) + 2;
+      s.advance(11);
+      await s.cycle();
+      // The first request was the pass that failed; the two that followed took the oldest two.
+      expect(judged(s, 1)).toEqual(["Note 1", "Note 2"]);
+      const bySubject = Object.fromEntries(
+        (await s.signals()).map((signal) => [signal.title, signal.status]),
+      );
+      expect(bySubject).toEqual({
+        "Note 1": "decided",
+        "Note 2": "decided",
+        "Note 3": "pending",
+        "Note 4": "pending",
+      });
+      // The model answered, so the outage is over although the allowance leaves some waiting.
+      expect(await outage(s)).toBeUndefined();
+      expect((await profile(s)).error).toBeNull();
+    });
+
+    it("still gives up on an update the model keeps answering unusably, and calls that no outage", async () => {
+      const s = await setup();
+      s.model.garbled.push("judge");
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      for (const attempts of [1, 2, 3]) {
+        await s.cycle();
+        expect((await s.signals())[0]).toMatchObject(
+          attempts < 3
+            ? { status: "pending", attempts }
+            : {
+                status: "decided",
+                disposition: "silent",
+                reason: "Could not evaluate.",
+                attempts: 3,
+              },
+        );
+        s.advance(1);
+      }
+      // The provider answered every time: a pass for every attempt, no wait and no error.
+      expect(s.model.calls.filter((call) => call.startsWith("judge"))).toHaveLength(3);
+      expect(await outage(s)).toBeUndefined();
+      expect((await profile(s)).error).toBeNull();
+    });
+
+    it("keeps an update for the brief, and says why, when the second look cannot be had", async () => {
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.model.failure.kinds.push("second");
+      s.mail(
+        "Account notice",
+        "PHISH: Your account will be suspended today unless you sign in at the link.",
+        { sender: "Support <support@lookalike.example.test>" },
+      );
+      await s.cycle();
+      expect(s.model.calls).toEqual(["synthesis", "judge-0", "second-0"]);
+      // Both have to agree to interrupt, so without the second look it is a brief item. It was
+      // judged, so it is decided and no attempt is counted; the reason does not say "disagreed".
+      const [signal] = await s.signals();
+      expect(signal).toMatchObject({
+        status: "decided",
+        disposition: "brief",
+        attempts: 0,
+        reason: "Kept for your brief: no second look was available.",
+      });
+      expect((signal!.trace as { gates?: string[] }).gates).toContain("second_opinion");
+      expect(s.pushes).toHaveLength(0);
+      // The failed pass still starts the wait.
+      expect(await outage(s)).toMatchObject({ failures: 1 });
+      expect((await profile(s)).error).toBe(MODEL_UNAVAILABLE);
+    });
+
+    it("does not let a profile synthesis the model cannot write hold judging up", async () => {
+      // The synthesis runs first and stays due until it succeeds, so a model that only it
+      // cannot reach (say the conversation model, while the background one works) must not
+      // stop what is judged with the other.
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.model.failure.kinds.push("synthesis");
+      s.mail("Contract", "URGENT: Please approve the contract by noon.");
+      await s.cycle();
+      expect((await s.signals())[0]).toMatchObject({ status: "decided", disposition: "interrupt" });
+      expect(s.pushes).toHaveLength(1);
+      expect(await outage(s)).toBeUndefined();
+      expect((await profile(s)).error).toBeNull();
+
+      // It is tried again next time, and still holds nothing up.
+      s.advance(11);
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      await s.cycle();
+      expect(s.model.calls.filter((call) => call === "synthesis")).toHaveLength(2);
+      expect((await s.signals()).every((signal) => signal.status === "decided")).toBe(true);
+      expect(await outage(s)).toBeUndefined();
+    });
+
+    it("waits like for any outage when no model can be looked up at all", async () => {
+      const s = await setup();
+      s.deps.resolveModel = async () => {
+        throw new Error("No model is connected");
+      };
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      await s.cycle();
+      expect((await s.signals())[0]).toMatchObject({ status: "pending", attempts: 0 });
+      expect(await outage(s)).toMatchObject({ failures: 1 });
+      expect((await profile(s)).error).toBe(MODEL_UNAVAILABLE);
+      // Not retried every minute: the next cycle is when the wait ends.
+      expect((await profile(s)).nextCycleAt?.toISOString()).toBe("2026-10-05T10:10:00.000Z");
+    });
+
+    it("leaves no record of a meeting prep the model could not write", async () => {
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.model.failure.kinds.push("prep");
+      s.emulator.seedRadar(s.id, "GOOGLECALENDAR_EVENTS_LIST", {
+        items: [
+          {
+            id: "p1",
+            status: "confirmed",
+            summary: "Planning",
+            start: { dateTime: "2026-10-05T10:17:00Z" },
+            end: { dateTime: "2026-10-05T11:00:00Z" },
+            updated: "2026-10-05T09:00:00Z",
+            organizer: { email: "outside@elsewhere.test" },
+            attendees: [
+              { email: "me@example.test", self: true, responseStatus: "accepted" },
+              { email: "outside@elsewhere.test", responseStatus: "accepted" },
+            ],
+          },
+        ],
+      });
+      await s.cycle();
+      expect(s.model.calls).toContain("prep");
+      // A prep that found nothing worth bringing is recorded so the meeting is not prepared twice;
+      // one that could not be asked is not.
+      expect((await s.signals()).filter((signal) => signal.kind === "prep")).toEqual([]);
+      expect(await outage(s)).toMatchObject({ failures: 1 });
+    });
+
+    it("asks the model again at once when the owner asks for a check", async () => {
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      await s.cycle();
+      expect(await outage(s)).toEqual({ failures: 1, until: "2026-10-05T10:10:00.000Z" });
+      // Asking for a brief does not end it.
+      await requestRadarCycle(prisma, s.scope, { brief: true }, s.at(1));
+      await prisma.radarProfile.update({
+        where: { spaceId_userId: s.scope },
+        data: { briefRequestedAt: null },
+      });
+      expect((await outage(s))?.until).toBe("2026-10-05T10:10:00.000Z");
+      // A check does, and keeps the count, so a model still down waits longer next time.
+      await requestRadarCycle(prisma, s.scope, { brief: false }, s.at(2));
+      expect(await outage(s)).toEqual({ failures: 1, until: "2026-10-05T10:02:00.000Z" });
+
+      s.advance(2);
+      await s.cycle();
+      expect(s.model.calls).toEqual(["synthesis", "judge-0", "synthesis", "judge-0"]);
+      expect(await outage(s)).toEqual({ failures: 2, until: "2026-10-05T10:22:00.000Z" });
+
+      // The owner fixed the key and checks again, well before the wait was up.
+      await requestRadarCycle(prisma, s.scope, { brief: false }, s.at(3));
+      s.model.failure.error = undefined;
+      s.advance(3);
+      await s.cycle();
+      expect((await s.signals())[0]).toMatchObject({ status: "decided", attempts: 0 });
+      expect(await outage(s)).toBeUndefined();
+      expect((await profile(s)).error).toBeNull();
+    });
+
+    it("still drops what is older than three days, and starts the series over after a long silence", async () => {
+      const s = await setup();
+      s.model.failure.error = PAYMENT_REQUIRED;
+      s.mail("Notes", "FYI the slides are attached.", colleague);
+      await s.cycle();
+      s.advance(10);
+      await s.cycle();
+      expect(await outage(s)).toMatchObject({ failures: 2 });
+      expect((await s.signals())[0]?.status).toBe("pending");
+
+      s.advance(3 * 24 * 60);
+      s.mail("Agenda", "FYI the agenda for Thursday.", colleague);
+      await s.cycle();
+      const byTitle = Object.fromEntries(
+        (await s.signals()).map((signal) => [signal.title, signal]),
+      );
+      expect(byTitle.Notes).toMatchObject({
+        status: "decided",
+        disposition: "silent",
+        reason: "Too old to judge.",
+      });
+      expect(byTitle.Agenda).toMatchObject({ status: "pending", attempts: 0 });
+      // The last failure was days ago, so this one is the first of a new series, not the third.
+      expect(await outage(s)).toMatchObject({ failures: 1 });
+    });
   });
 });
