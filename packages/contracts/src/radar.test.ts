@@ -4,6 +4,7 @@ import {
   isRadarSource,
   RADAR_PAUSED_UNTIL_RESUMED,
   RadarFeedbackInput,
+  RadarGate,
   RadarRuleChange,
   RadarRuleMatch,
   RadarSettingsPatch,
@@ -247,5 +248,43 @@ describe("radar triage fields", () => {
     expect(MessageBlock.parse(card)).toEqual(card);
     expect(MessageBlock.safeParse({ ...card, offer: "x".repeat(81) }).success).toBe(false);
     expect(MessageBlock.safeParse({ ...card, evidence: "" }).success).toBe(false);
+  });
+});
+
+describe("radar decision gates", () => {
+  it("lists the gates every app explains in plain words", () => {
+    // Web (RadarDecision.tsx) and iOS (RadarGate in Radar.swift) give each gate a sentence. A
+    // gate added here needs one in both before this list changes.
+    expect(RadarGate.options).toEqual([
+      "rule_never",
+      "rule_digest",
+      "rule_always",
+      "unclear",
+      "not_owner",
+      "below_threshold",
+      "low_confidence",
+      "already_seen",
+      "second_opinion",
+      "critical",
+      "paused",
+      "quiet_hours",
+      "in_meeting",
+      "daily_cap",
+      "story_limit",
+      "spacing",
+      "folded_into_brief",
+      "handled_in_source",
+      "seen_in_source",
+      "own",
+      "security_code",
+      "bulk",
+      "declined",
+      "calendar_window",
+      "backoff",
+      "duplicate",
+      "stale",
+      "unevaluated",
+      "meeting_prep",
+    ]);
   });
 });

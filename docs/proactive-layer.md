@@ -173,7 +173,7 @@ Retention: excerpts are cleared after 30 days, signals deleted after 90 days.
 
 ## Contracts and RPC (decided)
 
-`packages/contracts/src/radar.ts` exports settings (including `pausedUntil`), rules, people, source status, the update view (including `offer` and `evidence`), the decision trace, today's counters and status. Message blocks `update` and `brief` are added to `MessageBlock`. RPC namespace `radar`: `status`, `configure`, `source`, `updates` (views open, brief, skipped, all; cursor pagination), `feedback`, `rules`, `rule`, `check`, `brief`.
+`packages/contracts/src/radar.ts` exports settings (including `pausedUntil`), rules, people, source status, the update view (including `offer` and `evidence`), the decision trace, today's counters and status. Message blocks `update` and `brief` are added to `MessageBlock`. RPC namespace `radar`: `status`, `configure`, `source`, `updates` (views open, brief, skipped, all; cursor pagination), `update` (one update with its trace, read only), `feedback`, `rules`, `rule`, `person` (forget a learned or explicit person), `check`, `brief`.
 
 ## UX
 
@@ -183,7 +183,7 @@ Copy rules from `AGENTS.md` apply: every word is UI, progressive disclosure, no 
 
 **For you.** "Needs you" sits on top: open updates sorted by urgency then importance, swipe for Done and Later, tap for details (why, evidence, how it was decided, open in the source app, feedback). Below it the latest brief, then the existing article feed. When Radar is off, one card asks "When should I interrupt you?" with the three levels; choosing one enables every supported connected account, asks for notification permission and runs a first catch-up over the last 24 hours ("Taking a look around. I'll follow up shortly.").
 
-**Radar screen** (antenna button in For you): a status line (Watching, Paused until 15:00, Needs reconnect), Pause (1 hour, today, until resumed), today's counts (Seen, Told you, In brief, Skipped; Skipped opens the list with reasons and "This was important"), sources with switches and reconnect states, Tell me (Only urgent, Important, More), quiet hours, briefs (morning, evening, send now), meeting prep, what I've learned (rules, people, summary; each removable), and collapsed advanced settings (daily interrupt cap, context files, language).
+**Radar screen** (antenna button in For you): a status line (Watching, Paused until 15:00, Needs reconnect), Pause (1 hour, today, until resumed), today's counts (Seen, Told you, In brief, Skipped; Skipped opens the list with reasons and "This was important"), sources with switches and reconnect states, Tell me (Only urgent, Important, More), quiet hours, briefs (morning, evening, send now), meeting prep, what I've learned (the summary; rules and people, each removable), and collapsed advanced settings (daily interrupt cap, context files, language).
 
 **Notifications.** Categories `RADAR_REPLY` (Draft reply, Later, Not important), `RADAR_DECIDE` (Handle it, Later, Not important), `RADAR_GENERIC` (Open, Later, Not important), `RADAR_BRIEF` (Open brief); every Radar category also has a text input action "Tell Negroni…" that posts the text to the personal conversation with the update attached. The primary action opens the app on the conversation with the offer sent; Later and Not important run in the background. The first interrupt carries a one-time line on how to change the level.
 
