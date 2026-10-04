@@ -13,6 +13,8 @@ export const ModelRoutingSchema = z
     conversation: ModelRouteSchema.nullable().default(null),
     task: ModelRouteSchema.nullable().default(null),
     router: ModelRouteSchema.nullable().default(null),
+    /** Short tool-less background passes (Radar triage, feed checks). */
+    background: ModelRouteSchema.nullable().optional(),
   })
   .superRefine((value, ctx) => {
     const keys = new Set(value.enabled.map(modelRouteKey));
@@ -30,4 +32,21 @@ export const emptyModelRouting = (): ModelRouting => ({
   conversation: null,
   task: null,
   router: null,
+  background: null,
 });
+
+/**
+ * What a save stores. Clients that predate the background role omit it, so the stored
+ * choice carries over; a background model that is no longer enabled is dropped rather
+ * than failing the save, because those clients clear only the roles they know when a
+ * model is removed.
+ */
+export function routingToSave(input: ModelRouting, stored: ModelRouting | null): ModelRouting {
+  const background =
+    input.background === undefined ? (stored?.background ?? null) : input.background;
+  const enabled = new Set(input.enabled.map(modelRouteKey));
+  return {
+    ...input,
+    background: background && enabled.has(modelRouteKey(background)) ? background : null,
+  };
+}

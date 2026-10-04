@@ -51,6 +51,24 @@ describe("background model selection", () => {
     ).toBe("glm-5.3-flash");
     expect(backgroundModelCandidates(null, undefined, score)).toEqual([]);
   });
+  it("prefers the background role, then the deprecated env pin, then the cheapest", () => {
+    const score = (r: { modelId: string }) => ({ "openai/gpt-6-luna": 0.2 })[r.modelId] ?? 9;
+    const chosen = {
+      ...routing,
+      background: route("vercel-ai-gateway", "google/gemini-3.8-flash"),
+    };
+    expect(
+      backgroundModelCandidates(chosen, "zai:glm-5.3-flash", score).map((r) => r.modelId),
+    ).toEqual([
+      "google/gemini-3.8-flash",
+      "glm-5.3-flash",
+      "openai/gpt-6-luna",
+      "deepseek/deepseek-v4.1-flash",
+    ]);
+    expect(
+      backgroundModelCandidates({ ...routing, background: null }, undefined, score)[0],
+    ).toEqual(route("vercel-ai-gateway", "openai/gpt-6-luna"));
+  });
   it("reads real catalog pricing and treats unknown models as most expensive", () => {
     expect(Number.isFinite(backgroundCostScore(routing.conversation))).toBe(true);
     expect(backgroundCostScore(route("nope", "missing"))).toBe(Number.POSITIVE_INFINITY);

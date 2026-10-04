@@ -120,6 +120,7 @@ import {
   IntegrationProviderIdSchema,
   ModelRoutingSchema,
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  routingToSave,
   usableModelId,
 } from "@rakazo/contracts";
 import {
@@ -966,13 +967,24 @@ export function createRouter(deps: RouterDeps) {
               message: "This model is unavailable through the selected connection.",
             });
         }
+        const member =
+          input.background === undefined
+            ? await deps.prisma.spaceMember.findUnique({
+                where: {
+                  spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+                },
+                select: { modelRouting: true },
+              })
+            : null;
+        const stored = ModelRoutingSchema.safeParse(member?.modelRouting);
+        const routing = routingToSave(input, stored.success ? stored.data : null);
         await deps.prisma.spaceMember.update({
           where: {
             spaceId_userId: { spaceId: context.actor.spaceId, userId: context.actor.userId },
           },
-          data: { modelRouting: input },
+          data: { modelRouting: routing },
         });
-        return input;
+        return routing;
       }),
       list: authed.models.list.handler(async ({ context }) => {
         const auth = await modelCredentialAuthKindsForSpace(

@@ -11,10 +11,11 @@ import { getLogger } from "@rakazo/logging";
 import { composedCatalog } from "./catalog-overrides.js";
 
 /**
- * Background checks run many times a day, so the first pass uses the cheapest enabled
- * model. `BACKGROUND_MODEL=provider:modelId` pins one explicitly (it must be enabled in
- * the user's model routing so it has a credential). Only shortlisted items reach the
- * conversation model.
+ * Background checks run many times a day, so the first pass uses the background model
+ * chosen in model routing, otherwise the cheapest enabled model. `BACKGROUND_MODEL=
+ * provider:modelId` is a deprecated pin for installations that have not chosen one (it
+ * must be enabled in the user's model routing so it has a credential). Only shortlisted
+ * items reach the conversation model.
  */
 export function parseBackgroundModel(raw: string | undefined): ModelRoute | null {
   const value = raw?.trim();
@@ -39,19 +40,24 @@ export function backgroundCostScore(route: ModelRoute): number {
   }
 }
 
-/** Candidates in preference order: explicit override, then enabled models cheapest first. */
+/**
+ * Candidates in preference order: the background role, the deprecated env override, then
+ * enabled models cheapest first.
+ */
 export function backgroundModelCandidates(
   routing: ModelRouting | null,
   override: string | undefined,
   score: (route: ModelRoute) => number = backgroundCostScore,
 ): ModelRoute[] {
-  const pinned = parseBackgroundModel(override);
+  const pinned = [routing?.background ?? null, parseBackgroundModel(override)].filter(
+    (route): route is ModelRoute => route !== null,
+  );
   const enabled = routing?.enabled ?? [];
   const ranked = enabled
     .map((route, index) => ({ route, index, cost: score(route) }))
     .sort((a, b) => a.cost - b.cost || a.index - b.index)
     .map((entry) => entry.route);
-  const ordered = pinned ? [pinned, ...ranked] : ranked;
+  const ordered = [...pinned, ...ranked];
   const seen = new Set<string>();
   return ordered.filter((route) => {
     const key = modelRouteKey(route);

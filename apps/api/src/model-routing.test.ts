@@ -65,6 +65,20 @@ describe("space model routing", () => {
     expect(response.status).toBe(400);
     expect(f.update).not.toHaveBeenCalled();
   });
+  it("reads the stored background role when an older client omits it", async () => {
+    const f = fixture();
+    const { background: _omitted, ...older } = emptyModelRouting();
+    const response = await f.call("saveRouting", older);
+    expect(response.status).toBe(200);
+    expect(f.findUnique).toHaveBeenCalledWith({
+      where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      select: { modelRouting: true },
+    });
+    expect(f.update).toHaveBeenCalledWith({
+      where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      data: { modelRouting: emptyModelRouting() },
+    });
+  });
   it("does not accept a role outside the enabled set", async () => {
     const f = fixture();
     const response = await f.call("saveRouting", {
