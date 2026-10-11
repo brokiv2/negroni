@@ -11,7 +11,7 @@ import UIKit
     fetch: (JSON) async throws -> JSON = { try await API.shared.rpc("artifacts/get", $0) }
   ) async -> UIImage? {
     guard !artifactID.isEmpty,
-      target["botId"].string.isEmpty != target["groupId"].string.isEmpty,
+      ["botId", "groupId", "feedItemId"].filter({ !target[$0].string.isEmpty }).count == 1,
       contextMatches()
     else { return nil }
     guard let artifact = try? await fetch(target.merging(["artifactId": .string(artifactID)])),

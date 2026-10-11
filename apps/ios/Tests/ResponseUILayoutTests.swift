@@ -61,7 +61,7 @@ final class ResponseUILayoutTests: XCTestCase {
             "type": "Image",
             "props": [
               "artifactId": "image-preview",
-              "alt": "A preview image", "caption": "Image caption", "aspectRatio": 2,
+              "alt": "A preview image", "caption": "Image caption", "aspectRatio": .number(1.5),
             ],
           ],
         ],
@@ -79,12 +79,21 @@ final class ResponseUILayoutTests: XCTestCase {
     host.view.addSubview(child.view)
     child.view.frame = host.view.bounds
     child.didMove(toParent: host)
+    child.view.traitOverrides.preferredContentSizeCategory = category
+    view.traitOverrides.preferredContentSizeCategory = category
     host.setOverrideTraitCollection(
       UITraitCollection(traitsFrom: [
         UITraitCollection(userInterfaceIdiom: .phone),
         UITraitCollection(preferredContentSizeCategory: category),
       ]), forChild: child)
     child.view.addSubview(view)
+    host.view.updateTraitsIfNeeded()
+    child.view.updateTraitsIfNeeded()
+    func commitTraits(_ current: UIView) {
+      current.updateTraitsIfNeeded()
+      for child in current.subviews { commitTraits(child) }
+    }
+    commitTraits(view)
     view.translatesAutoresizingMaskIntoConstraints = false
     let height = view.heightAnchor.constraint(equalToConstant: 1)
     NSLayoutConstraint.activate([
@@ -110,6 +119,28 @@ final class ResponseUILayoutTests: XCTestCase {
   private func descendants<T: UIView>(_ view: UIView, as type: T.Type) -> [T] {
     ((view as? T).map { [$0] } ?? [])
       + view.subviews.flatMap { descendants($0, as: type) }
+  }
+  @MainActor
+  private func fitAndAttach(_ view: UIView, name: String) {
+    let height = view.constraints.first {
+      $0.firstAttribute == .height && $0.secondItem == nil && $0.relation == .equal
+    }
+    height?.isActive = false
+    let fitted = view.systemLayoutSizeFitting(
+      CGSize(width: 358, height: 0),
+      withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+    height?.constant = fitted.height
+    height?.isActive = true
+    view.superview?.layoutIfNeeded()
+    let image = UIGraphicsImageRenderer(bounds: view.bounds).image { context in
+      Theme.canvas.setFill()
+      context.fill(view.bounds)
+      view.layer.render(in: context.cgContext)
+    }
+    let attachment = XCTAttachment(image: image)
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
   }
   @MainActor
   func testAssistantMessageCellGivesResponseTheFullChatWidth() throws {
@@ -178,6 +209,7 @@ final class ResponseUILayoutTests: XCTestCase {
     XCTAssertEqual(state.state["tip"], 15)
     XCTAssertEqual(slider.accessibilityValue, "15")
     XCTAssertTrue(descendants(view, as: UITextField.self).first === fields[0])
+    fitAndAttach(view, name: "UIKit response at 390pt")
     await state.flush()
     XCTAssertEqual(state.document.revision, 1)
     XCTAssertFalse(state.dirty)
@@ -202,10 +234,15 @@ final class ResponseUILayoutTests: XCTestCase {
     let host = mount(view, category: .accessibilityExtraLarge)
     defer { withExtendedLifetime(host) {} }
     let field = try XCTUnwrap(descendants(view, as: UITextField.self).first)
+    XCTAssertEqual(view.traitCollection.preferredContentSizeCategory, .accessibilityExtraLarge)
+    XCTAssertEqual(field.traitCollection.preferredContentSizeCategory, .accessibilityExtraLarge)
     XCTAssertEqual(field.bounds.width, 318, accuracy: 1)
     XCTAssertGreaterThanOrEqual(field.bounds.height, 52)
     XCTAssertGreaterThan(try XCTUnwrap(field.font).pointSize, 17)
-    XCTAssertGreaterThanOrEqual(field.bounds.height, try XCTUnwrap(field.font).lineHeight + 24)
+    let pixel = 1 / max(1, field.traitCollection.displayScale)
+    XCTAssertGreaterThanOrEqual(
+      field.bounds.height + pixel,
+      try XCTUnwrap(field.font).lineHeight + 24)
     field.text = "250"
     field.sendActions(for: .editingChanged)
     let button = try XCTUnwrap(
@@ -266,11 +303,17 @@ final class ResponseUILayoutTests: XCTestCase {
     defer { withExtendedLifetime(host) {} }
     await fulfillment(of: [loaded], timeout: 2)
     await Task.yield()
-    let picture = try XCTUnwrap(descendants(view, as: UIImageView.self).first)
+    let picture = try XCTUnwrap(
+      descendants(view, as: UIImageView.self).first {
+        $0.accessibilityLabel == "A preview image"
+      })
+    fitAndAttach(view, name: "UIKit response with owned image")
     XCTAssertTrue(picture.image === image)
     XCTAssertFalse(picture.isHidden)
     XCTAssertEqual(picture.accessibilityLabel, "A preview image")
     XCTAssertEqual(picture.contentMode, .scaleAspectFit)
+    XCTAssertEqual(picture.bounds.width, 318, accuracy: 1)
+    XCTAssertEqual(picture.bounds.height, 212, accuracy: 1)
     let (missing, _) = response(document)
     let fallback = try XCTUnwrap(
       descendants(missing, as: UILabel.self).first {
@@ -321,6 +364,14 @@ final class ResponseUILayoutTests: XCTestCase {
       "image-preview", target: ["botId": "bot-preview"],
       contextMatches: { true }, fetch: { _ in payload })
     XCTAssertNotNil(valid)
+    let feed = await store.ownedArtifactImage(
+      "image-preview", target: ["feedItemId": "feed-preview"],
+      contextMatches: { true },
+      fetch: { request in
+        XCTAssertEqual(request, ["feedItemId": "feed-preview", "artifactId": "image-preview"])
+        return payload
+      })
+    XCTAssertNotNil(feed)
     var wrongID = payload
     wrongID["id"] = "another-image"
     let wrongArtifact = await store.ownedArtifactImage(
@@ -341,9 +392,93 @@ final class ResponseUILayoutTests: XCTestCase {
   }
   @MainActor
   private func previewImage() -> UIImage {
-    UIGraphicsImageRenderer(size: CGSize(width: 100, height: 50)).image { _ in
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: CGSize(width: 600, height: 360), format: format).image {
+      _ in
       Theme.ink.setFill()
-      UIBezierPath(rect: CGRect(x: 0, y: 0, width: 100, height: 50)).fill()
+      UIBezierPath(rect: CGRect(x: 0, y: 0, width: 600, height: 360)).fill()
+    }
+  }
+  @MainActor
+  func testResetAndSetFinishFocusedEditingBeforeUpdatingFields() throws {
+    var raw = fixture()
+    raw["spec"]["elements"]["root"]["children"] = .array(
+      raw["spec"]["elements"]["root"]["children"].array + ["reset", "set"])
+    raw["spec"]["elements"]["reset"] = [
+      "type": "Button",
+      "props": ["label": "Reset values", "action": ["type": "reset"]],
+    ]
+    raw["spec"]["elements"]["set"] = [
+      "type": "Button",
+      "props": ["label": "Set amount", "action": ["type": "set", "path": "/amount", "value": 60]],
+    ]
+    let document = try XCTUnwrap(ResponseUI(raw))
+    let (view, state) = response(document)
+    let host = mount(view)
+    let previous = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+      .flatMap(\.windows).first { $0.isKeyWindow }
+    let window = previous?.windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+    window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+    window.rootViewController = host
+    window.makeKeyAndVisible()
+    defer {
+      window.isHidden = true
+      previous?.makeKey()
+    }
+    host.view.layoutIfNeeded()
+    let field = try XCTUnwrap(descendants(view, as: UITextField.self).first)
+    for (title, expected) in [("Reset values", 120.0), ("Set amount", 60.0)] {
+      XCTAssertTrue(field.becomeFirstResponder())
+      field.text = "250"
+      field.sendActions(for: .editingChanged)
+      XCTAssertEqual(state.state["amount"], 250)
+      let button = try XCTUnwrap(
+        descendants(view, as: UIButton.self).first { $0.accessibilityLabel == title })
+      button.sendActions(for: .primaryActionTriggered)
+      XCTAssertFalse(field.isFirstResponder)
+      XCTAssertEqual(state.state["amount"]?.uiNumber, expected)
+      XCTAssertEqual(
+        Double(
+          (field.text ?? "").replacingOccurrences(
+            of: Locale.current.decimalSeparator ?? ".", with: ".")), expected)
+    }
+  }
+  @MainActor
+  func testAccessibilityChartsAndDiagramsExposeTextDataWithoutFixedDrawings() throws {
+    var raw = fixture()
+    raw["spec"]["elements"]["root"]["children"] = .array(
+      raw["spec"]["elements"]["root"]["children"].array + ["chart", "diagram"])
+    raw["spec"]["elements"]["chart"] = [
+      "type": "Chart",
+      "props": [
+        "title": "Comparison", "style": "line",
+        "series": [["label": "Budget", "points": [["x": 1, "y": 20]]]],
+      ],
+    ]
+    raw["spec"]["elements"]["diagram"] = [
+      "type": "Diagram",
+      "props": [
+        "nodes": [["id": "plan", "label": "Plan", "detail": "Review budget"]], "edges": [],
+      ],
+    ]
+    let document = try XCTUnwrap(ResponseUI(raw))
+    let (view, _) = response(document)
+    let host = mount(view, category: .accessibilityExtraLarge)
+    defer { withExtendedLifetime(host) {} }
+    let drawings = descendants(view, as: UIView.self).filter {
+      $0.accessibilityIdentifier == "response-ui-drawing"
+    }
+    XCTAssertEqual(drawings.count, 2)
+    XCTAssertTrue(drawings.allSatisfy(\.isHidden))
+    for text in ["1: 20", "Plan: Review budget"] {
+      let label = try XCTUnwrap(descendants(view, as: UILabel.self).first { $0.text == text })
+      var ancestor: UIView? = label
+      while let current = ancestor {
+        XCTAssertFalse(current.isHidden)
+        ancestor = current.superview
+      }
+      XCTAssertGreaterThan(try XCTUnwrap(label.font).pointSize, 17)
     }
   }
 }

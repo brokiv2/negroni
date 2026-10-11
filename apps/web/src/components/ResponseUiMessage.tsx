@@ -15,22 +15,26 @@ export function ResponseUiMessage({
 }: {
   messageId: string;
   block: ResponseUiBlock;
-  target: ArtifactTarget;
+  target: ArtifactTarget | { feedItemId: string };
   onFollowUp: (text: string) => void;
 }) {
   const userId = authClient.useSession().data?.user.id;
   const spaceId = selectedSpaceId();
   const botId = "botId" in target ? target.botId : undefined;
   const groupId = "groupId" in target ? target.groupId : undefined;
+  const feedItemId = "feedItemId" in target ? target.feedItemId : undefined;
   const threadKind = "threadKind" in target ? target.threadKind : undefined;
-  const imageContext = JSON.stringify([userId, spaceId, botId, groupId, threadKind]);
+  const imageContext = JSON.stringify([userId, spaceId, botId, groupId, feedItemId, threadKind]);
   const currentImageContext = useRef(imageContext);
   currentImageContext.current = imageContext;
   const loadImage = useCallback(
     async (artifactId: string) => {
       if (!userId || currentImageContext.current !== imageContext) return null;
       const artifact = await rpc.artifacts.get(
-        { ...(groupId ? { groupId } : { botId: botId!, threadKind }), artifactId },
+        {
+          ...(feedItemId ? { feedItemId } : groupId ? { groupId } : { botId: botId!, threadKind }),
+          artifactId,
+        },
         { context: { spaceId } },
       );
       const maxBytes = 12 * 1024 * 1024;
@@ -46,7 +50,7 @@ export function ResponseUiMessage({
       if (bytes.byteLength > maxBytes) return null;
       return new Blob([new Uint8Array(bytes)], { type: artifact.mimeType });
     },
-    [userId, spaceId, botId, groupId, threadKind, imageContext],
+    [userId, spaceId, botId, groupId, feedItemId, threadKind, imageContext],
   );
   const [session] = useState(() =>
     createResponseUiStateSession(block, async (attempt) => {

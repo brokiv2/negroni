@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import type { ThreadSnapshot } from "@rakazo/contracts";
+import { captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 const fixture = "/e2e/fixtures/response-ui.html";
 test("streamed chat reply restores server values and drafts a reply to its source", async ({
@@ -148,4 +149,54 @@ test("the same composed reply fits a narrow viewport and keyboard navigation", a
   const screenshot = info.outputPath("interactive-response-narrow.png");
   await page.screenshot({ path: screenshot, fullPage: true });
   await info.attach("interactive-response-narrow", { path: screenshot, contentType: "image/png" });
+});
+test("a feed discussion keeps interactive values and only sends a drafted follow-up when asked", async ({
+  page,
+}, info) => {
+  test.skip(process.env.AGENT_RUNTIME === "pi", "Deterministic scripted response fixture");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signup(page, `response-feed-${Date.now()}@example.test`, "password12", "Feed fixture");
+  await completeOnboarding(page, undefined, "assistant");
+  const item = await rpc<{ id: string }>(page, "feed/create", {
+    kind: "article",
+    title: "Dinner planning",
+    summary: "Sample dinner discussion",
+    url: "https://example.test/dinner",
+  });
+  await page.getByRole("button", { name: "For you", exact: true }).click();
+  const hub = page.getByRole("region", { name: "For you", exact: true });
+  await hub.getByRole("button", { name: /Dinner planning/ }).click();
+  const discussion = hub.getByRole("region", { name: "Discuss this post", exact: true });
+  const composer = discussion.getByRole("textbox", { name: "Ask about this post", exact: true });
+  await composer.fill("Show an interactive dinner budget");
+  await discussion.getByRole("button", { name: "Send", exact: true }).click();
+  const reply = discussion.getByRole("group", { name: "Dinner budget", exact: true });
+  await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("44.00€", {
+    timeout: 30_000,
+  });
+  const before = await rpc<ThreadSnapshot>(page, "threads/get", { feedItemId: item.id });
+  const original = before.messages.find((message) =>
+    message.blocks.some((block) => block.kind === "response_ui"),
+  )!;
+  const bill = reply.getByRole("spinbutton", { name: "Bill", exact: true });
+  await bill.fill("180");
+  await reply.getByRole("spinbutton", { name: "People", exact: true }).fill("4");
+  await reply.getByRole("button", { name: "Draft the next step", exact: true }).click();
+  await expect(composer).toHaveValue("Help me choose a restaurant within this budget.");
+  const saved = await rpc<ThreadSnapshot>(page, "threads/get", { feedItemId: item.id });
+  expect(saved.messages).toHaveLength(before.messages.length);
+  const savedBlock = saved.messages
+    .find((message) => message.id === original.id)!
+    .blocks.find((block) => block.kind === "response_ui");
+  expect(savedBlock).toMatchObject({ kind: "response_ui", state: { bill: 180, people: 4 } });
+  await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("49.50€");
+  await bill.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, info, "interactive-response-feed-mobile");
+  const sent = page.waitForRequest("**/rpc/threads/send");
+  await discussion.getByRole("button", { name: "Send", exact: true }).click();
+  expect((await sent).postDataJSON().json).toMatchObject({
+    feedItemId: item.id,
+    replyToMessageId: original.id,
+    text: "Help me choose a restaurant within this budget.",
+  });
 });

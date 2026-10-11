@@ -35,10 +35,38 @@ import UIKit
     stack.pin(to: self)
     stack.addArrangedSubview(content)
     stack.addArrangedSubview(errors)
+    registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+      (view: ResponseUIView, _) in
+      view.updateTextStyles()
+      view.relayout()
+    }
     session.onChange = { [weak self] in self?.update() }
     update()
   }
   required init?(coder: NSCoder) { fatalError() }
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    updateTextStyles()
+  }
+  private func updateTextStyles() {
+    func apply(_ view: UIView) {
+      if let drawing = view as? ResponseUIDrawing { drawing.updateAccessibility(traitCollection) }
+      if let label = view as? ResponseUINumericLabel {
+        label.updateFont(traitCollection)
+      } else if let label = view as? UILabel, label.adjustsFontForContentSizeCategory {
+        let style =
+          (label.font?.fontDescriptor.object(forKey: .textStyle) as? String)
+          .map { UIFont.TextStyle(rawValue: $0) } ?? .body
+        label.font = .preferredFont(forTextStyle: style, compatibleWith: traitCollection)
+      } else if let field = view as? UITextField {
+        field.font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        field.invalidateIntrinsicContentSize()
+      }
+      for child in view.subviews { apply(child) }
+    }
+    apply(content)
+    setNeedsLayout()
+  }
   func receive(_ block: ResponseUI, live: Bool) {
     disabled = live
     session.receive(block)
@@ -52,6 +80,7 @@ import UIKit
       for child in content.arrangedSubviews { child.removeFromSuperview() }
       renderedSpec = spec
       content.addArrangedSubview(element(spec["root"].string))
+      updateTextStyles()
     }
     for update in updates { update() }
     for child in errors.arrangedSubviews { child.removeFromSuperview() }
@@ -211,9 +240,7 @@ import UIKit
     case "Slider":
       let stack = Theme.stack(spacing: 8)
       let label = Theme.label(p["label"].string, style: .body)
-      let output = Theme.label(style: .body)
-      output.font = UIFontMetrics(forTextStyle: .body).scaledFont(
-        for: .monospacedDigitSystemFont(ofSize: 17, weight: .semibold))
+      let output = ResponseUINumericLabel()
       output.textAlignment = .right
       output.setContentHuggingPriority(.required, for: .horizontal)
       output.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -309,8 +336,12 @@ import UIKit
       let button = Theme.button(p["label"].string) { [weak self] in
         guard let self, editable else { return }
         switch action["type"].string {
-        case "reset": _ = session.change(session.document.spec["state"].dictionary)
-        case "set": change(action["path"], action["value"])
+        case "reset":
+          endEditing(true)
+          _ = session.change(session.document.spec["state"].dictionary)
+        case "set":
+          endEditing(true)
+          change(action["path"], action["value"])
         case "follow_up":
           endEditing(true)
           Task { [self] in
@@ -447,7 +478,8 @@ import UIKit
       let chart = ResponseUIChart()
       stack.addArrangedSubview(Theme.label(p["title"].string, style: .headline))
       chart.heightAnchor.constraint(equalToConstant: 220).isActive = true
-      stack.addArrangedSubview(chart)
+      let drawing = ResponseUIDrawing(chart)
+      stack.addArrangedSubview(drawing)
       for (index, series) in p["series"].array.enumerated() {
         stack.addArrangedSubview(
           Theme.label(
@@ -466,7 +498,7 @@ import UIKit
           data.addArrangedSubview(label)
         }
       }
-      addDisclosure("View data", body: data, to: stack)
+      addDisclosure("View data", body: data, to: stack, drawing: drawing)
       updates.append { [weak self, weak chart] in
         guard let self else { return }
         chart?.props = p
@@ -482,7 +514,8 @@ import UIKit
       let diagram = ResponseUIDiagram(p)
       diagram.heightAnchor.constraint(equalToConstant: CGFloat(p["nodes"].array.count * 84 + 12))
         .isActive = true
-      stack.addArrangedSubview(diagram)
+      let drawing = ResponseUIDrawing(diagram)
+      stack.addArrangedSubview(drawing)
       let data = Theme.stack(spacing: 6)
       for node in p["nodes"].array {
         data.addArrangedSubview(
@@ -498,7 +531,7 @@ import UIKit
             "\(names[edge["from"].string] ?? "") → \(names[edge["to"].string] ?? "")\(edge["label"].string.isEmpty ? "" : ": " + edge["label"].string)",
             style: .caption1))
       }
-      addDisclosure("View data", body: data, to: stack)
+      addDisclosure("View data", body: data, to: stack, drawing: drawing)
       view = stack
     default: view = Theme.label(session.document.summary)
     }
@@ -518,15 +551,82 @@ import UIKit
     }
     return value.string
   }
-  private func addDisclosure(_ title: String, body: UIView, to stack: UIStackView) {
+  private func addDisclosure(
+    _ title: String, body: UIView, to stack: UIStackView,
+    drawing: ResponseUIDrawing? = nil
+  ) {
     body.isHidden = true
     let button = Theme.button(title, symbol: "chevron.down") { [weak self, weak body] in
       body?.isHidden.toggle()
       self?.relayout()
     }
     responseButton(button, leading: true)
+    let minimumHeights = button.constraints.filter {
+      $0.firstAttribute == .height && $0.secondItem == nil && $0.relation == .greaterThanOrEqual
+    }
+    drawing?.showAccessibleData = { [weak body, weak button] accessible in
+      if accessible { NSLayoutConstraint.deactivate(minimumHeights) }
+      body?.isHidden = !accessible
+      button?.isHidden = accessible
+      if !accessible { NSLayoutConstraint.activate(minimumHeights) }
+    }
     stack.addArrangedSubview(button)
     stack.addArrangedSubview(body)
+  }
+}
+
+private final class ResponseUINumericLabel: UILabel {
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    adjustsFontForContentSizeCategory = true
+    numberOfLines = 0
+    textColor = Theme.ink
+    updateFont(traitCollection)
+  }
+  required init?(coder: NSCoder) { fatalError() }
+  func updateFont(_ traits: UITraitCollection) {
+    font = UIFontMetrics(forTextStyle: .body).scaledFont(
+      for: .monospacedDigitSystemFont(ofSize: 17, weight: .semibold), compatibleWith: traits)
+  }
+}
+
+/// Text data remains available at accessibility sizes without fixed drawing labels clipping.
+private final class ResponseUIDrawing: UIView {
+  private let drawing: UIView
+  private var bottom: NSLayoutConstraint!
+  private var accessible: Bool?
+  var showAccessibleData: ((Bool) -> Void)? {
+    didSet { if let accessible { showAccessibleData?(accessible) } }
+  }
+  init(_ drawing: UIView) {
+    self.drawing = drawing
+    super.init(frame: .zero)
+    addSubview(drawing)
+    accessibilityIdentifier = "response-ui-drawing"
+    drawing.translatesAutoresizingMaskIntoConstraints = false
+    bottom = drawing.bottomAnchor.constraint(equalTo: bottomAnchor)
+    NSLayoutConstraint.activate([
+      drawing.leadingAnchor.constraint(equalTo: leadingAnchor),
+      drawing.trailingAnchor.constraint(equalTo: trailingAnchor),
+      drawing.topAnchor.constraint(equalTo: topAnchor),
+    ])
+    registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+      (view: ResponseUIDrawing, _) in view.updateAccessibility()
+    }
+    updateAccessibility()
+  }
+  required init?(coder: NSCoder) { fatalError() }
+  override func didMoveToSuperview() {
+    super.didMoveToSuperview()
+    updateAccessibility()
+  }
+  func updateAccessibility(_ traits: UITraitCollection? = nil) {
+    let next = (traits ?? traitCollection).preferredContentSizeCategory.isAccessibilityCategory
+    guard next != accessible else { return }
+    accessible = next
+    bottom.isActive = !next
+    isHidden = next
+    showAccessibleData?(next)
   }
 }
 
@@ -724,6 +824,8 @@ private final class ResponseUIImageView: UIStackView {
     picture.isAccessibilityElement = true
     picture.accessibilityLabel = props["alt"].string
     picture.isHidden = true
+    picture.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+    picture.setContentHuggingPriority(.defaultLow, for: .vertical)
     picture.heightAnchor.constraint(lessThanOrEqualToConstant: 420).isActive = true
     addArrangedSubview(picture)
     addArrangedSubview(fallback)

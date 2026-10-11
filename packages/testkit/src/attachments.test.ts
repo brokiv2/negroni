@@ -134,6 +134,67 @@ describeAttachments("chat attachments", () => {
     }
   });
 
+  it("creates and reads owned feed-chat images while rejecting foreign feed targets", async () => {
+    const owner = await signup(app, `feed-image-owner-${stamp}@rakazo.test`, "Feed Image Owner");
+    const other = await signup(app, `feed-image-other-${stamp}@rakazo.test`, "Other Feed User");
+    const bot = await rpc<{ id: string }>(app, owner, "bots/create", {
+      name: "Feed Image Assistant",
+      title: "Feed Image Assistant",
+      description: "synthetic feed image QA",
+      instructions: "",
+      notifyOnFinish: false,
+    });
+    const prisma = botIntroHarness!.prisma;
+    const ownedBot = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } });
+    const feed = await prisma.feedItem.create({
+      data: {
+        botId: bot.id,
+        userId: ownedBot.userId,
+        spaceId: ownedBot.spaceId,
+        dedupKey: "synthetic-feed-image",
+        kind: "note",
+        title: "Synthetic image note",
+        summary: "Synthetic image fixture",
+        content: "Synthetic image fixture",
+      },
+    });
+    const image = await rpc<{ id: string }>(app, owner, "artifacts/create", {
+      feedItemId: feed.id,
+      name: "feed-pixel.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const fetched = await rpc<{ id: string; contentBase64: string }>(app, owner, "artifacts/get", {
+      feedItemId: feed.id,
+      artifactId: image.id,
+    });
+    expect(fetched.id).toBe(image.id);
+    expect(fetched.contentBase64).toBe(tinyPng.toString("base64"));
+    for (const [cookie, feedItemId] of [
+      [other, feed.id],
+      [owner, "missing-feed"],
+    ]) {
+      expect(
+        (
+          await raw(app, cookie!, "artifacts/get", {
+            feedItemId,
+            artifactId: image.id,
+          })
+        ).status,
+      ).toBeGreaterThanOrEqual(400);
+      expect(
+        (
+          await raw(app, cookie!, "artifacts/create", {
+            feedItemId,
+            name: "denied.png",
+            mimeType: "image/png",
+            contentBase64: tinyPng.toString("base64"),
+          })
+        ).status,
+      ).toBeGreaterThanOrEqual(400);
+    }
+  });
+
   it("uploads, sends with image/file, and rejects invalid attachments", async () => {
     const cookie = await signup(app, `attachments-${stamp}@rakazo.test`, "Attachment User");
     const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {

@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type * as AutoReviewModule from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
-import { clipToolResultText } from "./pi-runtime-limits.js";
+import { clipToolResultContent, clipToolResultText } from "./pi-runtime-limits.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -319,6 +319,9 @@ describe("mutating tool effect idempotency keys", () => {
     const catalog = f.results[0] as { format: string; components: string };
     const serialized = JSON.stringify(catalog);
     expect(clipToolResultText(serialized)).toBe(serialized);
+    expect(clipToolResultContent([{ type: "text", text: serialized }])).toEqual([
+      { type: "text", text: serialized },
+    ]);
     const schemas = JSON.parse(catalog.components);
     expect(Object.keys(schemas.components).sort()).toEqual(Object.keys(UiComponentProps).sort());
     const checkReferences = (value: unknown): void => {

@@ -5204,9 +5204,15 @@ export function createRouter(deps: RouterDeps): Router<typeof appContract, Route
         return listArtifactVersions(deps, context.actor, input);
       }),
       create: authed.artifacts.create.handler(async ({ context, input }) => {
-        const botId = input.botId
-          ? (await repos.getBot(context.actor, input.botId)).id
-          : (await groupRepos.getGroupTarget(context.actor, input.groupId!)).members[0]?.bot.id;
+        const feedTarget = input.feedItemId
+          ? await resolveThreadTarget(deps.prisma, context.actor, input)
+          : null;
+        const botId =
+          feedTarget?.kind === "bot"
+            ? feedTarget.botId
+            : input.botId
+              ? (await repos.getBot(context.actor, input.botId)).id
+              : (await groupRepos.getGroupTarget(context.actor, input.groupId!)).members[0]?.bot.id;
         if (!botId) throw new IsolationError();
         try {
           return await createOwnedArtifact(deps, context.actor, { ...input, botId });
@@ -5228,10 +5234,14 @@ export function createRouter(deps: RouterDeps): Router<typeof appContract, Route
             contextBotId,
           });
         }
-        await repos.getBot(context.actor, input.botId!);
+        const feedTarget = input.feedItemId
+          ? await resolveThreadTarget(deps.prisma, context.actor, input)
+          : null;
+        const botId = feedTarget?.kind === "bot" ? feedTarget.botId : input.botId!;
+        await repos.getBot(context.actor, botId);
         try {
           return await getOwnedArtifact(deps, context.actor, {
-            botId: input.botId!,
+            botId,
             artifactId: input.artifactId,
           });
         } catch (error) {
