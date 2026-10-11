@@ -1,3 +1,4 @@
+import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { filterPickedAttachments } from "./pick-attachments-filter.js";
 
@@ -19,7 +20,7 @@ describe("filterPickedAttachments", () => {
       {
         name: "big.bin",
         mimeType: "text/plain",
-        size: 11 * 1024 * 1024,
+        size: ATTACHMENT_MAX_BYTES + 1,
         contentBase64: "aGVsbG8=",
       },
     ]);

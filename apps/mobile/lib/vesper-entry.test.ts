@@ -49,18 +49,20 @@ describe("Vesper entry point", () => {
   });
 
   it("persists the shell so the next launch opens Vesper", async () => {
-    const store = await useFakeStore();
-    const { SHELL_MODE_KEY } = await import("./shell-mode");
+    const { SHELL_MODE_KEY, loadShellMode, resetShellModeForTests } = await import("./shell-mode");
+    const store = await useFakeStore({ [SHELL_MODE_KEY]: "negroni" });
     const { enterVesperShell } = await import("./vesper-entry");
 
     await enterVesperShell(vi.fn());
-    expect(store.get(SHELL_MODE_KEY)).toBe("vesper");
+    expect(store.has(SHELL_MODE_KEY)).toBe(false);
+    resetShellModeForTests();
+    await expect(loadShellMode()).resolves.toBe("vesper");
   });
 
   it("navigates only after the shell is stored, so the redirect cannot race", async () => {
     await useFakeStore();
     const { SHELL_MODE_KEY } = await import("./shell-mode");
-    const { setItemAsync } = await import("expo-secure-store");
+    const { setItemAsync, deleteItemAsync } = await import("expo-secure-store");
     const { enterVesperShell } = await import("./vesper-entry");
 
     const writes: string[] = [];
@@ -68,6 +70,11 @@ describe("Vesper entry point", () => {
     vi.mocked(setItemAsync).mockImplementation(async (key: string, value: string) => {
       writes.push(key);
       await previous?.(key, value);
+    });
+    const previousDelete = vi.mocked(deleteItemAsync).getMockImplementation();
+    vi.mocked(deleteItemAsync).mockImplementation(async (key: string) => {
+      writes.push(key);
+      await previousDelete?.(key);
     });
 
     await enterVesperShell(() => writes.push("navigate"));

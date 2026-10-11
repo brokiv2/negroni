@@ -986,4 +986,34 @@ export const RU_MESSAGES: Record<string, string> = {
     "Планы, прогресс и результаты появляются здесь по ходу работы агента.",
   "The computer is off. Take control to start it.":
     "Компьютер выключен. Возьмите управление, чтобы запустить его.",
+  "Add selected model": "Добавить выбранную модель",
+  Auto: "Авто",
+  "Auto router": "Автоматический выбор",
+  "Chat model": "Модель для чата",
+  "Complex tasks": "Сложные задачи",
+  "Could not change model": "Не удалось сменить модель",
+  "Could not load agents.": "Не удалось загрузить агентов.",
+  "Could not load models": "Не удалось загрузить модели",
+  "Could not save models": "Не удалось сохранить модели",
+  "Default chat": "Обычный чат",
+  "Enabled models": "Включённые модели",
+  "First enabled model": "Первая включённая модель",
+  "For you": "Для вас",
+  "How your assistant sounds, and whether it speaks first.":
+    "Как звучит ассистент и начинает ли он разговор сам.",
+  "Manage models…": "Настроить модели…",
+  "Name, tone, avatar, and everything your assistant remembers.":
+    "Имя, стиль общения, аватар и всё, что помнит ассистент.",
+  "No specialists yet": "Специалистов пока нет",
+  "Open on desktop to change these values.": "Откройте на компьютере, чтобы изменить эти значения.",
+  "Team workspace": "Пространство команды",
+  "The apps and accounts your assistant is allowed to reach.":
+    "Приложения и аккаунты, к которым у ассистента есть доступ.",
+  "Use as workspace default": "Использовать по умолчанию в пространстве",
+  "Use default profiles": "Использовать стандартные профили",
+  "What your assistant may do on its own, and what it must ask about.":
+    "Что ассистент может делать сам и для чего должен спросить разрешение.",
+  "Workspace default": "По умолчанию в пространстве",
+  "Your assistant creates a team when a project needs one.":
+    "Ассистент создаёт команду, когда она нужна для проекта.",
 };

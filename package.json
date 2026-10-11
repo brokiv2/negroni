@@ -50,7 +50,7 @@
     "patchedDependencies": {
       "app-builder-lib@26.15.3": "patches/app-builder-lib@26.15.3.patch",
       "expo-modules-jsi@57.1.1": "patches/expo-modules-jsi@57.1.1.patch",
-      "expo-constants@57.0.19": "patches/expo-constants@57.0.19.patch",
+      "expo-constants@57.0.21": "patches/expo-constants@57.0.21.patch",
       "expo-audio@57.0.5": "patches/expo-audio@57.0.5.patch"
     }
   }

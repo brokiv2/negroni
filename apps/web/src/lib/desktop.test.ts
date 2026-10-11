@@ -71,10 +71,12 @@ describe("window chrome", () => {
     expect(shell.match(/className="app-no-drag grid h-\[30px\] w-\[34px\]/g)).toHaveLength(1);
   });
 
-  it("moves window chrome into the conversation header when the bots sidebar is collapsed", () => {
+  it("shows window chrome in the conversation header when the sidebar is absent", () => {
     const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "../pages");
     const shell = readFileSync(path.join(root, "Shell.tsx"), "utf8");
-    expect(shell).toContain("{botsSidebarCollapsed && desktopBridge() ? <WindowChrome /> : null}");
+    expect(shell).toMatch(
+      /\{\(botsSidebarCollapsed \|\| chatView === "assistant"\) && desktopBridge\(\) \? \(\s*<WindowChrome \/>\s*\) : null\}/,
+    );
   });
 });
 

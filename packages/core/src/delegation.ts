@@ -10,6 +10,7 @@
  */
 
 export const DELEGATION_MAX_RUNS = 8;
+export const DELEGATION_MAX_PHASES = 3;
 export const DELEGATION_DEADLINE_MS = 24 * 60 * 60_000;
 /** Review runs allowed after the first one produced no usable review. */
 export const DELEGATION_REVIEW_RETRIES = 1;
@@ -60,7 +61,7 @@ const TRANSITIONS: Record<DelegationState, readonly DelegationState[]> = {
   queued: ["working", "reviewing", "failed", "cancelled", "superseded"],
   working: ["reviewing", "failed", "cancelled", "superseded"],
   needs_input: ["working", "reviewing", "failed", "cancelled", "superseded"],
-  reviewing: ["completed", "needs_input", "failed", "cancelled", "superseded"],
+  reviewing: ["queued", "completed", "needs_input", "failed", "cancelled", "superseded"],
   completed: [],
   failed: [],
   cancelled: [],
@@ -103,6 +104,25 @@ export interface DelegationRecord {
   state: DelegationState;
   assignment: string;
   sources: string[];
+  /** Rework can narrow this phase, but does not replace the originating assignment. */
+  originalAssignment?: string;
+  originalSources?: string[];
+  phases?: {
+    assignments: string[];
+    index: number;
+    activeRunId?: string;
+    completed: Array<{ index: number; outcome: DelegationChildOutcome; review: DelegationReview }>;
+  };
+  /** Present for phased assignments; checked again before each model call, tool and continuation. */
+  origin?: {
+    spaceId: string;
+    userId: string;
+    runId: string;
+    sourceMessageId: string | null;
+    workId: string | null;
+    workVersion: number | null;
+    instructionFingerprints: Array<{ botId: string; fingerprint: string }>;
+  };
   requester: {
     botId: string;
     threadId: string;
@@ -133,6 +153,7 @@ export interface DelegationReviewPointer {
   kind: "review";
   taskRef: string;
   attempt: number;
+  phaseIndex?: number;
 }
 
 export type TaskDelegation = DelegationRecord | DelegationReviewPointer;
@@ -172,6 +193,8 @@ export function createDelegationRecord(input: {
   assigneeBotId: string;
   now: Date;
   parent?: DelegationRecord & { taskRef: string };
+  phases?: readonly string[];
+  origin?: DelegationRecord["origin"];
 }): DelegationRecord {
   const at = input.now.toISOString();
   const parent = input.parent;
@@ -179,7 +202,25 @@ export function createDelegationRecord(input: {
     kind: "delegation",
     state: "queued",
     assignment: input.assignment,
-    sources: normalizeSources(input.sources ?? []),
+    sources: normalizeSources([...(parent?.sources ?? []), ...(input.sources ?? [])]),
+    ...(parent
+      ? {
+          originalAssignment: parent.originalAssignment ?? parent.assignment,
+          originalSources: parent.originalSources ?? parent.sources,
+        }
+      : {}),
+    ...(parent?.phases
+      ? { phases: parent.phases }
+      : input.phases
+        ? {
+            phases: {
+              assignments: validateDelegationPhases(input.phases),
+              index: 0,
+              completed: [],
+            },
+          }
+        : {}),
+    ...((parent?.origin ?? input.origin) ? { origin: parent?.origin ?? input.origin } : {}),
     requester: input.requester,
     assigneeBotId: input.assigneeBotId,
     ...(parent ? { parentTaskRef: parent.taskRef } : {}),
@@ -195,6 +236,47 @@ export function createDelegationRecord(input: {
     createdAt: at,
     updatedAt: at,
   };
+}
+
+export function validateDelegationPhases(phases: readonly unknown[]): string[] {
+  if (phases.length < 2 || phases.length > DELEGATION_MAX_PHASES)
+    throw new Error(`A phased assignment needs 2 to ${DELEGATION_MAX_PHASES} bounded phases.`);
+  return phases.map((phase) => {
+    if (typeof phase !== "string" || !phase.trim() || phase.length > 2_000)
+      throw new Error("Each phase needs a non-empty assignment of at most 2000 characters.");
+    return phase.trim();
+  });
+}
+
+/** Archive the verified intermediate evidence without resetting the allowance or deadline. */
+export function advanceDelegationPhase(record: DelegationRecord, now: Date): DelegationRecord {
+  const phases = record.phases;
+  if (
+    record.state !== "reviewing" ||
+    !phases ||
+    phases.index + 1 >= phases.assignments.length ||
+    !record.outcome ||
+    record.review?.outcome !== "verified"
+  )
+    throw new Error("Only a verified intermediate phase can continue.");
+  if (delegationStopReason(record, now))
+    throw new Error("The delegated assignment cannot continue.");
+  const { outcome, review, checks: _checks, ...rest } = record;
+  return transitionDelegation(
+    {
+      ...chargeDelegationRun(rest, now),
+      phases: {
+        ...phases,
+        index: phases.index + 1,
+        completed: [...phases.completed, { index: phases.index, outcome, review }],
+      },
+      reviewAttempts: 0,
+      reviewTaskIds: [],
+    },
+    "queued",
+    now,
+    "phase_reviewed",
+  );
 }
 
 export function normalizeSources(sources: readonly unknown[]): string[] {
@@ -237,8 +319,24 @@ export function transitionDelegation(
   if (!TRANSITIONS[record.state].includes(to)) {
     throw new Error(`Delegated task cannot move from ${record.state} to ${to}`);
   }
-  if (to === "completed" && !record.review?.reviewedAt) {
-    throw new Error("A delegated task completes only after its review is stored");
+  if (to === "queued" && record.state === "reviewing") {
+    const previous = record.phases?.completed.at(-1);
+    if (
+      !previous ||
+      previous.index !== record.phases!.index - 1 ||
+      previous.review.outcome !== "verified"
+    )
+      throw new Error("Only preserved verified phase evidence can queue a continuation");
+  }
+  if (to === "completed" && (!record.review?.reviewedAt || record.review.outcome !== "verified")) {
+    throw new Error("A delegated task completes only after a verified review is stored");
+  }
+  if (
+    to === "completed" &&
+    record.phases &&
+    record.phases.index + 1 < record.phases.assignments.length
+  ) {
+    throw new Error("An intermediate phase cannot complete the originating assignment");
   }
   const at = now.toISOString();
   return {
@@ -325,7 +423,10 @@ export function delegationReview(input: {
   const checks = input.record.checks ?? [];
   const outcome = input.record.outcome;
   const failed = checks.filter((check) => !check.passed);
-  const summary = isPlaceholderResultText(input.summary) ? "" : input.summary.trim();
+  const summary =
+    isPlaceholderResultText(input.summary) || BARE_COMPLETION.test(input.summary.trim())
+      ? ""
+      : input.summary.trim();
   const limitations = [
     ...failed.map((check) => check.detail),
     ...(input.record.sources.length === 0
@@ -333,13 +434,14 @@ export function delegationReview(input: {
       : ["Reads were counted, not matched to each requested source."]),
     "Claims inside the result were assessed by the reviewing model, not proven by code.",
   ];
-  const reviewOutcome: DelegationReviewOutcome = !summary
-    ? "incomplete"
-    : outcome?.intent === "blocker"
-      ? "blocked"
-      : failed.length === 0
-        ? "verified"
-        : "partial";
+  const reviewOutcome: DelegationReviewOutcome =
+    !summary || !outcome
+      ? "incomplete"
+      : outcome?.intent === "blocker"
+        ? "blocked"
+        : failed.length === 0
+          ? "verified"
+          : "partial";
   return {
     taskRef: input.taskRef,
     outcome: reviewOutcome,
@@ -357,7 +459,8 @@ export function delegationReview(input: {
 
 /** The state a reviewed task settles in. A blocker review leaves it open for the user. */
 export function stateAfterReview(record: DelegationRecord): DelegationState {
-  if (record.outcome?.intent !== "blocker") return "completed";
+  if (record.outcome?.intent !== "blocker")
+    return record.review?.outcome === "verified" ? "completed" : "needs_input";
   return record.outcome.failed ? "failed" : "needs_input";
 }
 

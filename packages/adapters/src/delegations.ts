@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import {
+  advanceDelegationPhase,
   buildBotMessageWakePrompt,
   chargeDelegationRun,
   DELEGATION_ACTIVE_STATES,
@@ -8,6 +10,7 @@ import {
   type DelegationRecord,
   type DelegationReviewPointer,
   type DelegationStopReason,
+  delegationAssignmentContext,
   delegationRecord,
   delegationReview,
   delegationReviewPointer,
@@ -26,17 +29,117 @@ import { getLogger } from "@rakazo/logging";
 
 type Tx = Prisma.TransactionClient;
 
+export function delegationInstructionFingerprint(instructions: string) {
+  return createHash("sha256").update(instructions).digest("hex");
+}
+
+/** Saved phase plans cannot outlive a user stop, changed work scope, or changed bot instructions. */
+export async function delegationOriginAllowed(
+  db: Pick<PrismaClient, "run" | "message" | "assistantWork" | "spaceMember" | "bot"> | Tx,
+  record: DelegationRecord,
+  now = new Date(),
+): Promise<boolean> {
+  const origin = record.origin;
+  if (!origin) return true;
+  const scope = { spaceId: origin.spaceId, userId: origin.userId };
+  const sourceRun = await db.run.findFirst({
+    where: { id: origin.runId, ...scope, botId: record.requester.botId },
+    select: { status: true, sourceMessageId: true, workId: true, workVersion: true },
+  });
+  if (
+    !sourceRun ||
+    sourceRun.status === "cancelled" ||
+    (!origin.workId && sourceRun.sourceMessageId !== origin.sourceMessageId)
+  )
+    return false;
+  if (!(await db.spaceMember.findFirst({ where: scope, select: { id: true } }))) return false;
+  if (
+    !origin.sourceMessageId ||
+    !(await db.message.findFirst({
+      where: { id: origin.sourceMessageId, role: "user", thread: scope },
+      select: { id: true },
+    }))
+  )
+    return false;
+  if (origin.workId) {
+    if (sourceRun.workId !== origin.workId || sourceRun.workVersion !== origin.workVersion)
+      return false;
+    const work = await db.assistantWork.findFirst({
+      where: { id: origin.workId, ...scope, botId: record.requester.botId },
+    });
+    if (
+      !work ||
+      work.version !== origin.workVersion ||
+      work.sourceMessageId !== origin.sourceMessageId ||
+      work.deadline <= now ||
+      ["paused", "cancelled", "completed", "needs_input"].includes(work.status)
+    )
+      return false;
+  }
+  const bots = await db.bot.findMany({
+    where: {
+      ...scope,
+      archivedAt: null,
+      id: { in: origin.instructionFingerprints.map((bot) => bot.botId) },
+    },
+    select: { id: true, instructions: true },
+  });
+  return origin.instructionFingerprints.every((expected) =>
+    bots.some(
+      (bot) =>
+        bot.id === expected.botId &&
+        delegationInstructionFingerprint(bot.instructions) === expected.fingerprint,
+    ),
+  );
+}
+
+/** Read-only gate used during setup and before tools; lifecycle mutations belong to the locked gate. */
+export async function delegationRunStillAllowed(
+  prisma: PrismaClient,
+  runId: string,
+  now = new Date(),
+) {
+  const found = await runDelegation(prisma, runId);
+  if (!found) return true;
+  if (found.status === "cancelled") return false;
+  const record =
+    found.kind === "child"
+      ? found.record
+      : delegationRecord(
+          (
+            await prisma.task.findUnique({
+              where: { id: found.pointer.taskRef },
+              select: { delegation: true },
+            })
+          )?.delegation,
+        );
+  if (
+    !record ||
+    !(await delegationOriginAllowed(prisma, record, now)) ||
+    new Date(record.deadline) <= now
+  )
+    return false;
+  if (found.kind === "review")
+    return record.state === "reviewing" && found.pointer.phaseIndex === record.phases?.index;
+  return (
+    ["queued", "working", "needs_input"].includes(record.state) &&
+    (!record.phases?.activeRunId || record.phases.activeRunId === runId)
+  );
+}
+
 export interface LockedDelegation {
   taskId: string;
+  spaceId: string;
+  userId: string;
   record: DelegationRecord;
 }
 
 /** Read a delegated task under a row lock. Callers that also lock threads take them first. */
 export async function lockDelegation(tx: Tx, taskId: string): Promise<LockedDelegation | null> {
-  const rows = await tx.$queryRaw<Array<{ delegation: unknown }>>`
-    SELECT delegation FROM tasks WHERE id = ${taskId} FOR UPDATE`;
+  const rows = await tx.$queryRaw<Array<{ delegation: unknown; spaceId: string; userId: string }>>`
+    SELECT delegation, "spaceId", "userId" FROM tasks WHERE id = ${taskId} FOR UPDATE`;
   const record = delegationRecord(rows[0]?.delegation);
-  return record ? { taskId, record } : null;
+  return record ? { taskId, record, spaceId: rows[0]!.spaceId, userId: rows[0]!.userId } : null;
 }
 
 export async function saveDelegation(tx: Tx, taskId: string, record: DelegationRecord) {
@@ -51,19 +154,19 @@ export async function runDelegation(
   prisma: Pick<PrismaClient, "run" | "task"> | Tx,
   runId: string,
 ): Promise<
-  | { kind: "child"; taskId: string; record: DelegationRecord }
-  | { kind: "review"; taskId: string; pointer: DelegationReviewPointer }
+  | { kind: "child"; taskId: string; record: DelegationRecord; status: string }
+  | { kind: "review"; taskId: string; pointer: DelegationReviewPointer; status: string }
   | null
 > {
   const run = await prisma.run.findUnique({
     where: { id: runId },
-    select: { task: { select: { id: true, delegation: true } } },
+    select: { status: true, task: { select: { id: true, delegation: true } } },
   });
   if (!run?.task) return null;
   const record = delegationRecord(run.task.delegation);
-  if (record) return { kind: "child", taskId: run.task.id, record };
+  if (record) return { kind: "child", taskId: run.task.id, record, status: run.status };
   const pointer = delegationReviewPointer(run.task.delegation);
-  return pointer ? { kind: "review", taskId: run.task.id, pointer } : null;
+  return pointer ? { kind: "review", taskId: run.task.id, pointer, status: run.status } : null;
 }
 
 /** Successful read tool calls in a run, from its tool audit. Arguments are not stored. */
@@ -126,6 +229,7 @@ export async function createReviewRun(
     kind: "review",
     taskRef: input.taskRef,
     attempt: input.attempt,
+    ...(input.record.phases ? { phaseIndex: input.record.phases.index } : {}),
   };
   const task = await tx.task.create({
     data: {
@@ -138,9 +242,7 @@ export async function createReviewRun(
         text: input.resultText,
         intent: input.intent,
         delegation: {
-          assignment: input.record.assignment,
-          sources: input.record.sources,
-          checks: input.record.checks,
+          ...delegationAssignmentContext(input.record),
           retry: input.attempt > 0,
         },
       }),
@@ -183,8 +285,19 @@ export async function settleDelegationReview(
 ): Promise<{ retryRunId?: string }> {
   const now = input.now ?? new Date();
   const locked = await lockDelegation(tx, input.pointer.taskRef);
-  if (!locked || locked.record.state !== "reviewing") return {};
+  if (locked?.record.state !== "reviewing") return {};
+  if (locked.spaceId !== input.reviewRun.spaceId || locked.userId !== input.reviewRun.userId)
+    return {};
   const { record } = locked;
+  if (input.pointer.phaseIndex !== record.phases?.index) return {};
+  if (!(await delegationOriginAllowed(tx, record, now))) {
+    await saveDelegation(
+      tx,
+      locked.taskId,
+      transitionDelegation(record, "cancelled", now, "authorization_changed"),
+    );
+    return {};
+  }
   const review = delegationReview({
     taskRef: locked.taskId,
     record,
@@ -194,6 +307,65 @@ export async function settleDelegationReview(
   });
   if (review.outcome !== "incomplete") {
     const reviewed: DelegationRecord = { ...record, review };
+    if (
+      review.outcome === "verified" &&
+      record.phases &&
+      record.phases.index + 1 < record.phases.assignments.length
+    ) {
+      const stop = delegationStopReason(reviewed, now);
+      if (stop === "budget_exhausted" || stop === "deadline_passed") {
+        await saveDelegation(
+          tx,
+          locked.taskId,
+          transitionDelegation(reviewed, "failed", now, stop),
+        );
+        await postDelegationNotice(tx, reviewed, input.reviewRun.spaceId, stop);
+        return {};
+      }
+      const next = advanceDelegationPhase(reviewed, now);
+      const task = await tx.task.findUniqueOrThrow({
+        where: { id: locked.taskId },
+        select: { threadId: true, spaceId: true, userId: true, botId: true },
+      });
+      const childRun = await tx.run.findUniqueOrThrow({
+        where: { id: record.outcome!.childRunId },
+        select: { sourceMessageId: true },
+      });
+      const requester = await tx.bot.findUniqueOrThrow({
+        where: { id: record.requester.botId },
+        select: { id: true, name: true },
+      });
+      await tx.task.update({
+        where: { id: locked.taskId },
+        data: {
+          status: "queued",
+          prompt: buildBotMessageWakePrompt({
+            from: requester,
+            intent: "request",
+            text: next.phases!.assignments[next.phases!.index]!,
+            sources: next.sources,
+            delegation: delegationAssignmentContext(next),
+          }),
+        },
+      });
+      const continuation = await tx.run.create({
+        data: {
+          ...task,
+          taskId: locked.taskId,
+          status: "queued",
+          trigger: "bot_message",
+          sourceMessageId: childRun.sourceMessageId,
+          interactionMode: "chat",
+        },
+        select: { id: true },
+      });
+      await saveDelegation(tx, locked.taskId, {
+        ...next,
+        phases: { ...next.phases!, activeRunId: continuation.id },
+      });
+      // Enqueue after commit; an interrupted publish is repaired by the existing queued-run reconciler.
+      return { retryRunId: continuation.id };
+    }
     await saveDelegation(
       tx,
       locked.taskId,
@@ -247,6 +419,26 @@ export async function delegationRunGate(
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   const found = await runDelegation(prisma, runId);
   if (!found) return { allowed: true };
+  if (!(await delegationRunStillAllowed(prisma, runId, now))) {
+    const taskId = found.kind === "child" ? found.taskId : found.pointer.taskRef;
+    await prisma.$transaction(async (tx) => {
+      const locked = await lockDelegation(tx, taskId);
+      if (!locked || !DELEGATION_ACTIVE_STATES.includes(locked.record.state)) return;
+      if (new Date(locked.record.deadline) <= now)
+        await saveDelegation(
+          tx,
+          taskId,
+          transitionDelegation(locked.record, "failed", now, "deadline_passed"),
+        );
+      else if (!(await delegationOriginAllowed(tx, locked.record, now)))
+        await saveDelegation(
+          tx,
+          taskId,
+          transitionDelegation(locked.record, "cancelled", now, "authorization_changed"),
+        );
+    });
+    return { allowed: false, reason: "This delegated assignment was stopped, changed or expired." };
+  }
   if (found.kind === "review") {
     const target = await prisma.task.findUnique({
       where: { id: found.pointer.taskRef },
@@ -296,7 +488,7 @@ export async function reconcileDelegations(deps: { prisma: PrismaClient; now?: (
     },
     orderBy: { updatedAt: "asc" },
     take: 100,
-    select: { id: true, spaceId: true, runs: { select: { status: true } } },
+    select: { id: true, spaceId: true },
   });
   for (const candidate of candidates) {
     try {
@@ -304,6 +496,15 @@ export async function reconcileDelegations(deps: { prisma: PrismaClient; now?: (
         const locked = await lockDelegation(tx, candidate.id);
         if (!locked) return;
         const { record } = locked;
+        if (!DELEGATION_ACTIVE_STATES.includes(record.state)) return;
+        if (!(await delegationOriginAllowed(tx, record, now))) {
+          await saveDelegation(
+            tx,
+            locked.taskId,
+            transitionDelegation(record, "cancelled", now, "authorization_changed"),
+          );
+          return;
+        }
         if (record.state === "reviewing") {
           const reviewRuns = await tx.run.findMany({
             where: { taskId: { in: record.reviewTaskIds ?? [] } },
@@ -323,7 +524,12 @@ export async function reconcileDelegations(deps: { prisma: PrismaClient; now?: (
           }
           return;
         }
-        const runs = candidate.runs;
+        const runs = await tx.run.findMany({
+          where: record.phases?.activeRunId
+            ? { id: record.phases.activeRunId }
+            : { taskId: candidate.id },
+          select: { status: true },
+        });
         if (runs.length > 0 && runs.every((run) => run.status === "cancelled")) {
           await saveDelegation(
             tx,

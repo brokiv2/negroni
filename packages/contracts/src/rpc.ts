@@ -113,6 +113,7 @@ import {
   RadarUpdatesPage,
 } from "./radar.js";
 import { MessageReactionSchema } from "./reactions.js";
+import { ResponseUiBlock, UpdateResponseUiStateInput } from "./response-ui.js";
 import {
   EFFECTS_LIST_MAX_LIMIT,
   EffectsListOutputSchema,
@@ -361,6 +362,7 @@ export const appContract = {
       .output(BotSectionSchema),
   },
   threads: {
+    responseUiState: oc.input(UpdateResponseUiStateInput).output(ResponseUiBlock),
     activity: oc
       .input(threadTarget.safeExtend({ runId: Id.optional() }))
       .output(z.array(ToolActivitySchema)),

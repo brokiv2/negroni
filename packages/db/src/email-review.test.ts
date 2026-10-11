@@ -18,12 +18,10 @@ function fixture() {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     message: {
-      findFirst: vi
-        .fn()
-        .mockResolvedValue({
-          id: "message",
-          blocks: [{ kind: "ask", text: "Agenda", status: "pending", emailDraft: draft }],
-        }),
+      findFirst: vi.fn().mockResolvedValue({
+        id: "message",
+        blocks: [{ kind: "ask", text: "Agenda", status: "pending", emailDraft: draft }],
+      }),
       update: vi.fn().mockResolvedValue({ id: "message" }),
     },
     task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },

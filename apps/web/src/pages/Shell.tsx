@@ -1,4 +1,3 @@
-import { EmailDraftCard, WeatherCard } from "../components/ChatWidgets";
 import { i18n } from "@lingui/core";
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
@@ -144,6 +143,7 @@ import { AppRail } from "../components/AppRail";
 import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
+import { EmailDraftCard, WeatherCard } from "../components/ChatWidgets";
 import { CloudAgentCard } from "../components/CloudAgentCard";
 import { ComputerMaintenanceActions } from "../components/ComputerMaintenanceActions";
 import {
@@ -153,6 +153,7 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import { PersonalWorkspace } from "../components/PersonalWorkspace";
+import { ResponseUiMessage } from "../components/ResponseUiMessage";
 import { RadarBriefCard, RadarUpdateCard } from "../components/radar/RadarCards";
 import { ToolActivityDisclosure } from "../components/ToolActivityDisclosure";
 import { SkillDraftCard } from "../components/teach/SkillDraftCard";
@@ -1873,8 +1874,9 @@ export function ShellPage() {
     [activeSnapshot?.messages, personalBotId],
   );
   const transcriptArtifactTarget = useMemo<ArtifactTarget>(
-    () => (inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "" }),
-    [active?.id, groupId, inGroup],
+    () =>
+      inGroup ? { groupId: groupId ?? "" } : { botId: active?.id ?? "", threadKind: botThreadKind },
+    [active?.id, groupId, inGroup, botThreadKind],
   );
   const transcriptMembers = activeSnapshot?.members ?? activeGroup?.members;
   const resolveTranscriptBot = useCallback(
@@ -3586,6 +3588,15 @@ export function ShellPage() {
               onLoadOlder={loadOlder}
               onOpenBot={openBot}
               onAnswer={answerMessage}
+              onResponseFollowUp={(message, text) => {
+                setReplyTarget(message);
+                setReplyQuote(null);
+                setComposerPrefill({
+                  nonce: ++prefillNonce.current,
+                  targetKey: composerTargetKey,
+                  text,
+                });
+              }}
               onReply={(message) => {
                 setReplyTarget(message);
                 setReplyQuote(null);
@@ -4711,6 +4722,7 @@ const Transcript = memo(function Transcript({
   onLoadOlder,
   onOpenBot,
   onAnswer,
+  onResponseFollowUp,
   onReply,
   onQuote,
   onReact,
@@ -4740,6 +4752,7 @@ const Transcript = memo(function Transcript({
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onResponseFollowUp: (message: ThreadMessage, text: string) => void;
   onReply: (message: ThreadMessage) => void;
   onQuote: (message: ThreadMessage, quote: string) => void;
   onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
@@ -5072,6 +5085,7 @@ const Transcript = memo(function Transcript({
                     onOpenBot={onOpenBot}
                     onOpenPeerMessages={onOpenPeerMessages}
                     onAnswer={onAnswer}
+                    onResponseFollowUp={onResponseFollowUp}
                     speakerName={
                       peerReceipt
                         ? undefined
@@ -6032,6 +6046,7 @@ function previewMessageText(message: ThreadMessage): string {
   const text = message.blocks
     .map((block) => {
       if (block.kind === "channel_message") return block.text;
+      if (block.kind === "response_ui") return block.summary;
       if (block.kind === "text") {
         // Bot text is Markdown; user text is already plain.
         return message.role === "bot" ? plainTextFromMarkdown(block.text) : block.text;
@@ -6245,6 +6260,7 @@ const MessageView = memo(function MessageView({
   canAnswer,
   message,
   onAnswer,
+  onResponseFollowUp,
   onOpenBot,
   onOpenPeerMessages,
   speakerName,
@@ -6266,6 +6282,7 @@ const MessageView = memo(function MessageView({
   canAnswer: boolean;
   message: ThreadMessage;
   onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onResponseFollowUp: (message: ThreadMessage, text: string) => void;
   onOpenBot: (botId: string) => void;
   onOpenPeerMessages: (peer: { peerBotId: string; peerBotName: string }) => void;
   speakerName?: string;
@@ -6601,6 +6618,17 @@ const MessageView = memo(function MessageView({
             </div>
           );
         }
+        if (block.kind === "response_ui") {
+          return (
+            <ResponseUiMessage
+              key={block.id}
+              messageId={message.id}
+              block={block}
+              target={artifactTarget}
+              onFollowUp={(text) => onResponseFollowUp(message, text)}
+            />
+          );
+        }
         if (block.kind === "mcp_approval") {
           return (
             <div key={i} className="flex justify-start">
@@ -6702,7 +6730,17 @@ const MessageView = memo(function MessageView({
           );
         }
         if (block.kind === "ask") {
-          if (block.emailDraft) return <EmailDraftCard key={i} draft={block.emailDraft} status={block.status} answer={block.answer} canAnswer={canAnswer} onAnswer={(answer) => onAnswer(message, answer)} />;
+          if (block.emailDraft)
+            return (
+              <EmailDraftCard
+                key={i}
+                draft={block.emailDraft}
+                status={block.status}
+                answer={block.answer}
+                canAnswer={canAnswer}
+                onAnswer={(answer) => onAnswer(message, answer)}
+              />
+            );
           return (
             <AskCard
               key={i}

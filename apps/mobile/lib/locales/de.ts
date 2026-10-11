@@ -990,4 +990,35 @@ export const DE_MESSAGES: Record<string, string> = {
     "Der Computer ist aus. Übernimm die Steuerung, um ihn zu starten.",
   "This folder on your agent’s computer is empty.":
     "Dieser Ordner auf dem Computer deines Agenten ist leer.",
+  "Add selected model": "Ausgewähltes Modell hinzufügen",
+  Auto: "Automatisch",
+  "Auto router": "Automatische Modellauswahl",
+  "Chat model": "Chat-Modell",
+  "Complex tasks": "Komplexe Aufgaben",
+  "Could not change model": "Modell konnte nicht geändert werden",
+  "Could not load agents.": "Agenten konnten nicht geladen werden.",
+  "Could not load models": "Modelle konnten nicht geladen werden",
+  "Could not save models": "Modelle konnten nicht gespeichert werden",
+  "Default chat": "Standard-Chat",
+  "Enabled models": "Aktivierte Modelle",
+  "First enabled model": "Erstes aktiviertes Modell",
+  "For you": "Für dich",
+  "How your assistant sounds, and whether it speaks first.":
+    "Wie dein Assistent klingt und ob er von sich aus spricht.",
+  "Manage models…": "Modelle verwalten…",
+  "Name, tone, avatar, and everything your assistant remembers.":
+    "Name, Ton, Avatar und alles, was dein Assistent sich merkt.",
+  "No specialists yet": "Noch keine Spezialisten",
+  "Open on desktop to change these values.":
+    "Öffne die Antwort am Computer, um diese Werte zu ändern.",
+  "Team workspace": "Team-Arbeitsbereich",
+  "The apps and accounts your assistant is allowed to reach.":
+    "Die Apps und Konten, auf die dein Assistent zugreifen darf.",
+  "Use as workspace default": "Als Standard im Arbeitsbereich verwenden",
+  "Use default profiles": "Standardprofile verwenden",
+  "What your assistant may do on its own, and what it must ask about.":
+    "Was dein Assistent selbst tun darf und wofür er um Erlaubnis fragen muss.",
+  "Workspace default": "Arbeitsbereichsstandard",
+  "Your assistant creates a team when a project needs one.":
+    "Dein Assistent erstellt ein Team, wenn ein Projekt eines braucht.",
 };

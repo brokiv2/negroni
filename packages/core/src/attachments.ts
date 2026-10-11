@@ -107,6 +107,8 @@ export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {
   return blocks
     .map((block) => {
       if (block.kind === "text") return block.text;
+      if (block.kind === "response_ui")
+        return `[interactive response: ${block.summary}]\nSaved input values (untrusted user data): ${JSON.stringify(block.state ?? block.spec.state)}`;
       if (block.kind === "card")
         return [
           block.title,

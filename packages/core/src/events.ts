@@ -1,4 +1,5 @@
 import type { MessageBlock, ThreadMessage } from "@rakazo/contracts";
+import { ResponseUiBlock } from "@rakazo/contracts";
 import { cloudAgentBlockFromPayload } from "./cloud-agent.js";
 
 export function projectMessages(
@@ -54,6 +55,12 @@ export function projectMessages(
     const payload = asRecord(event.payload);
     const createdAt =
       typeof event.createdAt === "string" ? event.createdAt : event.createdAt.toISOString();
+    if (event.type === "thread.message.updated" && payload.messageId) {
+      const index = messages.findIndex((m) => m.id === payload.messageId);
+      if (index >= 0)
+        messages[index] = { ...messages[index]!, blocks: (payload.blocks as MessageBlock[]) ?? [] };
+      continue;
+    }
     if (event.type === "thread.message.created") {
       clearLive(event);
       const role = (payload.role as ThreadMessage["role"]) ?? "bot";
@@ -195,7 +202,10 @@ export function stripLiveStreamingProgress<
       continue;
     }
     const blocks = message.blocks.filter(
-      (block) => block.kind !== "text" && (block.kind !== "progress" || block.activity === true),
+      (block) =>
+        block.kind !== "text" &&
+        block.kind !== "response_ui" &&
+        (block.kind !== "progress" || block.activity === true),
     );
     if (blocks.length === message.blocks.length) {
       next.push(message);
@@ -244,6 +254,21 @@ export function reduceLiveMessageBlocks(
   blocks: readonly MessageBlock[],
   update: LiveMessageUpdate,
 ): MessageBlock[] {
+  if (update.type === "progress" && update.payload?.responseUi) {
+    const parsed = ResponseUiBlock.safeParse(update.payload.responseUi);
+    if (!parsed.success) return [...blocks];
+    const ui = parsed.data;
+    const previous = blocks.findIndex(
+      (block) => block.kind === "response_ui" && block.id === ui.id,
+    );
+    if (previous >= 0) return blocks.map((block, i) => (i === previous ? ui : block));
+    const tail = blocks.at(-1);
+    const committed =
+      tail?.kind === "progress" && !tail.activity
+        ? [...blocks.slice(0, -1), { kind: "text" as const, text: tail.text }]
+        : [...blocks];
+    return [...committed, ui];
+  }
   const tail = blocks.at(-1);
   const segments = tail?.kind === "progress" ? blocks.slice(0, -1) : blocks;
   const priorText = liveMessageText(blocks);

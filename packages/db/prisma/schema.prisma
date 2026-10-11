@@ -1434,6 +1434,13 @@ model AssistantWork {
   status String @default("waiting")
   version Int @default(1)
   nextWakeAt DateTime?
+  eventWatches Json @default("[]")
+  watchSince DateTime?
+  watchScannedAt DateTime?
+  watchGeneration Int @default(1)
+  recoveryAt DateTime?
+  recoveryCount Int @default(0)
+  reconciledAt DateTime?
   wakeReason String
   lastResult String @default("") @db.Text
   activeRunId String? @unique
@@ -1446,9 +1453,32 @@ model AssistantWork {
   updatedAt DateTime @updatedAt
   runs Run[]
 
+  workEvents AssistantWorkEvent[]
+
   @@index([status, nextWakeAt])
+  @@index([watchScannedAt])
+  @@index([reconciledAt])
   @@index([spaceId, userId, threadId])
   @@map("assistant_work")
+}
+
+model AssistantWorkEvent {
+  id String @id @default(cuid())
+  workId String
+  work AssistantWork @relation(fields: [workId], references: [id], onDelete: Cascade)
+  workVersion Int
+  watchGeneration Int
+  eventKey String
+  signalId String?
+  signal RadarSignal? @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  snapshot Json
+  receivedAt DateTime @default(now())
+  consumedAt DateTime?
+  runId String?
+
+  @@unique([workId, eventKey])
+  @@index([workId, workVersion, watchGeneration, consumedAt])
+  @@map("assistant_work_events")
 }
 
 model FeedResearch {
@@ -1553,6 +1583,8 @@ model RadarSource {
 
 // One observed change. Raw content stays local, bounded and expiring.
 model RadarSignal {
+  workEvents AssistantWorkEvent[]
+  observedAt DateTime @default(now())
   id           String       @id @default(cuid())
   spaceId      String
   userId       String
@@ -1609,6 +1641,7 @@ model RadarSignal {
   updatedAt    DateTime     @updatedAt
 
   @@unique([connectionId, externalId, contentHash])
+  @@index([spaceId, userId, observedAt, id])
   @@index([spaceId, userId, occurredAt])
   @@index([spaceId, userId, state, disposition])
   @@index([spaceId, userId, status])

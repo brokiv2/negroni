@@ -25,6 +25,33 @@ import {
 } from "./thread-events.js";
 
 describe("thread event reduction", () => {
+  it("keeps an edited reply's chronology and another run's live output", () => {
+    const reply = {
+      ...message("reply", [{ kind: "text" as const, text: "Earlier" }], 1),
+      runId: "finished",
+      replyQuote: "Quote",
+    };
+    const live = message(
+      "progress:other",
+      [{ kind: "progress", text: "Working", activity: true }],
+      3,
+    );
+    const initial = snapshot([reply, live]);
+    const next = reduceThreadSnapshot(
+      initial,
+      event({
+        type: "thread.message.updated",
+        runId: undefined,
+        payload: { messageId: "reply", role: "bot", blocks: [{ kind: "text", text: "Edited" }] },
+      }),
+    );
+    expect(next?.messages[0]).toEqual({
+      ...reply,
+      botId: "bot-1",
+      blocks: [{ kind: "text", text: "Edited" }],
+    });
+    expect(next?.messages[1]).toBe(live);
+  });
   it("shows a committed direct send as queued before its snapshot refresh returns", () => {
     const initial = snapshot([message("user-1", [{ kind: "text", text: "Continue" }], 4)]);
 

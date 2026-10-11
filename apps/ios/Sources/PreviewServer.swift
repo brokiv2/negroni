@@ -179,6 +179,11 @@
     private var people: [JSON]
     private var updates: [JSON] = []
     private var sent: [JSON] = []
+    private var response: JSON = {
+      guard let url = Bundle.main.url(forResource: "ResponseUiFixture", withExtension: "json"),
+        let data = try? Data(contentsOf: url), let raw = try? JSON.decode(data) else { return .null }
+      return raw
+    }()
 
     private init() {
       settings = [
@@ -471,6 +476,11 @@
       case "aiConsent/status":
         return ["recipients": [], "scope": "space", "version": 1]
       case "threads/get":
+        if PreviewMode.screen == "response-ui" {
+          return ["threadId": "thread-preview", "cursor": response["revision"], "botId": "bot-preview",
+            "messages": [["id": "response-preview", "role": "bot", "seq": 1, "runId": "ended", "blocks": [response]]],
+            "run": .null, "activeRuns": []]
+        }
         if PreviewMode.screen == "login" {
           return ["threadId": "thread-preview", "cursor": 2, "botId": "bot-preview", "messages": [
             ["id": "login-preview", "role": "bot", "runId": "run-preview", "seq": 1, "blocks": [
@@ -506,6 +516,10 @@
           ["id": "two", "runId": "run-preview", "name": "ask_user", "label": "Ask user", "status": "waiting"],
         ]
       case "threads/messages":
+        if PreviewMode.screen == "response-ui" {
+          return ["threadId": "thread-preview", "olderCursor": .null,
+            "messages": [["id": "response-preview", "role": "bot", "seq": 1, "runId": "ended", "blocks": [response]]]]
+        }
         // The page before a message, or the messages around one.
         let before = input["before"].isNull ? Int.max : input["before"].int
         return [
@@ -519,6 +533,12 @@
           "blocks": [["kind": "text", "text": input["text"]]],
         ])
         return ["messageId": .string("m-sent-\(seq)"), "seq": .number(Double(seq))]
+      case "threads/responseUiState":
+        if let document = ResponseUI(response), input["revision"].uiInteger == document.revision,
+          let next = document.replacingState(input["state"].dictionary, revision: document.revision + 1) {
+          response = next.block
+        }
+        return response
       case "connections/list":
         return .array(
           sources.map { source in

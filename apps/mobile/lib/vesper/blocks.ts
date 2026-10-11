@@ -45,6 +45,8 @@ export type VesperBlockRenderer =
   | "plan"
   /** The dark finance summary. */
   | "finance"
+  /** Read-only values until this client supports interactive response controls. */
+  | "response_ui"
   /** A kind newer than this build; say so rather than dropping it. */
   | "unknown";
 
@@ -83,6 +85,7 @@ export const VESPER_BLOCK_RENDERERS = {
   finance: "finance",
   update: "card",
   brief: "card",
+  response_ui: "response_ui",
 } as const satisfies Record<MessageBlock["kind"], VesperBlockRenderer>;
 
 /**
@@ -113,6 +116,7 @@ const STANDALONE: ReadonlySet<VesperBlockRenderer> = new Set([
   "pdf",
   "plan",
   "finance",
+  "response_ui",
 ]);
 
 /** True when the block draws its own card and should sit outside the bubble. */

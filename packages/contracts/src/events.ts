@@ -11,6 +11,7 @@ import {
   RadarBriefPeriod,
   RadarUrgency,
 } from "./radar.js";
+import { ResponseUiBlock } from "./response-ui.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
@@ -46,6 +47,8 @@ export const ProductEventType = z.enum([
   "effect.recorded",
   "agent.tool.called",
   "agent.tool.completed",
+  "agent.context.prepared",
+  "agent.context.usage",
   "effect.reconciled",
   "usage.recorded",
   "bot.spawned",
@@ -216,6 +219,7 @@ export const FinanceCardTransaction = z.object({
 export type FinanceCardTransaction = z.infer<typeof FinanceCardTransaction>;
 
 export const MessageBlock = z.discriminatedUnion("kind", [
+  ResponseUiBlock,
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({
     kind: z.literal("card"),

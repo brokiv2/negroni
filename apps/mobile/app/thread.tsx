@@ -28,6 +28,7 @@ import {
   plainTextFromMarkdown,
   projectMessageReactions,
   resolveComposerSendPlan,
+  responseUiPlainText,
   SLASH_ACTIONS,
   type SlashActionId,
   selectedAskActionLabel,
@@ -3249,6 +3250,8 @@ const MessageBubble = memo(function MessageBubble({
   );
   const caption = message.blocks
     .flatMap((block) => {
+      if (block.kind === "response_ui")
+        return [responseUiPlainText(block), t("Open on desktop to change these values.")];
       if (block.kind === "channel_message" && block.text) {
         return [
           `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`,

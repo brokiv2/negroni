@@ -175,15 +175,35 @@ describe("independent outcome graders", () => {
     e.files["results/language.txt"] = "French";
     expect(passes("updated-preference", e)).toBe(false);
   });
-  it("has 16 distinct cases, each rejects empty evidence and a completion claim", () => {
-    expect(EVAL_CASES).toHaveLength(16);
-    expect(new Set(EVAL_CASES.map((c) => c.id)).size).toBe(16);
+  it("has 17 distinct cases, each rejects empty evidence and a completion claim", () => {
+    expect(EVAL_CASES).toHaveLength(17);
+    expect(new Set(EVAL_CASES.map((c) => c.id)).size).toBe(17);
     for (const scenario of EVAL_CASES) {
       expect(
         passes(scenario.id, { ...evidence(), text: "Done! I completed everything." }),
         scenario.id,
       ).toBe(false);
     }
+  });
+  it("rejects a plausible final report when the delegated phases were not verified", () => {
+    const e = evidence();
+    e.files["results/delegated.txt"] =
+      "The unsigned contract blocks launch until Friday. Correct INV-42 from 900 to 720 by Thursday.";
+    expect(
+      grades("delegated-phases", e).find((criterion) => criterion.id === "saved-invoice-evidence")
+        ?.pass,
+    ).toBe(true);
+    expect(
+      grades("delegated-phases", e).find(
+        (criterion) => criterion.id === "phases-reviewed-to-completion",
+      )?.pass,
+    ).toBe(false);
+    expect(passes("delegated-phases", e)).toBe(false);
+    e.files["results/delegated.txt"] = "Done!";
+    expect(
+      grades("delegated-phases", e).find((criterion) => criterion.id === "saved-invoice-evidence")
+        ?.pass,
+    ).toBe(false);
   });
   it("grades the requested unknown artifact without relying on explanatory wording", () => {
     const e = evidence();

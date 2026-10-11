@@ -453,6 +453,8 @@ export type AgentRuntimeEvent =
       /** Cache hits and writes folded into inputTokens, kept apart so cost views can split them. */
       cacheReadTokens: number;
       cacheWriteTokens: number;
+      /** True only when the provider exposed cache accounting; omitted zeroes can be defaults. */
+      cacheUsageReported?: boolean;
       provider: string;
       model: string;
     }

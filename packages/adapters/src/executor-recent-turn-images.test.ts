@@ -116,6 +116,7 @@ async function runWithModel(modelId: string) {
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Look again" })) },
     connection: { findMany: vi.fn(async () => []) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },
     deploymentSettings: {
       findUnique: vi.fn(async () => ({
@@ -128,6 +129,8 @@ async function runWithModel(modelId: string) {
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
     externalEffect: { findMany: vi.fn(async () => []) },
+    feedItem: { findFirst: vi.fn(async () => null) },
+    feedProfile: { findUnique: vi.fn(async () => null) },
     artifact: {
       findMany: vi.fn(async () => [
         { id: "art-1", storageKey: "shot.png", size: 4, mimeType: "image/png", name: "shot.png" },

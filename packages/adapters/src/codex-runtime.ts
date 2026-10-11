@@ -439,6 +439,7 @@ export class CodexAgentRuntime implements AgentRuntime {
               inputTokens: u.inputTokens,
               outputTokens: u.outputTokens,
               cacheReadTokens: u.cachedInputTokens ?? 0,
+              cacheUsageReported: typeof u.cachedInputTokens === "number",
               cacheWriteTokens: 0,
               provider: request.model.provider,
               model: request.model.id,

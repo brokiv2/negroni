@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { Router } from "@orpc/server";
 import { implement, ORPCError } from "@orpc/server";
 import type {
   AdapterContext,
@@ -165,6 +166,7 @@ import {
   newestVoiceCredentialOrder,
   Prisma,
   parseComputerMode,
+  ResponseUiStateError,
   releaseSpaceDeletionClaim,
   renewSpaceDeletionClaim,
   restoreBotUnderComputerQuota,
@@ -176,6 +178,7 @@ import {
   selectSpaceModelPreference,
   selectSpaceVoicePreference,
   touchGroupUpdatedAt,
+  updateResponseUiState,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
@@ -610,14 +613,15 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
   await deps.jobs.enqueue(runContinueJob(run.id));
 }
 
-export function createRouter(deps: RouterDeps) {
-  const os = implement(appContract).$context<{
-    actor: Actor | null;
-    signal?: AbortSignal;
-    requestOrigin?: string;
-    /** "web" for browser and desktop clients, "native" for the phone apps. */
-    client?: "native" | "web";
-  }>();
+type RouterContext = {
+  actor: Actor | null;
+  signal?: AbortSignal;
+  requestOrigin?: string;
+  /** "web" for browser and desktop clients, "native" for the phone apps. */
+  client?: "native" | "web";
+};
+export function createRouter(deps: RouterDeps): Router<typeof appContract, RouterContext> {
+  const os = implement(appContract).$context<RouterContext>();
   /** A desktop or web client reading the personal thread holds back Radar pushes briefly. */
   const notePresence = (
     context: { actor: Actor; client?: "native" | "web" },
@@ -1767,6 +1771,22 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     threads: {
+      responseUiState: authed.threads.responseUiState.handler(async ({ context, input }) => {
+        try {
+          const result = await updateResponseUiState(deps.prisma, context.actor, input);
+          if (result.eventSeq !== null)
+            await deps.events.notify(result.threadId, result.eventSeq).catch((error) => {
+              getLogger().error("response state realtime notification", error);
+            });
+          return result.block;
+        } catch (error) {
+          if (error instanceof ResponseUiStateError)
+            throw new ORPCError(error.reason === "conflict" ? "CONFLICT" : "BAD_REQUEST", {
+              message: error.message,
+            });
+          throw error;
+        }
+      }),
       activity: authed.threads.activity.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const runs = await deps.prisma.run.findMany({

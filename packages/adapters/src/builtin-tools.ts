@@ -355,6 +355,12 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "response_ui_catalog",
+    description:
+      "Read the shared response component vocabulary and streaming format before composing an interactive explanation, comparison, form, chart, diagram, checklist or calculator. These are local response components, not executable code or external actions. Use ordinary prose when it is clearer.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "show_weather",
     description:
       "Display a native weather card in the conversation. First fetch real current weather/forecast through web or a connected weather tool; copy only measured values and the actual HTTPS source. Never invent weather. Use this instead of a Markdown weather table. observedAt must be the observation time, not an invented current timestamp.",
@@ -831,7 +837,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "work_create",
     description:
-      "Save one responsibility per explicit user request with a specific future check, deadline and bounded run allowance. Include all requested outcomes in its objective; retries return the same responsibility even if renamed. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
+      "Save one responsibility per explicit user request with a future fallback check, deadline and bounded run allowance. Subscribe through eventWatches to a specific owned account's thread, item, sender or event kind when a source change should continue this work immediately. Include all requested outcomes; retries return the same responsibility even if renamed. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
     inputSchema: z.toJSONSchema(CreateAssistantWorkInput),
   },
   {
@@ -843,7 +849,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "work_update",
     description:
-      "Save the outcome of your work: waiting requires nextWakeAt and a reason, needs_input waits for the user, completed requires verified result evidence. Use the version from work_list. End the turn after saving a background outcome; unchanged checks finish with NO_RESPONSE.",
+      "Save the outcome: waiting requires a fallback nextWakeAt and reason; optional eventWatches subscribe to a specific owned account's thread, item, sender or kind. Omit eventWatches to preserve them, or pass [] to clear them. needs_input is for a real decision or access blocker; completed requires verified result evidence. Use the version from work_list. End the turn after saving a background outcome; unchanged checks finish with NO_RESPONSE.",
     inputSchema: z.toJSONSchema(UpdateAssistantWorkInput),
   },
   {
@@ -1090,6 +1096,14 @@ export const builtinAgentTools: ConnectorTool[] = [
           maxItems: 20,
           description:
             "For a request: exact file paths or URLs the recipient must use. Its result is checked against them.",
+        },
+        phases: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 2_000 },
+          minItems: 2,
+          maxItems: 3,
+          description:
+            "For a new request: optional bounded phases within the message's original scope. Each phase is reviewed before the next starts. The same run allowance and deadline cover all phases; never add new permissions or unrelated objectives.",
         },
       },
       required: ["message"],

@@ -1,5 +1,6 @@
 import { ChatMarkdown } from "@rakazo/chat-ui/native";
 import type { MessageBlock } from "@rakazo/contracts";
+import { responseUiPlainText } from "@rakazo/core";
 import {
   CircleAlert,
   FileText,
@@ -229,6 +230,13 @@ export function VesperBlock({
   onOpenRun?: (runId: string) => void;
 }) {
   switch (vesperBlockRenderer(block.kind)) {
+    case "response_ui":
+      return block.kind === "response_ui" ? (
+        <ToolCard>
+          <Text style={s.text}>{responseUiPlainText(block)}</Text>
+          <Text style={s.small}>{t("Open on desktop to change these values.")}</Text>
+        </ToolCard>
+      ) : null;
     case "text":
       return "text" in block ? <ChatMarkdown appearance="light">{block.text}</ChatMarkdown> : null;
     case "meta":

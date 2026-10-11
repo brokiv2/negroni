@@ -1,4 +1,5 @@
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, AgentRuntimeEvent } from "@rakazo/adapter-kit";
+import { ResponseUiBlock } from "@rakazo/contracts";
 import {
   legacyScopedToolEffectIdempotencyKey,
   toolEffectIdempotencyKey,
@@ -135,6 +136,7 @@ function fixture(runId = "run-1") {
       findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Update shared state" })),
     },
     connection: { findMany: vi.fn(async () => []) },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },
     deploymentSettings: {
@@ -144,6 +146,9 @@ function fixture(runId = "run-1") {
       })),
     },
     taughtSkill: { findMany: vi.fn(async () => []) },
+    feedProfile: { findUnique: vi.fn(async () => null) },
+    feedItem: { findFirst: vi.fn(async () => null) },
+    secret: { findFirst: vi.fn(async () => null) },
     agentSecret: { findMany: vi.fn(async () => []) },
     agentSkill: { findMany: vi.fn(async () => []) },
     scratchpadItem: {
@@ -176,6 +181,7 @@ function fixture(runId = "run-1") {
     actionApprovalRule: { findMany: vi.fn(async () => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: false })) },
     externalEffect,
+    usageRecord: { create: vi.fn() },
   };
   const pauseRunForInput = vi.fn(async () => {
     run.status = "waiting_input";
@@ -183,12 +189,23 @@ function fixture(runId = "run-1") {
   });
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   let calls: ToolCall[] = [];
+  let output: string[] = [];
+  let usage: Extract<AgentRuntimeEvent, { type: "usage" }> | undefined;
+  let stopDuringContext = false;
+  const append = vi.fn(async (event: { type: string }) => {
+    if (stopDuringContext && event.type === "agent.context.prepared") run.status = "cancelled";
+    return undefined;
+  });
+  let failure: Error | undefined;
   const runtimeRun = vi.fn(async function* (request: AgentRunRequest) {
     for (const call of calls) {
       const result = await request.executeTool!(call.name, call.args, call.executionId);
       results.push(result);
     }
-    yield { type: "done" as const, text: "Done" };
+    if (failure) throw failure;
+    if (usage) yield usage;
+    for (const text of output) yield { type: "text" as const, text };
+    yield { type: "done" as const, text: output.length ? output.join("") : "Done" };
   });
   const executor = createRunExecutor({
     prisma,
@@ -207,7 +224,7 @@ function fixture(runId = "run-1") {
       exportMarkdown: async function* () {},
     },
     memoryProviders: { resolve: async () => null },
-    events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
+    events: { append, pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets: [],
   } as unknown as Parameters<typeof createRunExecutor>[0]);
@@ -217,20 +234,153 @@ function fixture(runId = "run-1") {
     results,
     scratchpadRows,
     memoryCommit,
+    append,
+    finalizeRun,
+    runtimeRun,
+    stopDuringContextAudit() {
+      stopDuringContext = true;
+    },
+    setOutput(chunks: string[]) {
+      output = chunks;
+    },
+    setUsage(value: Extract<AgentRuntimeEvent, { type: "usage" }>) {
+      usage = value;
+    },
     setCalls(next: ToolCall[]) {
       calls = next;
     },
-    async run() {
+    setFailure(error?: Error) {
+      failure = error;
+    },
+    async run(expectFailure = false) {
       run.status = "queued";
       await executor.continueRun(run.id, "worker-1");
-      expect(runtimeRun).toHaveBeenCalled();
+      if (!stopDuringContext) expect(runtimeRun).toHaveBeenCalled();
       expect(prisma.attempt.update).not.toHaveBeenCalled();
-      expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
+      if (expectFailure)
+        expect(finalizeRun).toHaveBeenLastCalledWith(
+          expect.objectContaining({ outcome: "failed" }),
+        );
+      else
+        expect(finalizeRun).not.toHaveBeenLastCalledWith(
+          expect.objectContaining({ outcome: "failed" }),
+        );
     },
   };
 }
 
 describe("mutating tool effect idempotency keys", () => {
+  it("does not open a model if the user stops while context diagnostics are being saved", async () => {
+    const f = fixture("stopped-context");
+    f.stopDuringContextAudit();
+    await f.run();
+    expect(f.runtimeRun).not.toHaveBeenCalled();
+    expect(f.finalizeRun).not.toHaveBeenCalled();
+    expect(f.effects).toHaveLength(0);
+  });
+  it("records context sizes and provider cache usage under the same attempt without an effect", async () => {
+    const f = fixture("context-audit");
+    f.setUsage({
+      type: "usage",
+      provider: "scripted",
+      model: "model",
+      inputTokens: 100,
+      outputTokens: 5,
+      cacheReadTokens: 40,
+      cacheWriteTokens: 0,
+      cacheUsageReported: true,
+    });
+    await f.run();
+    const events = f.append.mock.calls.map(
+      (call) => call[0] as unknown as { type: string; payload: Record<string, unknown> },
+    );
+    const prepared = events.find((event) => event.type === "agent.context.prepared")!;
+    const usage = events.find((event) => event.type === "agent.context.usage")!;
+    expect(prepared.payload).toMatchObject({
+      contextId: "attempt-1",
+      scope: "executor_request",
+      history: { messages: 0, compacted: false },
+      images: { current: 0, historical: 0 },
+    });
+    expect(usage.payload).toMatchObject({
+      contextId: "attempt-1",
+      index: 1,
+      cacheReadFraction: 0.4,
+    });
+    expect(JSON.stringify(prepared.payload)).not.toContain("Update shared state");
+    expect(f.effects).toHaveLength(0);
+  });
+  it("streams an interactive response among prose and commits one complete block", async () => {
+    const f = fixture("ui-stream");
+    const spec = {
+      root: "root",
+      summary: "Budget calculator",
+      state: { amount: 2 },
+      elements: {
+        root: { type: "Card", props: { title: "Budget" }, children: ["amount", "total"] },
+        amount: {
+          type: "Slider",
+          props: { label: "Amount", bind: "/amount", min: 0, max: 10 },
+          children: [],
+        },
+        total: {
+          type: "Metric",
+          props: {
+            label: "Total",
+            value: { $calc: { op: "multiply", args: [{ $state: "/amount" }, 3] } },
+          },
+          children: [],
+        },
+      },
+    };
+    const patch = (path: string, value: unknown) =>
+      `${JSON.stringify({ op: "add", path, value })}\n`;
+    const reply =
+      "Adjust the amount.\n```negroni-ui\n" +
+      patch("/summary", spec.summary) +
+      patch("/state", spec.state) +
+      patch("/root", spec.root) +
+      Object.entries(spec.elements)
+        .map(([id, e]) => patch(`/elements/${id}`, e))
+        .join("") +
+      "```\nThis estimate excludes fees.";
+    f.setCalls([{ name: "response_ui_catalog", args: {}, executionId: "catalog" }]);
+    f.setOutput(
+      Array.from({ length: Math.ceil(reply.length / 7) }, (_, i) => reply.slice(i * 7, i * 7 + 7)),
+    );
+    await f.run();
+    expect(f.effects).toHaveLength(0);
+    expect(f.results[0]).toHaveProperty("components");
+    const final = f.finalizeRun.mock.calls.at(-1) as unknown as [{ blocks: unknown[] }];
+    const ui = final[0].blocks.filter((b) => (b as { kind: string }).kind === "response_ui");
+    expect(ui).toHaveLength(1);
+    expect(ResponseUiBlock.parse(ui[0])).toMatchObject({ complete: true, spec });
+    const serialized = JSON.stringify(final[0].blocks);
+    expect(serialized).toContain("Adjust the amount.");
+    expect(serialized).toContain("This estimate excludes fees.");
+    expect(serialized).not.toContain("negroni-ui");
+    expect(serialized).not.toContain('"op":"add"');
+    expect(
+      f.append.mock.calls.some(
+        (call) =>
+          (call as unknown as [{ payload?: { responseUi?: unknown } }])[0].payload?.responseUi,
+      ),
+    ).toBe(true);
+  });
+  it("replays a completed action after a model outage within the recovered run", async () => {
+    const f = fixture("recovered-work-run");
+    const action = { name: "remember", args: { path: "MEMORY.md", content: "saved progress" } };
+    f.setCalls([{ ...action, executionId: "before-outage" }]);
+    f.setFailure(new Error("503 temporarily unavailable"));
+    await f.run(true);
+    expect(f.memoryCommit).toHaveBeenCalledTimes(1);
+    f.setFailure();
+    f.setCalls([{ ...action, executionId: "after-recovery" }]);
+    await f.run();
+    expect(f.memoryCommit).toHaveBeenCalledTimes(1);
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]?.status).toBe("completed");
+  });
   it("executes different tools that share a reused provider tool-call id", async () => {
     const f = fixture("run-a");
     f.setCalls([

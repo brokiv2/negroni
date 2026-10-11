@@ -36,8 +36,8 @@ interface Invocation {
 const fakeExecutable = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
-const command = path.basename(process.argv[1]);
-const args = process.argv.slice(2);
+const command = path.basename(process.argv[2]);
+const args = process.argv.slice(3);
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, "fixture.json"), "utf8"));
 const stateFile = path.join(__dirname, "state.json");
 const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -135,8 +135,13 @@ async function deployment(options: { failures: Failure[]; branch?: string; compo
         remote: originalRemote,
       }),
     ),
+    writeFile(path.join(bin, "fake-command.cjs"), fakeExecutable),
     ...["git", "docker"].map((name) =>
-      writeFile(path.join(bin, name), `#!${process.execPath}\n${fakeExecutable}`, { mode: 0o700 }),
+      writeFile(
+        path.join(bin, name),
+        `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' '${path.join(bin, "fake-command.cjs").replaceAll("'", "'\\''")}' "$0" "$@"\n`,
+        { mode: 0o700 },
+      ),
     ),
   ]);
   vi.stubEnv("PATH", bin);

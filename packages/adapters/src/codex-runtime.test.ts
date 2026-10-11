@@ -21,8 +21,7 @@ const { CodexAgentRuntime } = await import("./codex-runtime.js");
  * per turn, and (like plugin sync) a helper process that keeps writing into CODEX_HOME.
  */
 function fakeServer(record: string, mode: "tool" | "crash") {
-  return `#!${process.execPath}
-const fs = require("node:fs");
+  return `const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const readline = require("node:readline");
@@ -44,6 +43,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (m.id === 900) {
     state.toolResult = m.result; save();
     send({ method: "item/agentMessage/delta", params: { delta: "answer" } });
+    send({ method: "thread/tokenUsage/updated", params: { tokenUsage: { last: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 0 } } } });
     send({ method: "turn/completed", params: { turn: { status: "completed" } } });
   }
 });
@@ -91,7 +91,11 @@ describe.skipIf(process.platform === "win32")("Codex runtime process handling", 
   async function install(mode: "tool" | "crash") {
     const record = join(root, "record.json");
     const binary = join(root, "codex");
-    await writeFile(binary, fakeServer(record, mode));
+    const server = join(root, "server.cjs");
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    await writeFile(server, fakeServer(record, mode));
+    // A shebang cannot contain an executable path with spaces (common in bundled runtimes).
+    await writeFile(binary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(server)} "$@"\n`);
     await chmod(binary, 0o700);
     return { binary, record: () => JSON.parse(readFileSync(record, "utf8")) };
   }
@@ -103,6 +107,11 @@ describe.skipIf(process.platform === "win32")("Codex runtime process handling", 
 
     expect(events.filter((e) => e.type === "text").map((e) => e.text)).toEqual(["answer"]);
     expect(events.at(-1)).toEqual({ type: "done" });
+    expect(events.find((event) => event.type === "usage")).toMatchObject({
+      inputTokens: 100,
+      cacheReadTokens: 0,
+      cacheUsageReported: true,
+    });
     const state = record();
     expect(state.argv).toEqual([
       "app-server",

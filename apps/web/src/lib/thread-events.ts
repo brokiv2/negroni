@@ -476,24 +476,44 @@ export function reduceThreadSnapshot(
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
+    const previous =
+      event.type === "thread.message.updated"
+        ? prev.messages.find((message) => message.id === event.payload.messageId)
+        : undefined;
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
     const next: ThreadMessage = {
       id: String(event.payload.messageId ?? event.id),
       threadId: event.threadId,
-      seq: event.seq,
+      seq: previous?.seq ?? event.seq,
       role,
       blocks,
       botId: event.botId,
-      runId: event.runId,
+      runId:
+        event.runId ??
+        previous?.runId ??
+        (typeof event.payload.messageRunId === "string" ? event.payload.messageRunId : undefined),
       replyToMessageId:
         typeof event.payload.replyToMessageId === "string"
           ? event.payload.replyToMessageId
-          : undefined,
+          : previous?.replyToMessageId,
       replyQuote:
-        typeof event.payload.replyQuote === "string" ? event.payload.replyQuote : undefined,
-      createdAt: event.createdAt,
+        typeof event.payload.replyQuote === "string"
+          ? event.payload.replyQuote
+          : previous?.replyQuote,
+      createdAt:
+        previous?.createdAt ??
+        (typeof event.payload.messageCreatedAt === "string"
+          ? event.payload.messageCreatedAt
+          : event.createdAt),
     };
+    if (event.type === "thread.message.updated") {
+      return {
+        ...prev,
+        cursor: event.seq,
+        messages: previous ? upsertMessageById(prev.messages, next) : prev.messages,
+      };
+    }
     const replacedSubagentIds = new Set(
       blocks.filter((block) => block.kind === "subagent").map((block) => block.agentId),
     );

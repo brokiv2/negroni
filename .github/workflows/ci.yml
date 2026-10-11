@@ -26,6 +26,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - name: Shared native response catalog
+        run: pnpm exec tsx apps/ios/Scripts/generate-response-ui.mts --check
+
+  native-core:
+    name: Native core tests
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: swift test --package-path apps/ios/Core
 
   check:
     name: Typecheck
@@ -117,7 +129,7 @@ jobs:
   publish-mobile-update:
     name: Publish compatible mobile update
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint, check, build, test, test-integration, test-e2e]
+    needs: [lint, native-core, check, build, test, test-integration, test-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:

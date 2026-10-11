@@ -22,6 +22,7 @@ import {
   progressMessageId,
   readBoundedJsonResponse,
   reduceLiveMessageBlocks,
+  responseUiPlainText,
   runFailureError,
   signupRequiresEmailVerification,
   takeLiveMessage,
@@ -904,6 +905,7 @@ export function copyableMobileMessageText(message: MobileMessage): string {
       if (block.kind === "channel_message") {
         return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
       }
+      if (block.kind === "response_ui") return responseUiPlainText(block);
       if (block.kind === "text" || block.kind === "progress" || block.kind === "ask")
         return block.text;
       return "";
@@ -916,6 +918,8 @@ export function copyableMobileMessageText(message: MobileMessage): string {
 export function blockText(message: MobileMessage) {
   return message.blocks
     .map((block) => {
+      if (block.kind === "response_ui")
+        return `${responseUiPlainText(block)}\n\n${t("Open on desktop to change these values.")}`;
       if (block.kind === "channel_message") {
         return `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`;
       }
@@ -1167,6 +1171,19 @@ export function applyMobileThreadEvent(
     };
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
+    if (event.type === "thread.message.updated") {
+      const previous = prev.messages.find((m) => m.id === event.payload?.messageId);
+      return {
+        ...prev,
+        cursor: event.seq ?? prev.cursor,
+        messages: previous
+          ? upsertMessageById(prev.messages, {
+              ...previous,
+              blocks: (event.payload?.blocks as MobileMessage["blocks"]) ?? previous.blocks,
+            })
+          : prev.messages,
+      };
+    }
     const { remaining } = takeLiveMessage(prev.messages, progressMessageId(event));
     const next: MobileMessage = {
       id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),

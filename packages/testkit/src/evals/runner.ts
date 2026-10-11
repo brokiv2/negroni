@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type AgentRuntime, type JobPublisher, runJobKey } from "@rakazo/adapter-kit";
 import { MessagingTeamChatEmulator } from "@rakazo/adapters";
 import type { ModelConnectInput, RunStatus } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, isTerminal } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, delegationRecord, isTerminal } from "@rakazo/core";
 import type { createDb } from "@rakazo/db";
 import { discardBotIntroRun } from "../discard-bot-intro.js";
 import { sessionCookieHeader } from "../index.js";
@@ -329,6 +329,22 @@ export async function runTrial(
       if ("slack" in step && terminal.status === "completed") {
         await waitForMessagingDelivery(prisma, runId, deadline);
       }
+      if (scenario.waitForDelegations) {
+        await poll(async () => {
+          const [runs, count] = await Promise.all([
+            prisma.run.findMany({ where: { OR: actorScopes(actors) }, select: { status: true } }),
+            countCurrentTools(),
+          ]);
+          if (count + clearedToolCount > options.maxToolCalls)
+            throw new EvalFailure("incomplete", "Delegated tool call budget exceeded");
+          if (runs.some((r) => ["waiting_input", "waiting_takeover"].includes(r.status)))
+            throw new EvalFailure(
+              "agent",
+              "Delegated work requested assistance; no coaching supplied",
+            );
+          return runs.every((r) => isTerminal(r.status as RunStatus)) ? true : undefined;
+        }, deadline);
+      }
       const snap = await rpc<{
         messages: Array<{
           role: string;
@@ -394,6 +410,19 @@ export async function runTrial(
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),
       },
+      ...(scenario.waitForDelegations
+        ? {
+            delegations: (
+              await handles.prisma.task.findMany({
+                where: { OR: actorScopes(actors) },
+                select: { delegation: true },
+              })
+            ).flatMap((task) => {
+              const record = delegationRecord(task.delegation);
+              return record ? [record] : [];
+            }),
+          }
+        : {}),
     };
     phase = "harness";
     result.criteria = scenario.grade(evidence);

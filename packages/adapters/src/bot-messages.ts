@@ -10,6 +10,7 @@ import {
   createDelegationRecord,
   type DelegationRecord,
   type DelegationStopReason,
+  delegationAssignmentContext,
   delegationResultChecks,
   delegationStopReason,
   isDelegationActive,
@@ -18,6 +19,7 @@ import {
   resolveBotAddress,
   runInteractionModeFor,
   transitionDelegation,
+  validateDelegationPhases,
 } from "@rakazo/core";
 import {
   appendEventInTransaction,
@@ -32,6 +34,8 @@ import { getLogger } from "@rakazo/logging";
 import {
   childReadCount,
   createReviewRun,
+  delegationInstructionFingerprint,
+  delegationOriginAllowed,
   lockDelegation,
   postDelegationNotice,
   runDelegation,
@@ -98,7 +102,11 @@ export async function loadBotMessageContext(
 }
 
 export async function messageBot(
-  deps: Pick<ExecutorDeps, "prisma" | "events" | "jobs">,
+  deps: {
+    prisma: PrismaClient;
+    events: Pick<ExecutorDeps["events"], "notify">;
+    jobs: Pick<ExecutorDeps["jobs"], "enqueue">;
+  },
   run: {
     id: string;
     spaceId: string;
@@ -116,6 +124,7 @@ export async function messageBot(
     deliveryKey?: string;
     /** For a request: exact files or URLs the result must use and cite. */
     sources?: readonly unknown[];
+    phases?: readonly unknown[];
     /** The child run ended in failure, so this blocker is final. */
     failed?: boolean;
   },
@@ -132,6 +141,16 @@ export async function messageBot(
 
   const sourceContext = await loadBotMessageContext(deps.prisma, run.sourceMessageId);
   const intent = input.intent ?? "request";
+  let phases: string[] | undefined;
+  if (input.phases) {
+    if (intent !== "request")
+      return { ok: false as const, error: "Phases belong to a new request." };
+    try {
+      phases = validateDelegationPhases(input.phases);
+    } catch (error) {
+      return { ok: false as const, error: (error as Error).message };
+    }
+  }
   const hop = nextBotMessageHop(sourceContext?.hop);
 
   const candidates = await teamThreadRows(
@@ -243,7 +262,13 @@ export async function messageBot(
             userId: run.userId,
             status: options?.allowTerminalSource ? { in: ["completed", "failed"] } : "running",
           },
-          select: { id: true },
+          select: {
+            id: true,
+            trigger: true,
+            workId: true,
+            workVersion: true,
+            sourceMessageId: true,
+          },
         });
         if (!senderStillRunning)
           return { ok: false as const, error: "source run is no longer active" };
@@ -263,12 +288,64 @@ export async function messageBot(
           return { ok: false as const, error: `${target.name} is no longer available` };
 
         const now = new Date();
+        let origin: DelegationRecord["origin"];
+        if (phases) {
+          let sourceMessageId = senderStillRunning.sourceMessageId;
+          if (senderStillRunning.trigger === "work") {
+            const work = senderStillRunning.workId
+              ? await tx.assistantWork.findFirst({
+                  where: {
+                    id: senderStillRunning.workId,
+                    version: senderStillRunning.workVersion ?? -1,
+                    spaceId: run.spaceId,
+                    userId: run.userId,
+                    botId: sender.id,
+                  },
+                  select: { sourceMessageId: true },
+                })
+              : null;
+            sourceMessageId = work?.sourceMessageId ?? null;
+          }
+          if (
+            !["user", "follow_up", "work"].includes(senderStillRunning.trigger) ||
+            !sourceMessageId
+          )
+            return {
+              ok: false as const,
+              error: "Create a phase plan only from a current user-authorized assignment.",
+            };
+          const bots = await tx.bot.findMany({
+            where: {
+              id: { in: [sender.id, target.id] },
+              spaceId: run.spaceId,
+              userId: run.userId,
+              archivedAt: null,
+            },
+            select: { id: true, instructions: true },
+          });
+          if (bots.length !== 2)
+            return { ok: false as const, error: "The assignment's bots are no longer available." };
+          origin = {
+            spaceId: run.spaceId,
+            userId: run.userId,
+            runId: run.id,
+            sourceMessageId,
+            workId: senderStillRunning.workId,
+            workVersion: senderStillRunning.workVersion,
+            instructionFingerprints: bots.map((bot) => ({
+              botId: bot.id,
+              fingerprint: delegationInstructionFingerprint(bot.instructions),
+            })),
+          };
+        }
         const plan = await planDelegation(tx, {
           run,
           targetId: target.id,
           intent,
           message,
           sources,
+          phases,
+          origin,
           failed: input.failed === true,
           returnsToRequester: sourceContext?.fromBotId === target.id,
           now,
@@ -353,7 +430,7 @@ export async function messageBot(
                 from: sender,
                 text: message,
                 intent,
-                delegation: { assignment: record.assignment, sources: record.sources },
+                delegation: delegationAssignmentContext(record),
               }),
             });
             record = chargeDelegationRun(record, now);
@@ -381,9 +458,20 @@ export async function messageBot(
               text: message,
               intent,
               sources: dispatched?.sources,
+              delegation: dispatched ? delegationAssignmentContext(dispatched) : undefined,
             }),
             delegation: dispatched,
           });
+          if (dispatched?.phases) {
+            const child = await tx.run.findUniqueOrThrow({
+              where: { id: nextRunId },
+              select: { taskId: true },
+            });
+            await saveDelegation(tx, child.taskId, {
+              ...dispatched,
+              phases: { ...dispatched.phases, activeRunId: nextRunId },
+            });
+          }
           if (plan.kind === "dispatch" && plan.parent && plan.parentTaskId) {
             const child = await tx.run.findUniqueOrThrow({
               where: { id: nextRunId },
@@ -519,6 +607,8 @@ async function planDelegation(
     intent: BotMessageIntent;
     message: string;
     sources: string[];
+    phases?: string[];
+    origin?: DelegationRecord["origin"];
     failed: boolean;
     returnsToRequester: boolean;
     now: Date;
@@ -528,23 +618,39 @@ async function planDelegation(
   const own = await runDelegation(tx, input.run.id);
   if (intent === "request") {
     const parent = own?.kind === "review" ? await lockDelegation(tx, own.pointer.taskRef) : null;
+    if (
+      own?.kind === "review" &&
+      (parent?.record.state !== "reviewing" ||
+        own.pointer.phaseIndex !== parent.record.phases?.index)
+    )
+      return {
+        kind: "ignore",
+        reason: "the originating assignment was stopped or already moved on",
+      };
+    if (parent?.record.phases && parent.record.assigneeBotId !== input.targetId)
+      return { kind: "ignore", reason: "a phased assignment keeps its original specialist" };
     const activeParent = parent && isDelegationActive(parent.record) ? parent : null;
+    const record = createDelegationRecord({
+      assignment: input.message,
+      sources: input.sources,
+      phases: input.phases,
+      origin: input.origin,
+      requester: {
+        botId: input.run.botId,
+        threadId: input.run.threadId,
+        runId: input.run.id,
+        requestMessageId: "",
+        sourceMessageId: input.run.sourceMessageId ?? null,
+      },
+      assigneeBotId: input.targetId,
+      now,
+      parent: activeParent ? { ...activeParent.record, taskRef: activeParent.taskId } : undefined,
+    });
+    if (!(await delegationOriginAllowed(tx, record, now)))
+      return { kind: "ignore", reason: "the originating authorization changed" };
     return {
       kind: "dispatch",
-      record: createDelegationRecord({
-        assignment: input.message,
-        sources: input.sources,
-        requester: {
-          botId: input.run.botId,
-          threadId: input.run.threadId,
-          runId: input.run.id,
-          requestMessageId: "",
-          sourceMessageId: input.run.sourceMessageId ?? null,
-        },
-        assigneeBotId: input.targetId,
-        now,
-        parent: activeParent ? { ...activeParent.record, taskRef: activeParent.taskId } : undefined,
-      }),
+      record,
       ...(activeParent ? { parentTaskId: activeParent.taskId, parent: activeParent.record } : {}),
     };
   }
@@ -554,6 +660,10 @@ async function planDelegation(
   const locked = await lockDelegation(tx, own.taskId);
   if (!locked) return { kind: "none" };
   const record = locked.record;
+  if (record.phases?.activeRunId && record.phases.activeRunId !== input.run.id)
+    return { kind: "ignore", reason: "the result belongs to an earlier phase" };
+  if (!(await delegationOriginAllowed(tx, record, now)))
+    return { kind: "ignore", reason: "the originating authorization changed" };
   const open =
     record.state === "queued" || record.state === "working" || record.state === "needs_input";
   if (!open) return { kind: "ignore", reason: `the task is already ${record.state}` };
