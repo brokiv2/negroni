@@ -101,6 +101,18 @@
         }
       }
     },
+    "Image": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "artifactId": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "alt": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "caption": { "type": "string", "maxLength": 12000 },
+        "aspectRatio": { "type": "number", "minimum": 0.1, "maximum": 10 }
+      },
+      "required": ["artifactId", "alt"],
+      "additionalProperties": false
+    },
     "Metric": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",

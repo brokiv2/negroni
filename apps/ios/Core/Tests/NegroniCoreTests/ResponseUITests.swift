@@ -12,7 +12,9 @@ final class ResponseUITests: XCTestCase {
     let raw = try fixture()
     let document = try XCTUnwrap(ResponseUI(raw))
     XCTAssertEqual(
-      Set(document.spec["elements"].dictionary.values.map { $0["type"].string }).count, 18)
+      Set(document.spec["elements"].dictionary.values.map { $0["type"].string }).count, 19)
+    XCTAssertTrue(document.plainText.contains("Fictional dinner table"))
+    XCTAssertTrue(document.plainText.contains("An attached image, loaded with conversation access."))
     XCTAssertEqual(
       ResponseUI.evaluate(
         document.spec["elements"]["result"]["props"]["value"], state: document.state

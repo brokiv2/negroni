@@ -1,5 +1,17 @@
 # Always-on work and composed responses
 
+## Phone chat and image follow-up
+
+The shared vocabulary now has 19 components, including Image with an owned artifact identifier, alternative text and optional caption/aspect ratio. It accepts no arbitrary image URL. Web and UIKit retrieve bytes through the existing owner-, Space- and conversation-checked artifact API; they reject unsupported raster types, oversized data and stale session results. Web releases object URLs on replacement/unmount; UIKit downsamples before display. Android's readable fallback includes the image description and caption. Current-turn attachments and attach_file expose the actual artifact identifier so the model can reuse an existing image. This does not add an image-generation provider.
+
+Phone responses use the full available chat width. Web fields and buttons are 52 pixels, sliders 56 pixels with a larger thumb, and input text at least 16 pixels. UIKit uses 52-point controls and 56-point sliders, Dynamic Type, vertically arranged narrow groups and native menus for dense tabs. Responsive charts use the rendered width instead of shrinking fixed-size labels. Desktop layouts retain their existing compact controls.
+
+Current local checks: 5,660 unit tests pass with 318 environment-specific skips; all 22 workspace checks, lint, web production build and 50 Swift core tests pass. Hosted native layout and interaction tests are running before release. Focused real PostgreSQL/API image tests pass, including persisted image references, exact owned-byte readback and foreign/unauthenticated/missing access denial. The full wrapped 19-component catalog is 11,735 characters and survives the unchanged 12,000-character tool limit.
+
+Manual Comet checks in an isolated ordinary chat at 390 pixels verify 52/56-pixel control geometry, full-width vertical inputs, no horizontal overflow, recalculation to 58.50 EUR, persisted values after reload and a real authorized artifact image decoded through the API. The image is a synthetic raster fixture. Interactive native screenshots and physical-device QA remain unverified. Release 1.1.0 build 46 is prepared; archive, upload, Apple processing and beta availability require separate confirmation.
+
+The last completed CI observation on 13232b8c passed 156 web cases and failed two. This follow-up opens the collapsed Developer tools category before asserting GitHub and refreshes the mounted feed when it becomes visible, so new publications appear without a manual reload. The original article discussion, save/isolation and integration assertions remain. A new complete CI observation is required for the changed head.
+
 ## Scope and baseline
 
 Continue the existing personal-assistant architecture from `f011560b`. Radar observation, notification policy, scoped memory, local history compaction, steering, durable delegation records, and external-effect reconciliation already exist. A separately hosted computer is outside this increment; retain optional provider-neutral computer support.

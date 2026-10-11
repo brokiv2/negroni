@@ -174,6 +174,11 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(featured).toContainText(
     /Gmail[\s\S]*Google Calendar[\s\S]*Google Drive[\s\S]*Slack[\s\S]*Notion/,
   );
+  // Developer integrations live in a collapsed category until it is opened.
+  await page
+    .getByTestId("integration-categories")
+    .getByRole("button", { name: /^Developer tools/ })
+    .click();
   await expect(page.getByText("GitHub", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add Executor", exact: true })).toBeHidden();
   await expect(page.getByRole("button", { name: "Add Treg", exact: true })).toBeHidden();

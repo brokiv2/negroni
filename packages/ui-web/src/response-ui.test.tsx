@@ -192,4 +192,125 @@ describe("declarative response rendering", () => {
       await act(async () => root.unmount());
     }
   });
+  it("loads only image blobs through the authorized loader and releases replaced images", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const create = vi.fn(() => "blob:owned-image");
+    const revoke = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: revoke });
+    const imageBlock = ResponseUiBlock.parse({
+      ...block,
+      spec: {
+        ...block.spec,
+        elements: {
+          root: {
+            type: "Image",
+            props: {
+              artifactId: "owned-image",
+              alt: "Sample dinner",
+              caption: "An attached image",
+            },
+            children: [],
+          },
+        },
+      },
+    });
+    const load = vi.fn(async () => new Blob(["fixture"], { type: "image/png" }));
+    const render = (loadImage?: (id: string) => Promise<Blob | null>) => (
+      <ResponseUiView
+        block={imageBlock}
+        state={imageBlock.spec.state}
+        onStateChange={vi.fn()}
+        dataLabel="View data"
+        loadImage={loadImage}
+      />
+    );
+    try {
+      await act(async () => root.render(render()));
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).toContain("Sample dinner");
+      await act(async () => root.render(render(load)));
+      expect(load).toHaveBeenCalledExactlyOnceWith("owned-image");
+      expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:owned-image");
+      expect(container.querySelector("img")?.getAttribute("alt")).toBe("Sample dinner");
+      await act(async () =>
+        root.render(render(async () => new Blob(["markup"], { type: "text/html" }))),
+      );
+      expect(container.querySelector("img")).toBeNull();
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:owned-image");
+      await act(async () =>
+        root.render(
+          render(async () => {
+            throw new Error("Denied");
+          }),
+        ),
+      );
+      expect(container.textContent).toContain("Sample dinner");
+      expect(container.textContent).toContain("An attached image");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+  it("does not retain a late image from a previous conversation and rejects oversized images", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const create = vi.fn(() => "blob:current-image");
+    const revoke = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: revoke });
+    const imageBlock = ResponseUiBlock.parse({
+      ...block,
+      spec: {
+        ...block.spec,
+        elements: {
+          root: {
+            type: "Image",
+            props: { artifactId: "image", alt: "Sample image" },
+            children: [],
+          },
+        },
+      },
+    });
+    let receive: (blob: Blob) => void = () => {};
+    const previous = () =>
+      new Promise<Blob>((resolve) => {
+        receive = resolve;
+      });
+    const current = async () => new Blob(["current"], { type: "image/png" });
+    const render = (loadImage: (id: string) => Promise<Blob | null>) => (
+      <ResponseUiView
+        block={imageBlock}
+        state={imageBlock.spec.state}
+        onStateChange={vi.fn()}
+        dataLabel="View data"
+        loadImage={loadImage}
+      />
+    );
+    try {
+      await act(async () => root.render(render(previous)));
+      await act(async () => root.render(render(current)));
+      await act(async () => receive(new Blob(["previous"], { type: "image/png" })));
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:current-image");
+      await act(async () =>
+        root.render(
+          render(
+            async () => new Blob([new Uint8Array(12 * 1024 * 1024 + 1)], { type: "image/png" }),
+          ),
+        ),
+      );
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).toBe("Sample image");
+      expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:current-image");
+      await act(async () => root.render(render(previous)));
+      await act(async () => root.unmount());
+      await act(async () => receive(new Blob(["after-unmount"], { type: "image/png" })));
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

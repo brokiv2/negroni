@@ -6,6 +6,38 @@ import UIKit
   static let shared = ImageStore()
   private let cache = NSCache<NSURL, UIImage>()
   private var connectionIcons: [String: UIImage] = [:]
+  func ownedArtifactImage(
+    _ artifactID: String, target: JSON, contextMatches: () -> Bool,
+    fetch: (JSON) async throws -> JSON = { try await API.shared.rpc("artifacts/get", $0) }
+  ) async -> UIImage? {
+    guard !artifactID.isEmpty,
+      target["botId"].string.isEmpty != target["groupId"].string.isEmpty,
+      contextMatches()
+    else { return nil }
+    guard let artifact = try? await fetch(target.merging(["artifactId": .string(artifactID)])),
+      artifact["id"].string == artifactID, !Task.isCancelled, contextMatches()
+    else { return nil }
+    return artifactImage(artifact)
+  }
+  /// Decode only owned artifact payloads already authorized by artifacts/get.
+  func artifactImage(_ artifact: JSON) -> UIImage? {
+    let limit = 12 * 1024 * 1024
+    let allowed = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    let encoded = artifact["contentBase64"].string
+    guard allowed.contains(artifact["mimeType"].string.lowercased()),
+      encoded.utf8.count <= ((limit + 2) / 3) * 4,
+      let data = Data(base64Encoded: encoded), data.count <= limit,
+      let source = CGImageSourceCreateWithData(data as CFData, nil),
+      let cg = CGImageSourceCreateThumbnailAtIndex(
+        source, 0,
+        [
+          kCGImageSourceCreateThumbnailFromImageAlways: true,
+          kCGImageSourceThumbnailMaxPixelSize: 1000,
+          kCGImageSourceCreateThumbnailWithTransform: true,
+        ] as CFDictionary)
+    else { return nil }
+    return UIImage(cgImage: cg)
+  }
   func connectionImage(_ url: String?, request: JSON?) async -> UIImage? {
     let key = (url ?? "") + (request?["provider"].string ?? "")
     if let cached = connectionIcons[key] { return cached }

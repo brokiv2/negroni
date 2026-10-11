@@ -1,10 +1,11 @@
 import { t } from "@lingui/core/macro";
-import { ResponseUiBlock } from "@rakazo/contracts";
+import { isAttachmentImageMimeType, ResponseUiBlock } from "@rakazo/contracts";
 import { createResponseUiStateSession, ResponseUiSaveConflict } from "@rakazo/core";
 import { Button, ResponseUiView } from "@rakazo/ui-web";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import type { ArtifactTarget } from "../lib/artifact-open";
-import { rpc } from "../lib/rpc";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ArtifactTarget, decodeArtifactBase64 } from "../lib/artifact-open";
+import { authClient } from "../lib/auth";
+import { rpc, selectedSpaceId } from "../lib/rpc";
 
 export function ResponseUiMessage({
   messageId,
@@ -17,6 +18,36 @@ export function ResponseUiMessage({
   target: ArtifactTarget;
   onFollowUp: (text: string) => void;
 }) {
+  const userId = authClient.useSession().data?.user.id;
+  const spaceId = selectedSpaceId();
+  const botId = "botId" in target ? target.botId : undefined;
+  const groupId = "groupId" in target ? target.groupId : undefined;
+  const threadKind = "threadKind" in target ? target.threadKind : undefined;
+  const imageContext = JSON.stringify([userId, spaceId, botId, groupId, threadKind]);
+  const currentImageContext = useRef(imageContext);
+  currentImageContext.current = imageContext;
+  const loadImage = useCallback(
+    async (artifactId: string) => {
+      if (!userId || currentImageContext.current !== imageContext) return null;
+      const artifact = await rpc.artifacts.get(
+        { ...(groupId ? { groupId } : { botId: botId!, threadKind }), artifactId },
+        { context: { spaceId } },
+      );
+      const maxBytes = 12 * 1024 * 1024;
+      if (
+        currentImageContext.current !== imageContext ||
+        artifact.id !== artifactId ||
+        !isAttachmentImageMimeType(artifact.mimeType) ||
+        artifact.size > maxBytes ||
+        artifact.contentBase64.length > Math.ceil(maxBytes / 3) * 4
+      )
+        return null;
+      const bytes = decodeArtifactBase64(artifact.contentBase64);
+      if (bytes.byteLength > maxBytes) return null;
+      return new Blob([new Uint8Array(bytes)], { type: artifact.mimeType });
+    },
+    [userId, spaceId, botId, groupId, threadKind, imageContext],
+  );
   const [session] = useState(() =>
     createResponseUiStateSession(block, async (attempt) => {
       try {
@@ -66,6 +97,7 @@ export function ResponseUiMessage({
         block={block}
         state={state.state}
         disabled={live}
+        loadImage={loadImage}
         onStateChange={session.change}
         onFollowUp={async (text) => {
           await session.flush();
@@ -75,7 +107,7 @@ export function ResponseUiMessage({
         dataLabel={t`View data`}
       />
       {state.error ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="alert">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm" role="alert">
           <span className="text-destructive">
             {state.error === "conflict"
               ? t`Changed on another device. Your edits are unsaved.`
@@ -85,6 +117,7 @@ export function ResponseUiMessage({
             type="button"
             variant="ghost"
             size="sm"
+            className="min-h-12 px-4 text-base"
             disabled={refreshing || state.saving}
             onClick={() => {
               if (state.error === "conflict") void refresh().catch(() => undefined);

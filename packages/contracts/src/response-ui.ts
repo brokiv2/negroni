@@ -74,6 +74,12 @@ export const UiComponentProps = {
     text: DynamicText,
     style: z.enum(["body", "heading", "caption"]).default("body"),
   }),
+  Image: z.strictObject({
+    artifactId: z.string().min(1).max(200),
+    alt: z.string().min(1).max(160),
+    caption: Text.optional(),
+    aspectRatio: z.number().min(0.1).max(10).optional(),
+  }),
   Metric: z.strictObject({
     label: Label,
     value: DynamicText,
@@ -173,6 +179,7 @@ export const UiComponentType = z.enum([
   "Grid",
   "Card",
   "Text",
+  "Image",
   "Metric",
   "Link",
   "Table",

@@ -48,6 +48,7 @@ export const RESPONSE_UI_FIXTURE = ResponseUiBlock.parse({
         props: {},
         children: [
           "intro",
+          "image",
           "calculator",
           "tabs",
           "select",
@@ -87,6 +88,16 @@ export const RESPONSE_UI_FIXTURE = ResponseUiBlock.parse({
       intro: {
         type: "Text",
         props: { text: "Adjust the bill, tip and group size to compare the cost per person." },
+        children: [],
+      },
+      image: {
+        type: "Image",
+        props: {
+          artifactId: "fixture-image",
+          alt: "Fictional dinner table",
+          caption: "An attached image, loaded with conversation access.",
+          aspectRatio: 1.5,
+        },
         children: [],
       },
       calculator: {

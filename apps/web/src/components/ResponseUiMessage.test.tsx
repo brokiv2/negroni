@@ -9,6 +9,10 @@ import { ResponseUiMessage } from "./ResponseUiMessage";
 vi.mock("@lingui/core/macro", () => ({ t: (parts: TemplateStringsArray) => parts.join("") }));
 vi.mock("../lib/rpc", () => ({
   rpc: { threads: { responseUiState: vi.fn(), messages: vi.fn() } },
+  selectedSpaceId: () => null,
+}));
+vi.mock("../lib/auth", () => ({
+  authClient: { useSession: () => ({ data: { user: { id: "fixture-owner" } } }) },
 }));
 const block = ResponseUiBlock.parse({
   kind: "response_ui",

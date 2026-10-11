@@ -47,7 +47,10 @@ export function PersonalWorkspace({
   const [radarRevision, setRadarRevision] = useState(0);
   const wasActive = useRef(active);
   useEffect(() => {
-    if (active && !wasActive.current) setRadarRevision((v) => v + 1);
+    if (active && !wasActive.current) {
+      setRadarRevision((v) => v + 1);
+      setRevision((v) => v + 1);
+    }
     wasActive.current = active;
   }, [active]);
   const [items, setItems] = useState<FeedItem[]>([]);

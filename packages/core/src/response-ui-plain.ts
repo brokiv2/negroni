@@ -34,6 +34,10 @@ export function responseUiPlainText(block: ResponseUiBlock): string {
       }
       case "Text":
         return [value((node.props as UiProps<"Text">).text)];
+      case "Image": {
+        const p = node.props as UiProps<"Image">;
+        return [p.alt, ...(p.caption && p.caption !== p.alt ? [p.caption] : [])];
+      }
       case "Metric": {
         const p = node.props as UiProps<"Metric">;
         return [`${p.label}: ${value(p.value)}${p.unit ? ` ${p.unit}` : ""}`];

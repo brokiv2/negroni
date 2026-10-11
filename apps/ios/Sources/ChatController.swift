@@ -1041,6 +1041,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   }
   private func responseView(message: JSON, block: ResponseUI) -> ResponseUIView {
     let messageID = message["id"].string, key = messageID + ":" + block.id
+    let imageTarget = target
+    let imageServer = API.shared.base, imageSpace = API.shared.spaceID, imageToken = API.shared.token
     let state: ResponseUIState
     if let existing = responseStates[key] { state = existing; state.receive(block) }
     else {
@@ -1068,6 +1070,12 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           let raw = message["blocks"].array.first(where: { $0["kind"].string == "response_ui" && $0["id"].string == block.id }),
           let fresh = ResponseUI(raw) else { throw URLError(.cannotParseResponse) }
         return fresh
+      }, loadImage: { artifactID in
+        await ImageStore.shared.ownedArtifactImage(artifactID, target: imageTarget,
+          contextMatches: {
+            API.shared.base == imageServer && API.shared.spaceID == imageSpace
+              && API.shared.token == imageToken
+          })
       }, followUp: { [weak self] text in
         guard let self else { return }
         setReply(nil)

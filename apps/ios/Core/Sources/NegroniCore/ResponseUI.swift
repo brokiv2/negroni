@@ -335,6 +335,11 @@ public struct ResponseUI: Equatable, Sendable {
       let p = element["props"]
       switch element["type"].string {
       case "Text": lines.append(text(p["text"]))
+      case "Image":
+        lines.append(p["alt"].string)
+        if !p["caption"].string.isEmpty, p["caption"].string != p["alt"].string {
+          lines.append(p["caption"].string)
+        }
       case "Metric":
         lines.append(
           "\(p["label"].string): \(text(p["value"]))\(p["unit"].string.isEmpty ? "" : " " + p["unit"].string)"

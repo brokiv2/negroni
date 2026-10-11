@@ -10,6 +10,7 @@ import UIKit
   private let onInputFocus: () -> Void
   private let followUp: (String) -> Void
   private let refresh: () async throws -> ResponseUI
+  private let loadImage: (String) async -> UIImage?
   private var renderedSpec: JSON = .null
   private var updates: [() -> Void] = []
   private var local: [String: JSON] = [:]
@@ -17,13 +18,16 @@ import UIKit
   init(
     session: ResponseUIState, live: Bool, onInputFocus: @escaping () -> Void,
     relayout: @escaping () -> Void,
-    refresh: @escaping () async throws -> ResponseUI, followUp: @escaping (String) -> Void
+    refresh: @escaping () async throws -> ResponseUI,
+    loadImage: @escaping (String) async -> UIImage? = { _ in nil },
+    followUp: @escaping (String) -> Void
   ) {
     self.session = session
     self.disabled = live
     self.relayout = relayout
     self.onInputFocus = onInputFocus
     self.refresh = refresh
+    self.loadImage = loadImage
     self.followUp = followUp
     super.init(frame: .zero)
     let stack = Theme.stack(spacing: 8)
@@ -45,12 +49,12 @@ import UIKit
     let spec = session.document.spec
     if spec != renderedSpec {
       updates = []
-      content.arrangedSubviews.forEach { $0.removeFromSuperview() }
+      for child in content.arrangedSubviews { child.removeFromSuperview() }
       renderedSpec = spec
       content.addArrangedSubview(element(spec["root"].string))
     }
-    updates.forEach { $0() }
-    errors.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    for update in updates { update() }
+    for child in errors.arrangedSubviews { child.removeFromSuperview() }
     errors.isHidden = session.error == nil
     if let error = session.error {
       errors.addArrangedSubview(
@@ -63,14 +67,16 @@ import UIKit
         endEditing(true)
         Task { [self] in
           if error == "conflict" {
-            do { self.session.reload(try await self.refresh()) } catch
-            { /* Keep the draft and the retry control visible. */  }
+            do { self.session.reload(try await self.refresh()) } catch {
+              // Keep the draft and the retry control visible.
+            }
           } else {
             await self.session.retry()
           }
         }
       }
       retry.isEnabled = !session.saving
+      responseButton(retry)
       errors.addArrangedSubview(retry)
     }
     relayout()
@@ -95,34 +101,31 @@ import UIKit
     var view: UIView
     switch type {
     case "Stack", "Grid", "Card":
-      let axis: NSLayoutConstraint.Axis =
-        type == "Stack" && p["direction"].string == "horizontal" ? .horizontal : .vertical
-      let gap: CGFloat = ["small": 8, "medium": 12, "large": 20][p["gap"].string] ?? 12
-      let stack = Theme.stack(axis, spacing: gap)
-      if axis == .horizontal {
-        stack.distribution = .fillEqually
-        stack.alignment = .top
-      }
+      let gap: CGFloat = ["small": 12, "medium": 18, "large": 24][p["gap"].string] ?? 18
+      let stack = Theme.stack(spacing: gap)
       if type == "Card" {
         stack.backgroundColor = Theme.card
         stack.layer.cornerRadius = 18
         stack.layer.borderWidth = 0.5
         stack.layer.borderColor = Theme.border.cgColor
         stack.isLayoutMarginsRelativeArrangement = true
-        stack.directionalLayoutMargins = .init(top: 16, leading: 16, bottom: 16, trailing: 16)
+        stack.directionalLayoutMargins = .init(top: 20, leading: 20, bottom: 20, trailing: 20)
         if !p["title"].string.isEmpty {
           stack.addArrangedSubview(Theme.label(p["title"].string, style: .headline))
         }
         if !p["description"].string.isEmpty {
           stack.addArrangedSubview(
-            Theme.label(p["description"].string, style: .subheadline, color: Theme.muted))
+            Theme.label(p["description"].string, style: .body, color: Theme.muted))
         }
       }
-      if type == "Grid" {
+      if type == "Grid" || (type == "Stack" && p["direction"].string == "horizontal") {
         stack.addArrangedSubview(
-          ResponseUIGrid(children.map { element($0) }, columns: p["columns"].uiInteger ?? 2))
+          ResponseUIGrid(
+            children.map { element($0) },
+            columns: type == "Grid" ? (p["columns"].uiInteger ?? 2) : children.count,
+            spacing: gap))
       } else {
-        children.forEach { stack.addArrangedSubview(element($0)) }
+        for child in children { stack.addArrangedSubview(element(child)) }
       }
       view = stack
     case "Text":
@@ -135,9 +138,9 @@ import UIKit
       }
       view = label
     case "Metric":
-      let stack = Theme.stack(spacing: 4)
-      stack.addArrangedSubview(Theme.label(p["label"].string, style: .caption1, color: Theme.muted))
-      let output = Theme.label(style: .title2)
+      let stack = Theme.stack(spacing: 8)
+      stack.addArrangedSubview(Theme.label(p["label"].string, style: .body, color: Theme.muted))
+      let output = Theme.label(style: .title1)
       output.accessibilityLabel = p["label"].string
       updates.append { [weak self, weak output] in
         guard let self else { return }
@@ -148,22 +151,29 @@ import UIKit
       stack.addArrangedSubview(output)
       view = stack
     case "Link":
-      view = Theme.button(p["label"].string, symbol: "arrow.up.right") {
+      let button = Theme.button(p["label"].string, symbol: "arrow.up.right") {
         if let url = URL(string: p["url"].string),
           ["http", "https"].contains(url.scheme?.lowercased() ?? "")
         {
           UIApplication.shared.open(url)
         }
       }
+      responseButton(button, leading: true)
+      view = button
+    case "Image":
+      view = ResponseUIImageView(props: p, load: loadImage, relayout: relayout)
     case "Input":
-      let stack = Theme.stack(spacing: 4)
-      stack.addArrangedSubview(Theme.label(p["label"].string, style: .caption1, color: Theme.muted))
-      let input = UITextField()
-      input.borderStyle = .roundedRect
+      let stack = Theme.stack(spacing: 10)
+      stack.addArrangedSubview(Theme.label(p["label"].string, style: .body))
+      let input = ResponseUITextField()
+      input.backgroundColor = Theme.secondary
+      input.layer.cornerRadius = 14
+      input.layer.borderWidth = 0.5
+      input.layer.borderColor = Theme.border.cgColor
       input.textColor = Theme.ink
       input.font = .preferredFont(forTextStyle: .body)
       input.adjustsFontForContentSizeCategory = true
-      input.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+      input.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
       input.accessibilityLabel = p["label"].string
       input.placeholder = p["placeholder"].string
       input.keyboardType =
@@ -199,12 +209,23 @@ import UIKit
       stack.addArrangedSubview(input)
       view = stack
     case "Slider":
-      let stack = Theme.stack(spacing: 4)
-      let label = Theme.label(style: .caption1, color: Theme.muted)
-      let slider = UISlider()
+      let stack = Theme.stack(spacing: 8)
+      let label = Theme.label(p["label"].string, style: .body)
+      let output = Theme.label(style: .body)
+      output.font = UIFontMetrics(forTextStyle: .body).scaledFont(
+        for: .monospacedDigitSystemFont(ofSize: 17, weight: .semibold))
+      output.textAlignment = .right
+      output.setContentHuggingPriority(.required, for: .horizontal)
+      output.setContentCompressionResistancePriority(.required, for: .horizontal)
+      label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+      let header = ResponseUIControlHeader(label: label, value: output)
+      let slider = ResponseUISlider()
       slider.minimumValue = 0
       slider.maximumValue = 1
       slider.tintColor = Theme.ink
+      slider.minimumTrackTintColor = Theme.ink
+      slider.maximumTrackTintColor = Theme.border
+      slider.heightAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true
       slider.accessibilityLabel = p["label"].string
       let min = p["min"].uiNumber ?? 0
       let max = p["max"].uiNumber ?? 1
@@ -220,7 +241,7 @@ import UIKit
       slider.addAction(
         UIAction { [weak self] _ in Task { await self?.session.flush() } },
         for: [.touchUpInside, .touchUpOutside, .touchCancel])
-      updates.append { [weak self, weak slider, weak label] in
+      updates.append { [weak self, weak slider, weak output] in
         guard let self else { return }
         let current = value(p["bind"])
         let number = current.uiNumber ?? min
@@ -230,20 +251,20 @@ import UIKit
         slider?.value = hi == lo ? 0 : Float((number / scale - lo) / (hi - lo))
         slider?.isEnabled = editable && hi != lo
         slider?.accessibilityValue = ResponseUI.format(current)
-        label?.text = "\(p["label"].string): \(ResponseUI.format(current))"
+        output?.text = ResponseUI.format(current)
       }
-      stack.addArrangedSubview(label)
+      stack.addArrangedSubview(header)
       stack.addArrangedSubview(slider)
       view = stack
     case "Select":
-      let stack = Theme.stack(spacing: 4)
-      stack.addArrangedSubview(Theme.label(p["label"].string, style: .caption1, color: Theme.muted))
+      let stack = Theme.stack(spacing: 10)
+      stack.addArrangedSubview(Theme.label(p["label"].string, style: .body))
       let button = UIButton(type: .system)
       button.configuration = .tinted()
-      button.tintColor = Theme.ink
+      button.configuration?.image = UIImage(systemName: "chevron.down")
+      responseButton(button, leading: true)
       button.showsMenuAsPrimaryAction = true
       button.accessibilityLabel = p["label"].string
-      button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
       updates.append { [weak self, weak button] in
         guard let self else { return }
         let current = value(p["bind"])
@@ -259,12 +280,14 @@ import UIKit
       stack.addArrangedSubview(button)
       view = stack
     case "Checklist":
-      let stack = Theme.stack(spacing: 8)
+      let stack = Theme.stack(spacing: 12)
       for item in p["items"].array {
-        let row = Theme.stack(.horizontal, spacing: 8)
+        let row = Theme.stack(.horizontal, spacing: 16)
+        row.alignment = .center
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
         let label = Theme.label(item["label"].string)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let toggle = UISwitch()
+        let toggle = ResponseUISwitch()
         toggle.onTintColor = Theme.ink
         toggle.accessibilityLabel = item["label"].string
         toggle.addAction(
@@ -299,12 +322,13 @@ import UIKit
         default: break
         }
       }
+      responseButton(button)
       updates.append { [weak self, weak button] in button?.isEnabled = self?.editable ?? false }
       view = button
     case "Disclosure":
-      let stack = Theme.stack(spacing: 8)
-      let body = Theme.stack(spacing: 8)
-      children.forEach { body.addArrangedSubview(element($0)) }
+      let stack = Theme.stack(spacing: 12)
+      let body = Theme.stack(spacing: 16)
+      for child in children { body.addArrangedSubview(element(child)) }
       let button = Theme.button(p["title"].string, symbol: "chevron.down") { [weak self] in
         guard let self else { return }
         if p["bind"].isNull {
@@ -314,6 +338,7 @@ import UIKit
           change(p["bind"], .bool(!value(p["bind"]).bool))
         }
       }
+      responseButton(button, leading: true)
       updates.append { [weak self, weak body, weak button] in
         guard let self else { return }
         let expanded = p["bind"].isNull ? (local[id]?.bool ?? false) : value(p["bind"]).bool
@@ -326,38 +351,36 @@ import UIKit
       stack.addArrangedSubview(body)
       view = stack
     case "Tabs":
-      let stack = Theme.stack(spacing: 8)
-      let picker = UISegmentedControl(items: p["labels"].array.map(\.string))
+      let stack = Theme.stack(spacing: 16)
       let panels = children.map { child -> UIStackView in
         let panel = Theme.stack()
         panel.addArrangedSubview(element(child))
         return panel
       }
-      picker.addAction(
-        UIAction { [weak self, weak picker] _ in
-          guard let self, let picker else { return }
-          let index = JSON.number(Double(picker.selectedSegmentIndex))
-          if p["bind"].isNull {
-            local[id] = index
-            update()
-          } else {
-            change(p["bind"], index)
-          }
-        }, for: .valueChanged)
+      let picker = ResponseUITabs(labels: p["labels"].array.map(\.string)) { [weak self] selected in
+        guard let self else { return }
+        let index = JSON.number(Double(selected))
+        if p["bind"].isNull {
+          local[id] = index
+          update()
+        } else {
+          change(p["bind"], index)
+        }
+      }
       updates.append { [weak self, weak picker] in
         guard let self else { return }
         let index =
           p["bind"].isNull ? (local[id]?.uiInteger ?? 0) : (value(p["bind"]).uiInteger ?? 0)
-        picker?.selectedSegmentIndex = index
-        picker?.isEnabled = p["bind"].isNull || editable
+        picker?.selectedIndex = index
+        picker?.controlsEnabled = p["bind"].isNull || editable
         for (offset, panel) in panels.enumerated() { panel.isHidden = offset != index }
       }
       stack.addArrangedSubview(picker)
-      panels.forEach { stack.addArrangedSubview($0) }
+      for panel in panels { stack.addArrangedSubview(panel) }
       view = stack
     case "Progress":
-      let stack = Theme.stack(spacing: 4)
-      let label = Theme.label(style: .caption1)
+      let stack = Theme.stack(spacing: 10)
+      let label = Theme.label(style: .body)
       let bar = UIProgressView()
       bar.progressTintColor = Theme.ink
       updates.append { [weak self, weak label, weak bar] in
@@ -389,10 +412,10 @@ import UIKit
         symbol.widthAnchor.constraint(equalToConstant: 20).isActive = true
         symbol.isAccessibilityElement = true
         symbol.accessibilityLabel = status
-        text.addArrangedSubview(Theme.label(item["label"].string, style: .subheadline))
+        text.addArrangedSubview(Theme.label(item["label"].string, style: .body))
         if !item["detail"].string.isEmpty {
           text.addArrangedSubview(
-            Theme.label(item["detail"].string, style: .caption1, color: Theme.muted))
+            Theme.label(item["detail"].string, style: .body, color: Theme.muted))
         }
         row.alignment = .top
         row.addArrangedSubview(symbol)
@@ -409,7 +432,7 @@ import UIKit
       for row in p["rows"].array {
         let entry = Theme.stack(spacing: 4)
         for (index, cell) in row.array.enumerated() {
-          let label = Theme.label(style: .subheadline)
+          let label = Theme.label(style: .body)
           updates.append { [weak self, weak label] in
             guard let self else { return }
             label?.text = "\(p["columns"].array[index].string): \(ResponseUI.format(read(cell)))"
@@ -501,36 +524,264 @@ import UIKit
       body?.isHidden.toggle()
       self?.relayout()
     }
+    responseButton(button, leading: true)
     stack.addArrangedSubview(button)
     stack.addArrangedSubview(body)
   }
+}
+
+private func responseButton(_ button: UIButton, leading: Bool = false) {
+  var configuration = button.configuration ?? .tinted()
+  configuration.baseForegroundColor = Theme.ink
+  configuration.baseBackgroundColor = Theme.secondary
+  configuration.background.backgroundColor = Theme.secondary
+  configuration.cornerStyle = .large
+  configuration.contentInsets = .init(top: 14, leading: 16, bottom: 14, trailing: 16)
+  configuration.imagePadding = 12
+  configuration.imagePlacement = .trailing
+  configuration.titleAlignment = leading ? .leading : .center
+  configuration.titleLineBreakMode = .byWordWrapping
+  configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
+    [weak button] attributes in
+    var attributes = attributes
+    attributes.font = UIFont.preferredFont(
+      forTextStyle: .body, compatibleWith: button?.traitCollection)
+    return attributes
+  }
+  button.configuration = configuration
+  button.contentHorizontalAlignment = leading ? .leading : .center
+  button.titleLabel?.numberOfLines = 0
+  button.titleLabel?.adjustsFontForContentSizeCategory = true
+  button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+}
+
+private final class ResponseUITextField: UITextField {
+  override func textRect(forBounds bounds: CGRect) -> CGRect { bounds.insetBy(dx: 14, dy: 12) }
+  override func editingRect(forBounds bounds: CGRect) -> CGRect { textRect(forBounds: bounds) }
+  override func placeholderRect(forBounds bounds: CGRect) -> CGRect { textRect(forBounds: bounds) }
+  override var intrinsicContentSize: CGSize {
+    CGSize(width: super.intrinsicContentSize.width, height: max(52, (font?.lineHeight ?? 20) + 24))
+  }
+  override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+    super.traitCollectionDidChange(previousTraitCollection)
+    if traitCollection.preferredContentSizeCategory
+      != previousTraitCollection?.preferredContentSizeCategory
+    {
+      font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+      invalidateIntrinsicContentSize()
+    }
+  }
+}
+
+private final class ResponseUISlider: UISlider {
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    updateThumb()
+  }
+  required init?(coder: NSCoder) { fatalError() }
+  override func trackRect(forBounds bounds: CGRect) -> CGRect {
+    var rect = super.trackRect(forBounds: bounds)
+    rect.origin.y = bounds.midY - 3
+    rect.size.height = 6
+    return rect
+  }
+  override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+    super.traitCollectionDidChange(previousTraitCollection)
+    if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+      updateThumb()
+    }
+  }
+  private func updateThumb() {
+    let thumb = UIGraphicsImageRenderer(size: CGSize(width: 36, height: 36)).image { context in
+      let circle = UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 32, height: 32))
+      context.cgContext.setShadow(
+        offset: CGSize(width: 0, height: 1), blur: 2,
+        color: Theme.ink.withAlphaComponent(0.15).cgColor)
+      Theme.card.setFill()
+      circle.fill()
+      context.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
+      Theme.border.setStroke()
+      circle.lineWidth = 1
+      circle.stroke()
+    }.withRenderingMode(.alwaysOriginal)
+    setThumbImage(thumb, for: .normal)
+    setThumbImage(thumb, for: .highlighted)
+  }
+}
+
+private final class ResponseUISwitch: UISwitch {
+  override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+    bounds.insetBy(
+      dx: min(0, (bounds.width - 44) / 2),
+      dy: min(0, (bounds.height - 44) / 2)
+    ).contains(point)
+  }
+}
+
+/// The value stays readable when text size or a long label needs a separate line.
+private final class ResponseUIControlHeader: UIStackView {
+  private let label: UILabel
+  private let value: UILabel
+  init(label: UILabel, value: UILabel) {
+    self.label = label
+    self.value = value
+    super.init(frame: .zero)
+    spacing = 8
+    axis = .vertical
+    addArrangedSubview(label)
+    addArrangedSubview(value)
+  }
+  required init(coder: NSCoder) { fatalError() }
+  override func layoutSubviews() {
+    let stacked =
+      traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+      || label.intrinsicContentSize.width + value.intrinsicContentSize.width + 16 > bounds.width
+    axis = stacked ? .vertical : .horizontal
+    alignment = stacked ? .fill : .firstBaseline
+    spacing = stacked ? 8 : 16
+    super.layoutSubviews()
+  }
+}
+
+/// Native menus keep every section reachable instead of squeezing many tiny segments.
+private final class ResponseUITabs: UIView {
+  private let labels: [String]
+  private let choose: (Int) -> Void
+  private let segments: UISegmentedControl
+  private let button = UIButton(type: .system)
+  var selectedIndex = 0 { didSet { updateSelection() } }
+  var controlsEnabled = true {
+    didSet {
+      segments.isEnabled = controlsEnabled
+      button.isEnabled = controlsEnabled
+    }
+  }
+  init(labels: [String], choose: @escaping (Int) -> Void) {
+    self.labels = labels
+    self.choose = choose
+    self.segments = UISegmentedControl(items: labels)
+    super.init(frame: .zero)
+    button.configuration = .tinted()
+    button.configuration?.image = UIImage(systemName: "chevron.down")
+    responseButton(button, leading: true)
+    button.showsMenuAsPrimaryAction = true
+    addSubview(segments)
+    addSubview(button)
+    segments.pin(to: self)
+    button.pin(to: self)
+    heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+    segments.addAction(
+      UIAction { [weak self] _ in
+        guard let self else { return }
+        choose(segments.selectedSegmentIndex)
+      }, for: .valueChanged)
+    updateSelection()
+  }
+  required init?(coder: NSCoder) { fatalError() }
+  override func layoutSubviews() {
+    let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+    segments.setTitleTextAttributes([.font: font], for: .normal)
+    let segmentWidth = bounds.width / CGFloat(max(1, labels.count))
+    let useMenu =
+      labels.count > 4
+      || traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+      || labels.contains {
+        ($0 as NSString).size(withAttributes: [.font: font]).width + 32 > segmentWidth
+      }
+    segments.isHidden = useMenu
+    button.isHidden = !useMenu
+    super.layoutSubviews()
+  }
+  private func updateSelection() {
+    guard labels.indices.contains(selectedIndex) else { return }
+    segments.selectedSegmentIndex = selectedIndex
+    button.configuration?.title = labels[selectedIndex]
+    button.accessibilityLabel = labels[selectedIndex]
+    button.menu = UIMenu(
+      children: labels.enumerated().map { index, label in
+        UIAction(title: label, state: index == selectedIndex ? .on : .off) { [weak self] _ in
+          self?.choose(index)
+        }
+      })
+  }
+}
+
+/// Images are supplied by the chat's authenticated artifact loader, never generated URLs.
+private final class ResponseUIImageView: UIStackView {
+  private let picture = UIImageView()
+  private let fallback: UILabel
+  private var imageHeight: NSLayoutConstraint?
+  private var task: Task<Void, Never>?
+  init(props: JSON, load: @escaping (String) async -> UIImage?, relayout: @escaping () -> Void) {
+    self.fallback = Theme.label(props["alt"].string)
+    super.init(frame: .zero)
+    axis = .vertical
+    spacing = 12
+    picture.contentMode = .scaleAspectFit
+    picture.backgroundColor = Theme.secondary
+    picture.layer.cornerRadius = 14
+    picture.clipsToBounds = true
+    picture.isAccessibilityElement = true
+    picture.accessibilityLabel = props["alt"].string
+    picture.isHidden = true
+    picture.heightAnchor.constraint(lessThanOrEqualToConstant: 420).isActive = true
+    addArrangedSubview(picture)
+    addArrangedSubview(fallback)
+    if !props["caption"].string.isEmpty {
+      addArrangedSubview(Theme.label(props["caption"].string, color: Theme.muted))
+    }
+    let artifactID = props["artifactId"].string
+    task = Task { [weak self] in
+      let image = await load(artifactID)
+      guard !Task.isCancelled, let self, let image else { return }
+      picture.image = image
+      let ratio =
+        props["aspectRatio"].uiNumber ?? Double(image.size.width / max(1, image.size.height))
+      let height = picture.heightAnchor.constraint(
+        equalTo: picture.widthAnchor,
+        multiplier: CGFloat(1 / max(0.1, min(10, ratio))))
+      height.priority = .defaultHigh
+      height.isActive = true
+      imageHeight = height
+      picture.isHidden = false
+      fallback.isHidden = true
+      relayout()
+    }
+  }
+  required init(coder: NSCoder) { fatalError() }
+  deinit { task?.cancel() }
 }
 
 /// One column on a phone, more columns when the available width permits it.
 private final class ResponseUIGrid: UIStackView {
   private let items: [UIView]
   private let columns: Int
+  private let gap: CGFloat
   private var count = 0
-  init(_ items: [UIView], columns: Int) {
+  init(_ items: [UIView], columns: Int, spacing: CGFloat) {
     self.items = items
-    self.columns = columns
+    self.columns = max(1, columns)
+    self.gap = spacing
     super.init(frame: .zero)
     axis = .vertical
-    spacing = 12
+    self.spacing = spacing
     rebuild(1)
   }
   required init(coder: NSCoder) { fatalError() }
   override func layoutSubviews() {
-    let desired = min(columns, max(1, Int(bounds.width / 240)))
+    let desired =
+      traitCollection.userInterfaceIdiom == .phone
+        || traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+      ? 1 : min(columns, max(1, Int(bounds.width / 280)))
     if desired != count { rebuild(desired) }
     super.layoutSubviews()
   }
   private func rebuild(_ next: Int) {
-    items.forEach { $0.removeFromSuperview() }
-    arrangedSubviews.forEach { $0.removeFromSuperview() }
+    for item in items { item.removeFromSuperview() }
+    for child in arrangedSubviews { child.removeFromSuperview() }
     count = next
     for start in stride(from: 0, to: items.count, by: next) {
-      let row = Theme.stack(.horizontal, spacing: 12)
+      let row = Theme.stack(.horizontal, spacing: gap)
       row.alignment = .top
       row.distribution = .fillEqually
       for index in start..<min(start + next, items.count) { row.addArrangedSubview(items[index]) }

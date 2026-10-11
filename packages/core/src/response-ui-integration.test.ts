@@ -1,6 +1,7 @@
 import { ResponseUiBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { projectMessages, reduceLiveMessageBlocks, withLiveStreamingProgress } from "./events.js";
+import { createResponseUiStream } from "./response-ui.js";
 import { responseUiPlainText } from "./response-ui-plain.js";
 import { speechFromBlocks } from "./speech-text.js";
 
@@ -40,6 +41,55 @@ const block = ResponseUiBlock.parse({
   },
 });
 describe("response blocks through the chat pipeline", () => {
+  it("streams and projects owned image references with a readable legacy fallback", () => {
+    const image = {
+      type: "Image",
+      props: { artifactId: "owned-image", alt: "Dinner table", caption: "Three place settings" },
+      children: [],
+    };
+    const raw = [
+      "```negroni-ui",
+      JSON.stringify({ op: "add", path: "/summary", value: "Dinner table" }),
+      JSON.stringify({ op: "add", path: "/root", value: "photo" }),
+      JSON.stringify({ op: "add", path: "/elements/photo", value: image }),
+      "```",
+    ].join("\n");
+    const stream = createResponseUiStream();
+    const events = [...stream.push(raw), ...stream.finish()];
+    const complete = events.findLast((event) => event.type === "ui" && event.block.complete);
+    expect(complete?.type).toBe("ui");
+    if (complete?.type !== "ui") throw new Error("Image composition did not compile");
+    const parsed = ResponseUiBlock.parse(complete.block);
+    const messages = projectMessages([
+      {
+        id: "image-event",
+        threadId: "thread",
+        botId: "bot",
+        seq: 1,
+        createdAt: "2026-10-01T10:00:00Z",
+        type: "thread.message.created",
+        payload: { messageId: "image-reply", blocks: [parsed] },
+      },
+    ]);
+    expect(messages[0]?.blocks).toEqual([parsed]);
+    expect(parsed.spec.elements.photo).toEqual(image);
+    expect(responseUiPlainText(parsed)).toBe("Dinner table\nThree place settings");
+    expect(responseUiPlainText(parsed)).not.toContain("owned-image");
+    for (const props of [
+      { alt: "Missing reference" },
+      { ...image.props, artifactId: "" },
+      { ...image.props, alt: "" },
+      { ...image.props, src: "https://example.test/image.png" },
+      { ...image.props, url: "data:image/png;base64,AA==" },
+    ]) {
+      expect(
+        ResponseUiBlock.safeParse({
+          ...parsed,
+          spec: { ...parsed.spec, elements: { photo: { ...image, props } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
   it("preserves prose around a live composition and replaces each component update in place", () => {
     const start = reduceLiveMessageBlocks([{ kind: "progress", text: "Adjust this.\n" }], {
       type: "progress",

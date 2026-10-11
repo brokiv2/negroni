@@ -5069,11 +5069,13 @@ const Transcript = memo(function Transcript({
                   className={
                     peerReceipt
                       ? undefined
-                      : `relative w-fit min-w-0 ${
-                          message.role === "user"
-                            ? "max-w-[min(84%,calc(100%_-_6rem))]"
-                            : "max-w-[min(88%,calc(100%_-_6rem))]"
-                        }`
+                      : message.blocks.some((block) => block.kind === "response_ui")
+                        ? "relative w-full min-w-0 max-w-full md:w-fit md:max-w-[36rem]"
+                        : `relative w-fit min-w-0 ${
+                            message.role === "user"
+                              ? "max-w-[min(84%,calc(100%_-_6rem))]"
+                              : "max-w-[min(88%,calc(100%_-_6rem))]"
+                          }`
                   }
                 >
                   {peerReceipt ? null : (

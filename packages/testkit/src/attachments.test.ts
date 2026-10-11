@@ -1,9 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { AgentRuntime } from "@rakazo/adapter-kit";
 import type { ThreadSnapshot } from "@rakazo/contracts";
 import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -21,6 +22,7 @@ let botIntroHarness: BotIntroHarness | undefined;
 describeAttachments("chat attachments", () => {
   let app: App;
   let stop: () => Promise<void>;
+  let runtime: AgentRuntime;
   const stamp = Date.now();
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-attachments-"));
   const tinyPng = Buffer.from(
@@ -38,11 +40,98 @@ describeAttachments("chat attachments", () => {
     });
     app = handles.app;
     stop = handles.stop;
+    runtime = handles.runtime;
     botIntroHarness = handles;
   });
 
   afterAll(async () => {
-    await stop?.();
+    try {
+      await stop?.();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a composed image reference and serves bytes only to its conversation owner", async () => {
+    const owner = await signup(app, `image-owner-${stamp}@rakazo.test`, "Image Owner");
+    const other = await signup(app, `image-other-${stamp}@rakazo.test`, "Other User");
+    const bot = await rpc<{ id: string }>(app, owner, "bots/create", {
+      name: "Image Assistant",
+      title: "Image Assistant",
+      description: "synthetic image QA",
+      instructions: "",
+      notifyOnFinish: false,
+    });
+    const artifact = await rpc<{ id: string }>(app, owner, "artifacts/create", {
+      botId: bot.id,
+      name: "pixel.png",
+      mimeType: "image/png",
+      contentBase64: tinyPng.toString("base64"),
+    });
+    const spec = {
+      root: "photo",
+      state: {},
+      summary: "Attached pixel",
+      elements: {
+        photo: {
+          type: "Image",
+          props: {
+            artifactId: artifact.id,
+            alt: "Attached pixel",
+            caption: "Synthetic image fixture",
+          },
+          children: [],
+        },
+      },
+    };
+    const output =
+      "```negroni-ui\n" +
+      Object.entries(spec)
+        .map(([key, value]) => JSON.stringify({ op: "add", path: `/${key}`, value }))
+        .join("\n") +
+      "\n```";
+    const scripted = vi.spyOn(runtime, "run").mockImplementation(async function* () {
+      yield { type: "text", text: output };
+      yield { type: "done", text: output };
+    });
+    try {
+      await sendAndWait(app, owner, bot.id, { text: "Show the attached synthetic image" });
+      const snapshot = await rpc<ThreadSnapshot>(app, owner, "threads/get", { botId: bot.id });
+      const composed = snapshot.messages
+        .flatMap((message) => message.blocks)
+        .find((block) => block.kind === "response_ui");
+      expect(composed).toMatchObject({
+        kind: "response_ui",
+        complete: true,
+        spec: { elements: { photo: spec.elements.photo } },
+      });
+      const fetched = await rpc<{ contentBase64: string }>(app, owner, "artifacts/get", {
+        botId: bot.id,
+        artifactId: artifact.id,
+      });
+      expect(fetched.contentBase64).toBe(tinyPng.toString("base64"));
+      expect(
+        (
+          await raw(app, other, "artifacts/get", {
+            botId: bot.id,
+            artifactId: artifact.id,
+          })
+        ).status,
+      ).toBeGreaterThanOrEqual(400);
+      expect(
+        (await raw(app, "", "artifacts/get", { botId: bot.id, artifactId: artifact.id })).status,
+      ).toBeGreaterThanOrEqual(400);
+      expect(
+        (
+          await raw(app, owner, "artifacts/get", {
+            botId: bot.id,
+            artifactId: "missing-image",
+          })
+        ).status,
+      ).toBeGreaterThanOrEqual(400);
+    } finally {
+      scripted.mockRestore();
+    }
   });
 
   it("uploads, sends with image/file, and rejects invalid attachments", async () => {

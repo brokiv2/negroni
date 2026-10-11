@@ -1,8 +1,8 @@
 import type { ResponseUiBlock, UiExpression, UiProps, UiScalar, UiSpec } from "@rakazo/contracts";
-import { parseUiSpec, validateUiState } from "@rakazo/contracts";
+import { isAttachmentImageMimeType, parseUiSpec, validateUiState } from "@rakazo/contracts";
 import { evaluateUiExpression, formatUiScalar } from "@rakazo/core";
-import type { ReactNode } from "react";
-import { useId, useMemo, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "./components/ui/button.js";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card.js";
 import { Checkbox } from "./components/ui/checkbox.js";
@@ -18,14 +18,15 @@ type Context = {
   disabled: boolean;
   change: (state: State) => void;
   followUp?: (text: string) => void;
+  loadImage?: (artifactId: string) => Promise<Blob | null>;
   dataLabel: string;
 };
 const GAPS = { small: "gap-2", medium: "gap-4", large: "gap-6" };
 const COLUMNS = {
   1: "grid-cols-1",
-  2: "grid-cols-1 @sm:grid-cols-2",
-  3: "grid-cols-1 @sm:grid-cols-2 @lg:grid-cols-3",
-  4: "grid-cols-1 @sm:grid-cols-2 @lg:grid-cols-4",
+  2: "grid-cols-1 @sm/response-ui:grid-cols-2",
+  3: "grid-cols-1 @sm/response-ui:grid-cols-2 @lg/response-ui:grid-cols-3",
+  4: "grid-cols-1 @sm/response-ui:grid-cols-2 @lg/response-ui:grid-cols-4",
 };
 const read = (ctx: Context, path: string) => ctx.state[path.slice(1)];
 function set(ctx: Context, path: string, value: UiScalar) {
@@ -45,6 +46,7 @@ export function ResponseUiView({
   disabled = false,
   onStateChange,
   onFollowUp,
+  loadImage,
   dataLabel,
 }: {
   block: ResponseUiBlock;
@@ -52,6 +54,7 @@ export function ResponseUiView({
   disabled?: boolean;
   onStateChange: (state: State) => void;
   onFollowUp?: (text: string) => void;
+  loadImage?: (artifactId: string) => Promise<Blob | null>;
   dataLabel: string;
 }) {
   const spec = useMemo(
@@ -65,11 +68,12 @@ export function ResponseUiView({
     disabled: disabled || !block.complete,
     change: onStateChange,
     followUp: onFollowUp,
+    loadImage,
     dataLabel,
   };
   return (
     <div
-      className="@container w-full min-w-0 text-foreground"
+      className="@container/response-ui response-ui w-full min-w-0 text-foreground"
       data-testid="response-ui"
       aria-busy={!block.complete}
     >
@@ -89,7 +93,9 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
         <div
           className={cn(
             "flex min-w-0",
-            p.direction === "horizontal" ? "flex-row flex-wrap items-start" : "flex-col",
+            p.direction === "horizontal"
+              ? "response-ui-horizontal flex-row flex-wrap items-start"
+              : "flex-col",
             GAPS[p.gap],
           )}
         >
@@ -101,7 +107,11 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
       const p = node.props as UiProps<"Grid">;
       return (
         <div
-          className={cn("grid min-w-0", COLUMNS[p.columns as keyof typeof COLUMNS], GAPS[p.gap])}
+          className={cn(
+            "response-ui-grid grid min-w-0",
+            COLUMNS[p.columns as keyof typeof COLUMNS],
+            GAPS[p.gap],
+          )}
         >
           {children}
         </div>
@@ -110,18 +120,24 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
     case "Card": {
       const p = node.props as UiProps<"Card">;
       return (
-        <Card className="min-w-0">
+        <Card className="response-ui-card min-w-0">
           {p.title || p.description ? (
             <CardHeader>
-              {p.title ? <CardTitle dir="auto">{p.title}</CardTitle> : null}
+              {p.title ? (
+                <CardTitle className="response-ui-heading" dir="auto">
+                  {p.title}
+                </CardTitle>
+              ) : null}
               {p.description ? (
-                <CardDescription className="whitespace-pre-wrap" dir="auto">
+                <CardDescription className="response-ui-body whitespace-pre-wrap" dir="auto">
                   {p.description}
                 </CardDescription>
               ) : null}
             </CardHeader>
           ) : null}
-          <CardContent className="flex min-w-0 flex-col gap-4">{children}</CardContent>
+          <CardContent className="response-ui-card-content flex min-w-0 flex-col gap-4">
+            {children}
+          </CardContent>
         </Card>
       );
     }
@@ -129,14 +145,16 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
       const p = node.props as UiProps<"Text">;
       const text = textOf(ctx, p.text);
       return p.style === "heading" ? (
-        <h3 className="text-base font-semibold" dir="auto">
+        <h3 className="response-ui-heading text-base font-semibold" dir="auto">
           {text}
         </h3>
       ) : (
         <p
           className={cn(
             "whitespace-pre-wrap wrap-anywhere",
-            p.style === "caption" ? "text-xs text-muted-foreground" : "text-sm leading-relaxed",
+            p.style === "caption"
+              ? "response-ui-caption text-xs text-muted-foreground"
+              : "response-ui-body text-sm leading-relaxed",
           )}
           dir="auto"
         >
@@ -148,13 +166,18 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
       const p = node.props as UiProps<"Metric">;
       return (
         <div className="min-w-0">
-          <div className="text-xs text-muted-foreground" dir="auto">
+          <div className="response-ui-label text-xs text-muted-foreground" dir="auto">
             {p.label}
           </div>
-          <output className="block text-2xl font-semibold tabular-nums" aria-label={p.label}>
+          <output
+            className="response-ui-metric block text-2xl font-semibold tabular-nums"
+            aria-label={p.label}
+          >
             {textOf(ctx, p.value, p.decimals)}
             {p.unit ? (
-              <span className="ml-1 text-sm font-normal text-muted-foreground">{p.unit}</span>
+              <span className="response-ui-unit ml-1 text-sm font-normal text-muted-foreground">
+                {p.unit}
+              </span>
             ) : null}
           </output>
         </div>
@@ -167,7 +190,7 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
           href={p.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-sm underline underline-offset-4 focus-visible:outline-ring"
+          className="response-ui-link text-sm underline underline-offset-4 focus-visible:outline-ring"
           dir="auto"
         >
           {p.label}
@@ -188,6 +211,8 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
       return <ResponseChart props={node.props as UiProps<"Chart">} ctx={ctx} />;
     case "Diagram":
       return <ResponseDiagram props={node.props as UiProps<"Diagram">} dataLabel={ctx.dataLabel} />;
+    case "Image":
+      return <ResponseImage props={node.props as UiProps<"Image">} loadImage={ctx.loadImage} />;
     case "Checklist": {
       const p = node.props as UiProps<"Checklist">;
       return (
@@ -213,7 +238,7 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
           type="button"
           size="sm"
           variant="outline"
-          className="w-fit max-w-full whitespace-normal"
+          className="response-ui-action w-fit max-w-full whitespace-normal"
           disabled={ctx.disabled || (p.action.type === "follow_up" && !ctx.followUp)}
           onClick={() => {
             if (p.action.type === "follow_up") ctx.followUp?.(p.action.prompt);
@@ -287,6 +312,69 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
   }
 }
 
+function ResponseImage({
+  props: p,
+  loadImage,
+}: {
+  props: UiProps<"Image">;
+  loadImage?: Context["loadImage"];
+}) {
+  const [image, setImage] = useState<{
+    artifactId: string;
+    loader: Context["loadImage"];
+    url: string;
+  } | null>(null);
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | undefined;
+    if (loadImage) {
+      void loadImage(p.artifactId)
+        .then((blob) => {
+          if (
+            !active ||
+            !blob ||
+            !isAttachmentImageMimeType(blob.type) ||
+            blob.size === 0 ||
+            blob.size > 12 * 1024 * 1024
+          )
+            return;
+          objectUrl = URL.createObjectURL(blob);
+          setImage({ artifactId: p.artifactId, loader: loadImage, url: objectUrl });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [p.artifactId, loadImage]);
+  const src =
+    image?.artifactId === p.artifactId && image.loader === loadImage ? image.url : undefined;
+  return (
+    <figure className="min-w-0">
+      {src ? (
+        <img
+          className="w-full max-w-full rounded-xl object-contain"
+          src={src}
+          alt={p.alt}
+          style={p.aspectRatio ? { aspectRatio: p.aspectRatio } : undefined}
+          decoding="async"
+          onError={() => setImage(null)}
+        />
+      ) : (
+        <p className="response-ui-body text-sm text-muted-foreground" dir="auto">
+          {p.alt}
+        </p>
+      )}
+      {p.caption ? (
+        <figcaption className="response-ui-caption mt-2 text-xs text-muted-foreground" dir="auto">
+          {p.caption}
+        </figcaption>
+      ) : null}
+    </figure>
+  );
+}
+
 function ChecklistItem({
   item,
   ctx,
@@ -296,7 +384,7 @@ function ChecklistItem({
 }) {
   const id = useId();
   return (
-    <div className="flex items-start gap-2 text-sm" dir="auto">
+    <div className="response-ui-checklist flex items-start gap-2 text-sm" dir="auto">
       <Checkbox
         id={id}
         className="mt-0.5"
@@ -304,7 +392,9 @@ function ChecklistItem({
         disabled={ctx.disabled}
         onCheckedChange={(checked) => set(ctx, item.bind, checked)}
       />
-      <label htmlFor={id}>{item.label}</label>
+      <label className="flex-1" htmlFor={id}>
+        {item.label}
+      </label>
     </div>
   );
 }
@@ -317,11 +407,12 @@ function ResponseInput({ props: p, ctx }: { props: UiProps<"Input">; ctx: Contex
   const [invalid, setInvalid] = useState(false);
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm" dir="auto">
+      <label htmlFor={id} className="response-ui-label text-sm" dir="auto">
         {p.label}
       </label>
       <Input
         id={id}
+        className="response-ui-input"
         type={p.input === "number" ? "number" : "text"}
         inputMode={p.input === "number" ? "decimal" : undefined}
         value={editing ?? String(value ?? "")}
@@ -354,13 +445,22 @@ function ResponseSlider({ props: p, ctx }: { props: UiProps<"Slider">; ctx: Cont
   const value = Number(read(ctx, p.bind));
   return (
     <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="flex justify-between gap-3 text-sm" dir="auto">
+      <label
+        htmlFor={id}
+        className="response-ui-label flex justify-between gap-3 text-sm"
+        dir="auto"
+      >
         {p.label}
         <span className="tabular-nums">{value}</span>
       </label>
       <input
         id={id}
-        className="h-6 w-full accent-primary"
+        className="response-ui-slider w-full"
+        style={
+          {
+            "--response-slider-progress": `${Math.max(0, Math.min(100, ((value - p.min) / (p.max - p.min || 1)) * 100))}%`,
+          } as CSSProperties
+        }
         type="range"
         min={p.min}
         max={p.max}
@@ -377,14 +477,14 @@ function ResponseSelect({ props: p, ctx }: { props: UiProps<"Select">; ctx: Cont
   const index = p.options.findIndex((o) => o.value === read(ctx, p.bind));
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm" dir="auto">
+      <label htmlFor={id} className="response-ui-label text-sm" dir="auto">
         {p.label}
       </label>
       <NativeSelect
         id={id}
         value={index}
         disabled={ctx.disabled}
-        className="w-full"
+        className="response-ui-select w-full"
         onChange={(e) => {
           const option = p.options[Number(e.target.value)];
           if (option) set(ctx, p.bind, option.value);
@@ -417,7 +517,7 @@ function ResponseDisclosure({
         type="button"
         variant="ghost"
         size="sm"
-        className="max-w-full whitespace-normal"
+        className="response-ui-disclosure max-w-full whitespace-normal"
         aria-expanded={open}
         aria-controls={id}
         disabled={Boolean(p.bind && ctx.disabled)}
@@ -454,11 +554,16 @@ function ResponseTabs({
     >
       <TabsList
         activateOnFocus
-        className="h-auto max-w-full flex-wrap"
+        className="response-ui-tabs h-auto max-w-full flex-wrap"
         aria-label={ctx.spec.summary}
       >
         {p.labels.map((label, i) => (
-          <TabsTrigger key={i} value={i} disabled={Boolean(p.bind && ctx.disabled)}>
+          <TabsTrigger
+            className="response-ui-tab"
+            key={i}
+            value={i}
+            disabled={Boolean(p.bind && ctx.disabled)}
+          >
             {label}
           </TabsTrigger>
         ))}
@@ -483,7 +588,7 @@ function DataTable({
   return (
     <section
       aria-label={caption ?? columns.join(", ")}
-      className="max-w-full overflow-x-auto rounded-lg border border-border"
+      className="response-ui-table max-w-full overflow-x-auto rounded-lg border border-border"
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The overflow region needs keyboard scrolling.
       tabIndex={0}
     >
@@ -516,8 +621,30 @@ function DataTable({
   );
 }
 
+// Match drawing coordinates to the rendered width so SVG labels keep their size on phones.
+function useFigureWidth() {
+  const ref = useRef<HTMLElement>(null);
+  const [width, setWidth] = useState(520);
+  useEffect(() => {
+    const figure = ref.current;
+    if (!figure || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry && entry.contentRect.width > 0) {
+        setWidth(Math.max(240, Math.min(520, Math.round(entry.contentRect.width))));
+      }
+    });
+    observer.observe(figure);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, width };
+}
+
 function ResponseChart({ props: p, ctx }: { props: UiProps<"Chart">; ctx: Context }) {
   const titleId = useId();
+  const { ref, width } = useFigureWidth();
+  const left = 48;
+  const right = width - 18;
+  const plotWidth = right - left;
   const series = p.series.map((s) => ({
     label: s.label,
     points: s.points.flatMap((point) => {
@@ -540,18 +667,21 @@ function ResponseChart({ props: p, ctx }: { props: UiProps<"Chart">; ctx: Contex
     : categories.length;
   const scaleX = (x: string | number) =>
     numericX
-      ? 58 + ((Number(x) / maxAbsX - minX) / (maxX - minX || 1)) * 424
-      : 58 + ((categories.indexOf(String(x)) + 0.5) / Math.max(1, categories.length)) * 424;
-  const barWidth = Math.min(50, 330 / Math.max(1, categories.length) / series.length);
+      ? left + ((Number(x) / maxAbsX - minX) / (maxX - minX || 1)) * plotWidth
+      : left + ((categories.indexOf(String(x)) + 0.5) / Math.max(1, categories.length)) * plotWidth;
+  const barWidth = Math.min(
+    50,
+    (plotWidth * 0.78) / Math.max(1, categories.length) / Math.max(1, series.length),
+  );
   const zeroY = scaleY(0);
   return (
-    <figure className="min-w-0">
-      <figcaption className="mb-2 text-sm font-medium" dir="auto">
+    <figure ref={ref} className="min-w-0">
+      <figcaption className="response-ui-figure-title mb-2 text-sm font-medium" dir="auto">
         {p.title}
       </figcaption>
       <svg
         className="h-auto w-full text-foreground"
-        viewBox="0 0 520 260"
+        viewBox={`0 0 ${width} 260`}
         role="img"
         aria-labelledby={titleId}
       >
@@ -559,19 +689,19 @@ function ResponseChart({ props: p, ctx }: { props: UiProps<"Chart">; ctx: Contex
         {[minY, (minY + maxY) / 2, maxY].map((value, i) => (
           <g key={i}>
             <line
-              x1={58}
-              x2={482}
+              x1={left}
+              x2={right}
               y1={scaleY(value * maxAbsY)}
               y2={scaleY(value * maxAbsY)}
               stroke="currentColor"
               opacity={0.12}
             />
             <text
-              x={50}
+              x={left - 8}
               y={scaleY(value * maxAbsY) + 4}
               textAnchor="end"
               fill="currentColor"
-              fontSize={10}
+              fontSize={12}
             >
               {(value * maxAbsY).toLocaleString(undefined, { maximumSignificantDigits: 3 })}
             </text>
@@ -620,41 +750,51 @@ function ResponseChart({ props: p, ctx }: { props: UiProps<"Chart">; ctx: Contex
           ? [minX, maxX].map((value, i) => (
               <text
                 key={i}
-                x={i ? 482 : 58}
+                x={i ? right : left}
                 y={229}
                 textAnchor={i ? "end" : "start"}
                 fill="currentColor"
-                fontSize={10}
+                fontSize={12}
               >
                 {(value * maxAbsX).toLocaleString(undefined, { maximumSignificantDigits: 3 })}
               </text>
             ))
           : categories.map((value, i) =>
-              categories.length <= 8 || i === 0 || i === categories.length - 1 ? (
+              categories.length <= Math.floor(plotWidth / 56) ||
+              i === 0 ||
+              i === categories.length - 1 ? (
                 <text
                   key={i}
                   x={scaleX(value)}
                   y={229}
                   textAnchor="middle"
                   fill="currentColor"
-                  fontSize={10}
+                  fontSize={12}
                 >
-                  {value.length > 12 ? `${value.slice(0, 11)}…` : value}
+                  {value.length > (width < 400 ? 8 : 12)
+                    ? `${value.slice(0, width < 400 ? 7 : 11)}…`
+                    : value}
                 </text>
               ) : null,
             )}
         {p.xLabel ? (
-          <text x={270} y={252} textAnchor="middle" fill="currentColor" fontSize={11}>
+          <text
+            x={(left + right) / 2}
+            y={252}
+            textAnchor="middle"
+            fill="currentColor"
+            fontSize={12}
+          >
             {p.xLabel}
           </text>
         ) : null}
       </svg>
       {p.yLabel ? (
-        <div className="text-xs text-muted-foreground" dir="auto">
+        <div className="response-ui-caption text-xs text-muted-foreground" dir="auto">
           {p.yLabel}
         </div>
       ) : null}
-      <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      <ul className="response-ui-caption mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         {series.map((s, i) => (
           <li key={i} className="flex items-center gap-1.5">
             <svg width={20} height={8} className="text-foreground" aria-hidden="true">
@@ -673,7 +813,7 @@ function ResponseChart({ props: p, ctx }: { props: UiProps<"Chart">; ctx: Contex
           </li>
         ))}
       </ul>
-      <details className="mt-2 text-xs">
+      <details className="response-ui-data mt-2 text-xs">
         <summary className="w-fit cursor-pointer text-muted-foreground">{ctx.dataLabel}</summary>
         <div className="mt-2">
           <DataTable
@@ -697,20 +837,21 @@ function ResponseDiagram({
 }) {
   const marker = useId();
   const title = useId();
-  const cols = p.nodes.length === 1 ? 1 : 2;
+  const { ref, width } = useFigureWidth();
+  const cols = p.nodes.length === 1 || width < 400 ? 1 : 2;
   const rows = Math.ceil(p.nodes.length / cols);
-  const width = 520;
+  const nodeWidth = cols === 1 ? width - 40 : width / 2 - 60;
   const height = rows * 100 + 20;
   const positions = new Map(
     p.nodes.map((node, i) => [
       node.id,
-      { x: 20 + (i % cols) * 260, y: 10 + Math.floor(i / cols) * 100 },
+      { x: 20 + (i % cols) * (width / cols), y: 10 + Math.floor(i / cols) * 100 },
     ]),
   );
   return (
-    <figure className="min-w-0">
+    <figure ref={ref} className="min-w-0">
       {p.title ? (
-        <figcaption className="mb-2 text-sm font-medium" dir="auto">
+        <figcaption className="response-ui-figure-title mb-2 text-sm font-medium" dir="auto">
           {p.title}
         </figcaption>
       ) : null}
@@ -740,9 +881,9 @@ function ResponseDiagram({
           const horizontal = a.y === b.y;
           const forward = b.x > a.x;
           const down = b.y > a.y;
-          const x1 = horizontal ? a.x + (forward ? 200 : 0) : a.x + 100;
+          const x1 = horizontal ? a.x + (forward ? nodeWidth : 0) : a.x + nodeWidth / 2;
           const y1 = horizontal ? a.y + 32 : a.y + (down ? 65 : 0);
-          const x2 = horizontal ? b.x + (forward ? 0 : 200) : b.x + 100;
+          const x2 = horizontal ? b.x + (forward ? 0 : nodeWidth) : b.x + nodeWidth / 2;
           const y2 = horizontal ? b.y + 32 : b.y + (down ? 0 : 65);
           return (
             <g key={i}>
@@ -765,7 +906,7 @@ function ResponseDiagram({
                   y={(y1 + y2) / 2}
                   textAnchor="middle"
                   fill="currentColor"
-                  fontSize={10}
+                  fontSize={12}
                 >
                   {edge.label.slice(0, 30)}
                 </text>
@@ -775,22 +916,31 @@ function ResponseDiagram({
         })}
         {p.nodes.map((node) => {
           const { x, y } = positions.get(node.id)!;
-          const lines = node.label.match(/.{1,28}(?:\s|$)|.{1,28}/g)?.slice(0, 2) ?? [node.label];
+          const maxChars = Math.max(12, Math.floor((nodeWidth - 24) / 7.5));
+          const lines = node.label
+            .match(new RegExp(`.{1,${maxChars}}(?:\\s|$)|.{1,${maxChars}}`, "g"))
+            ?.slice(0, 2) ?? [node.label];
           return (
             <g key={node.id}>
               <rect
                 x={x}
                 y={y}
-                width={200}
+                width={nodeWidth}
                 height={65}
                 rx={8}
                 fill="var(--card)"
                 stroke="currentColor"
                 opacity={0.8}
               />
-              <text x={x + 100} y={y + 28} textAnchor="middle" fill="currentColor" fontSize={12}>
+              <text
+                x={x + nodeWidth / 2}
+                y={y + 28}
+                textAnchor="middle"
+                fill="currentColor"
+                fontSize={14}
+              >
                 {lines.map((line, i) => (
-                  <tspan key={i} x={x + 100} dy={i ? 16 : 0}>
+                  <tspan key={i} x={x + nodeWidth / 2} dy={i ? 18 : 0}>
                     {line.trim()}
                   </tspan>
                 ))}
@@ -800,7 +950,7 @@ function ResponseDiagram({
           );
         })}
       </svg>
-      <details className="mt-2 text-xs">
+      <details className="response-ui-data mt-2 text-xs">
         <summary className="w-fit cursor-pointer text-muted-foreground">{dataLabel}</summary>
         <ul className="mt-2 flex flex-col gap-2">
           {p.nodes.map((n) => (

@@ -29,6 +29,79 @@ test("streamed chat reply restores server values and drafts a reply to its sourc
   await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("49.50€");
   await captureScreenshot(page, info, "interactive-response-chat");
 });
+test("interactive chat on a phone keeps controls readable and restores slider calculations", async ({
+  page,
+}, info) => {
+  test.skip(process.env.AGENT_RUNTIME === "pi", "Deterministic scripted response fixture");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signup(
+    page,
+    `response-ui-phone-${Date.now()}@example.test`,
+    "password12",
+    "Mobile fixture",
+  );
+  await completeOnboarding(page, undefined, "assistant");
+  await page
+    .getByRole("combobox", { name: "Message Chief", exact: true })
+    .fill("Show an interactive dinner budget");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const reply = page.getByRole("group", { name: "Dinner budget", exact: true });
+  const bill = reply.getByRole("spinbutton", { name: "Bill", exact: true });
+  const people = reply.getByRole("spinbutton", { name: "People", exact: true });
+  const tip = reply.getByRole("slider", { name: "Tip %", exact: false });
+  await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("44.00€");
+  for (const input of [bill, people, reply.getByRole("textbox", { name: "Note", exact: true })]) {
+    const box = await input.boundingBox();
+    expect(box?.height).toBeGreaterThanOrEqual(52);
+    expect(box?.width).toBeGreaterThanOrEqual(260);
+    expect(
+      await input.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+    ).toBeGreaterThanOrEqual(16);
+  }
+  const billBox = await bill.boundingBox();
+  const peopleBox = await people.boundingBox();
+  expect(peopleBox!.y).toBeGreaterThanOrEqual(billBox!.y + billBox!.height);
+  expect(Math.abs(billBox!.x - peopleBox!.x)).toBeLessThan(1);
+  expect((await tip.boundingBox())?.height).toBeGreaterThanOrEqual(56);
+  const currency = reply.getByRole("combobox", { name: "Currency", exact: true });
+  expect((await currency.boundingBox())?.height).toBeGreaterThanOrEqual(52);
+  expect(
+    await currency.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+  ).toBeGreaterThanOrEqual(16);
+  expect(
+    (await reply.getByRole("button", { name: "Draft the next step", exact: true }).boundingBox())
+      ?.height,
+  ).toBeGreaterThanOrEqual(52);
+  await bill.fill("180");
+  await people.fill("4");
+  const saved = page.waitForResponse((response) => {
+    if (!response.url().includes("/rpc/threads/responseUiState") || !response.ok()) return false;
+    const input = response.request().postDataJSON() as { json?: { state?: { tip?: number } } };
+    return input.json?.state?.tip === 30;
+  });
+  await tip.focus();
+  await tip.press("End");
+  await expect(tip).toHaveValue("30");
+  await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("58.50€");
+  await bill.focus();
+  await saved;
+  await page.reload();
+  await expect(bill).toHaveValue("180");
+  await expect(people).toHaveValue("4");
+  await expect(tip).toHaveValue("30");
+  await expect(reply.getByRole("status", { name: "Per person" })).toHaveText("58.50€");
+  // The scripted composition has no attached artifact: denied/missing images keep readable alt text.
+  await expect(reply.getByText("Fictional dinner table", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await bill.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, info, "interactive-response-mobile-controls");
+  const chart = reply.getByRole("img", { name: "Cost by group size", exact: true });
+  await chart.scrollIntoViewIfNeeded();
+  const chartBox = await chart.boundingBox();
+  expect(chartBox!.width).toBeLessThanOrEqual(390);
+  expect(chartBox!.height).toBeGreaterThanOrEqual(220);
+  await captureScreenshot(page, info, "interactive-response-mobile-chart");
+});
 test("interactive reply recalculates, restores values and only drafts a follow-up", async ({
   page,
 }, info) => {
@@ -57,6 +130,12 @@ test("the same composed reply fits a narrow viewport and keyboard navigation", a
 }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(fixture);
+  const image = page.getByRole("img", { name: "Fictional dinner table", exact: true });
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBe(600);
+  expect((await image.boundingBox())?.width).toBeGreaterThanOrEqual(340);
   await page.getByLabel("People", { exact: true }).fill("4");
   await expect(page.getByRole("status", { name: "Per person" })).toHaveText("33.00€");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
