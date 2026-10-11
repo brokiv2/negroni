@@ -12,6 +12,8 @@ Manual Comet checks in an isolated ordinary chat at 390 pixels verify 52/56-pixe
 
 The last completed CI observation on 13232b8c passed 156 web cases and failed two. This follow-up opens the collapsed Developer tools category before asserting GitHub and refreshes the mounted feed when it becomes visible, so new publications appear without a manual reload. The original article discussion, save/isolation and integration assertions remain. A new complete CI observation is required for the changed head.
 
+The completed CI observation on `0fdd4259` passed eleven checks and skipped four. Its web run passed 159 cases, including all phone response and Feed interaction cases, and failed one integration fixture because an unscoped select matched both the bot selector and authentication selector. Both authentication operations now select the combobox containing the Bearer token option; expected defaults, credential verification and provider assertions remain unchanged. Both public-site tests pass. The new fixture-only head requires another complete CI observation. Native build 46 has been archived, exported, inspected and validated by Apple; it has not been uploaded.
+
 ## Scope and baseline
 
 Continue the existing personal-assistant architecture from `f011560b`. Radar observation, notification policy, scoped memory, local history compaction, steering, durable delegation records, and external-effect reconciliation already exist. A separately hosted computer is outside this increment; retain optional provider-neutral computer support.
