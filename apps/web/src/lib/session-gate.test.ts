@@ -17,6 +17,27 @@ describe("session gate", () => {
     expect(sessionGate({ data: null, isPending: true, error: null })).toBe("loading");
   });
 
+  it("keeps a known anonymous form mounted while its session refreshes", () => {
+    expect(sessionGate({ data: null, isPending: true, error: null }, "anonymous")).toBe(
+      "anonymous",
+    );
+    expect(sessionGate({ data: null, isPending: false, error: { status: 503 } }, "anonymous")).toBe(
+      "unreachable",
+    );
+    expect(sessionGate({ data: user, isPending: true, error: null }, "anonymous")).toBe(
+      "authenticated",
+    );
+  });
+
+  it("never retains authentication without session data or hides an unreachable lookup", () => {
+    expect(sessionGate({ data: null, isPending: true, error: null }, "authenticated")).toBe(
+      "loading",
+    );
+    expect(sessionGate({ data: null, isPending: true, error: null }, "unreachable")).toBe(
+      "loading",
+    );
+  });
+
   it("sends a signed-out visitor to sign-in", () => {
     expect(sessionGate({ data: null, isPending: false, error: null })).toBe("anonymous");
   });

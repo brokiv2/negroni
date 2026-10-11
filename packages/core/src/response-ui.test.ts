@@ -5,8 +5,8 @@ import {
   responseUiCatalogPrompt,
   validateUiState,
 } from "@rakazo/contracts";
+import { RESPONSE_UI_FIXTURE } from "@rakazo/contracts/response-ui-fixture";
 import { describe, expect, it } from "vitest";
-import { RESPONSE_UI_FIXTURE } from "../../contracts/src/response-ui.fixture.js";
 import { createResponseUiStream, evaluateUiExpression } from "./response-ui.js";
 
 const calculator: UiSpec = {

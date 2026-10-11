@@ -4,6 +4,7 @@ import type {
   AgentRuntime,
   AgentRuntimeEvent,
 } from "@rakazo/adapter-kit";
+import { RESPONSE_UI_FIXTURE } from "@rakazo/contracts/response-ui-fixture";
 import { abortableDelay, inferHandoffTargetName } from "@rakazo/core";
 
 const running = new Map<string, AbortController>();
@@ -134,6 +135,21 @@ export function inferScript(
   resumeFromCheckpoint?: string,
 ): NonNullable<AgentRunRequest["script"]> {
   const lower = prompt.toLowerCase();
+  if (lower.trim() === "show an interactive dinner budget") {
+    const spec = RESPONSE_UI_FIXTURE.spec;
+    const patches = [
+      ["/summary", spec.summary],
+      ["/state", spec.state],
+      ["/root", spec.root],
+      ...Object.entries(spec.elements).map(([id, element]) => [`/elements/${id}`, element]),
+    ].map(([path, value]) => JSON.stringify({ op: "add", path, value }));
+    return [
+      {
+        assistant: `Fictional sample dinner budget.\n\n\`\`\`negroni-ui\n${patches.join("\n")}\n\`\`\`\n`,
+        complete: true,
+      },
+    ];
+  }
   if (resumeFromCheckpoint === "takeover-skipped") {
     return [
       {

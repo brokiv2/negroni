@@ -13,9 +13,11 @@ export type SessionGate = "loading" | "unreachable" | "authenticated" | "anonymo
  * before the first success never retries. Routing that state to sign-in signs
  * out a user whose cookie is still valid, so it is reported separately.
  */
-export function sessionGate(session: SessionGateInput): SessionGate {
+export function sessionGate(session: SessionGateInput, previous?: SessionGate): SessionGate {
   if (session.data?.user) return "authenticated";
-  if (session.isPending) return "loading";
+  // Refreshing a known anonymous session must not unmount an in-progress
+  // sign-in form. It does not authorize any protected route.
+  if (session.isPending) return previous === "anonymous" ? "anonymous" : "loading";
   // 401 is the server answering: there is genuinely no session.
   if (session.error && session.error.status !== 401) return "unreachable";
   return "anonymous";
