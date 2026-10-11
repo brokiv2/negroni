@@ -1,5 +1,6 @@
 import type { AgentRunRequest, AgentRuntimeEvent } from "@rakazo/adapter-kit";
-import { ResponseUiBlock } from "@rakazo/contracts";
+import { ResponseUiBlock, UiComponentProps } from "@rakazo/contracts";
+import { createResponseUiStream, evaluateUiExpression } from "@rakazo/core";
 import {
   legacyScopedToolEffectIdempotencyKey,
   toolEffectIdempotencyKey,
@@ -8,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import type * as AutoReviewModule from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
+import { clipToolResultText } from "./pi-runtime-limits.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -309,6 +311,46 @@ describe("mutating tool effect idempotency keys", () => {
     });
     expect(JSON.stringify(prepared.payload)).not.toContain("Update shared state");
     expect(f.effects).toHaveLength(0);
+  });
+  it("delivers the full catalog within the runtime limit and includes a valid reactive example", async () => {
+    const f = fixture("ui-catalog");
+    f.setCalls([{ name: "response_ui_catalog", args: {}, executionId: "catalog" }]);
+    await f.run();
+    const catalog = f.results[0] as { format: string; components: string };
+    const serialized = JSON.stringify(catalog);
+    expect(clipToolResultText(serialized)).toBe(serialized);
+    const schemas = JSON.parse(catalog.components);
+    expect(Object.keys(schemas.components).sort()).toEqual(Object.keys(UiComponentProps).sort());
+    const checkReferences = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if ("$ref" in value) {
+        const ref = String(value.$ref);
+        expect(ref.startsWith("#/$defs/")).toBe(true);
+        expect(schemas.$defs).toHaveProperty(ref.slice("#/$defs/".length));
+      }
+      for (const nested of Object.values(value)) checkReferences(nested);
+    };
+    checkReferences(schemas);
+    const example = catalog.format.match(/```negroni-ui\n[\s\S]*?\n```/)?.[0];
+    expect(example).toBeDefined();
+    const stream = createResponseUiStream();
+    const events = [...stream.push(example!), ...stream.finish()];
+    const complete = events.findLast((event) => event.type === "ui" && event.block.complete);
+    expect(complete?.type).toBe("ui");
+    if (complete?.type !== "ui") throw new Error("Catalog example did not compile");
+    const block = ResponseUiBlock.parse(complete.block);
+    expect(block.spec.state).toEqual({ amount: 20, people: 2 });
+    const expression = block.spec.elements.share!.props.value as Parameters<
+      typeof evaluateUiExpression
+    >[0];
+    expect(evaluateUiExpression(expression, block.spec.state)).toBe(10);
+    expect(evaluateUiExpression(expression, { amount: 45, people: 3 })).toBe(15);
+    expect(
+      ResponseUiBlock.safeParse({
+        ...block,
+        spec: { ...block.spec, state: { "/amount": 20, "/people": 2 } },
+      }).success,
+    ).toBe(false);
   });
   it("streams an interactive response among prose and commits one complete block", async () => {
     const f = fixture("ui-stream");

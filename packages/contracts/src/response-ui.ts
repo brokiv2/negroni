@@ -392,9 +392,11 @@ export const UpdateResponseUiStateInput = z
   .refine((v) => Object.keys(v.state).length <= 64, "Too many state values");
 
 export function responseUiCatalogPrompt() {
-  return Object.entries(UiComponentProps)
-    .map(([name, props]) => `${name}: ${JSON.stringify(z.toJSONSchema(props))}`)
-    .join("\n");
+  const schema = z.toJSONSchema(z.strictObject(UiComponentProps), {
+    io: "input",
+    reused: "ref",
+  });
+  return JSON.stringify({ $defs: schema.$defs, components: schema.properties });
 }
 
 /** Native clients generate validation schemas from the same component definitions. */

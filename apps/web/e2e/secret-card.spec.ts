@@ -75,7 +75,7 @@ test("renders masked secret card and saves without putting the value in chat", a
   await secretField.fill(secretValue);
   await card.getByRole("button", { name: "Save", exact: true }).click();
 
-  await expect(page.getByText("Saved", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByText("Saved", { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(secretValue)).toHaveCount(0);
   await expect(composer).not.toHaveValue(secretValue);
 

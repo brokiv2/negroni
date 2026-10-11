@@ -92,7 +92,7 @@ describe("composed response contracts and arithmetic", () => {
     const expression = spec.elements.result!.props.value as UiExpression;
     expect(evaluateUiExpression(expression, spec.state)).toBeCloseTo(44);
     expect(evaluateUiExpression(expression, { ...spec.state, people: 6 })).toBeCloseTo(22);
-    expect(responseUiCatalogPrompt()).toContain("Diagram:");
+    expect(JSON.parse(responseUiCatalogPrompt()).components).toHaveProperty("Diagram");
   });
   it("rejects new state paths, changed types and values outside the authored input range", () => {
     expect(validateUiState(calculator, { ...calculator.state, tip: 20, checked: true })).toBe(true);

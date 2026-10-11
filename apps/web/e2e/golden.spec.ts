@@ -35,7 +35,11 @@ test("two users are isolated and a bot completes durable work", async ({ browser
 
   const composer = pageA.getByPlaceholder(/Message/);
   await composer.fill("write a file in your home called notes/result.txt that says isolation-ok");
+  const sendResponse = pageA.waitForResponse(
+    (response) => response.url().includes("/rpc/threads/send") && response.ok(),
+  );
   await pageA.keyboard.press("Enter");
+  const sent = (await (await sendResponse).json()) as { json: { runId: string } };
   await expect(
     pageA
       .getByTestId("transcript")
@@ -44,8 +48,20 @@ test("two users are isolated and a bot completes durable work", async ({ browser
   ).toBeVisible({
     timeout: 30_000,
   });
+  // Thread snapshots expose active or failed runs; the recent activity list
+  // retains the completed run, identified by this send's durable receipt.
   await expect
-    .poll(() => threadRunStatus(pageA), { timeout: realSandboxTimeout(90_000, 30_000) })
+    .poll(
+      async () => {
+        const recent = await rpc<{ runs: Array<{ runId: string; status: string }> }>(
+          pageA,
+          "runs/list",
+          { filter: "recent" },
+        );
+        return recent.runs.find((run) => run.runId === sent.json.runId)?.status ?? "missing";
+      },
+      { timeout: realSandboxTimeout(90_000, 30_000) },
+    )
     .toBe("completed");
 
   await pageA.reload();
