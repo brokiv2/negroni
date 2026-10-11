@@ -318,6 +318,9 @@ describe("mutating tool effect idempotency keys", () => {
     await f.run();
     const catalog = f.results[0] as { format: string; components: string };
     const serialized = JSON.stringify(catalog);
+    expect(serialized.length).toBeLessThanOrEqual(12_000);
+    expect(catalog.format).toContain("Card+Metric+two-column Table");
+    expect(catalog.format).toContain("horizontal Stack(Image, vertical Stack(Text,Link))");
     expect(clipToolResultText(serialized)).toBe(serialized);
     expect(clipToolResultContent([{ type: "text", text: serialized }])).toEqual([
       { type: "text", text: serialized },

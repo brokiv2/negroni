@@ -1,8 +1,89 @@
 import { expect, test } from "@playwright/test";
 import type { ThreadSnapshot } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 const fixture = "/e2e/fixtures/response-ui.html";
+test("a phone chat mixes prose, a financial breakdown and a compact media recommendation", async ({
+  page,
+}, info) => {
+  test.skip(process.env.AGENT_RUNTIME === "pi", "Deterministic scripted response fixture");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signup(page, `response-layouts-${Date.now()}@example.test`, "password12", "Layout fixture");
+  await completeOnboarding(page, undefined, "assistant");
+  const png = await page.request.get("/e2e/fixtures/response-ui.png");
+  expect(png.ok()).toBe(true);
+  const artifact = await rpc<{ id: string }>(page, "artifacts/create", {
+    botId: activeBotId(page),
+    name: "Fictional stay.png",
+    mimeType: "image/png",
+    contentBase64: (await png.body()).toString("base64"),
+  });
+  await page
+    .getByRole("combobox", { name: "Message Chief", exact: true })
+    .fill(`Show varied travel layouts image ${artifact.id}`);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const reply = page.getByRole("group", { name: "Travel planning examples", exact: true });
+  const total = reply.getByRole("status", { name: "Estimated total", exact: true });
+  await expect(total).toHaveText(/1.?250EUR/);
+  await expect(reply.getByRole("status", { name: "Daily budget", exact: true })).toHaveText(
+    "250EUR/day",
+  );
+  await expect(
+    reply.getByText("Fictional examples show two ways to present a five-day trip.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const amount = reply.getByRole("cell", { name: "850", exact: true });
+  await expect(amount).toBeVisible();
+  expect(await amount.evaluate((element) => getComputedStyle(element).textAlign)).toBe("right");
+  await total.scrollIntoViewIfNeeded();
+  await captureScreenshot(page, info, "response-layout-financial-phone");
+  const media = reply.locator(".response-ui-media");
+  await media.scrollIntoViewIfNeeded();
+  const loaded = media.getByRole("img", { name: "Fictional riverside stay", exact: true });
+  await expect
+    .poll(() => loaded.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBe(600);
+  const image = await media.locator("figure").boundingBox();
+  const details = await media.locator(":scope > :last-child").boundingBox();
+  expect(image!.width).toBeLessThanOrEqual(128);
+  expect(details!.x).toBeGreaterThanOrEqual(image!.x + image!.width);
+  expect(Math.abs(details!.y - image!.y)).toBeLessThan(1);
+  await expect(media.getByText("Riverside stay", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await captureScreenshot(page, info, "response-layout-media-phone");
+  await page.reload();
+  await expect(reply.locator(".response-ui-media")).toBeVisible();
+  await expect
+    .poll(() => loaded.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBe(600);
+  await expect(total).toHaveText(/1.?250EUR/);
+});
+
+test("illustrated layouts keep loaded thumbnails beside prose at narrow phone widths", async ({
+  page,
+}, info) => {
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`${fixture}?layouts`);
+    const image = page.getByRole("img", { name: "Fictional riverside stay", exact: true });
+    await expect
+      .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+      .toBe(600);
+    const media = page.locator(".response-ui-media");
+    const picture = await image.boundingBox();
+    const details = await media.locator(":scope > :last-child").boundingBox();
+    expect(picture!.width).toBeGreaterThan(70);
+    expect(picture!.width).toBeLessThanOrEqual(128);
+    expect(details!.x).toBeGreaterThanOrEqual(picture!.x + picture!.width);
+    expect(Math.abs(details!.y - picture!.y)).toBeLessThan(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await captureScreenshot(page, info, `response-layouts-loaded-${width}`);
+  }
+});
+
 test("streamed chat reply restores server values and drafts a reply to its source", async ({
   page,
 }, info) => {

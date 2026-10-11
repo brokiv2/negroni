@@ -89,13 +89,25 @@ function UiNode({ id, ctx }: { id: string; ctx: Context }) {
   switch (node.type) {
     case "Stack": {
       const p = node.props as UiProps<"Stack">;
+      const image = ctx.spec.elements[node.children[0] ?? ""];
+      const detail = ctx.spec.elements[node.children[1] ?? ""];
+      const media =
+        p.direction === "horizontal" &&
+        node.children.length === 2 &&
+        image?.type === "Image" &&
+        detail !== undefined &&
+        ["Stack", "Text", "Card"].includes(detail.type) &&
+        (image.visible === undefined || Boolean(resolveValue(ctx, image.visible))) &&
+        (detail.visible === undefined || Boolean(resolveValue(ctx, detail.visible)));
       return (
         <div
           className={cn(
-            "flex min-w-0",
-            p.direction === "horizontal"
-              ? "response-ui-horizontal flex-row flex-wrap items-start"
-              : "flex-col",
+            "min-w-0",
+            media
+              ? "response-ui-media grid items-start"
+              : p.direction === "horizontal"
+                ? "response-ui-horizontal flex flex-row flex-wrap items-start"
+                : "flex flex-col",
             GAPS[p.gap],
           )}
         >
@@ -588,7 +600,10 @@ function DataTable({
   return (
     <section
       aria-label={caption ?? columns.join(", ")}
-      className="response-ui-table max-w-full overflow-x-auto rounded-lg border border-border"
+      className={cn(
+        "response-ui-table min-w-0 max-w-full overflow-x-auto rounded-lg border border-border",
+        columns.length === 2 && "response-ui-breakdown",
+      )}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The overflow region needs keyboard scrolling.
       tabIndex={0}
     >

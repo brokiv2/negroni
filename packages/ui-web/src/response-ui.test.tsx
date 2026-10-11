@@ -91,6 +91,156 @@ const block = ResponseUiBlock.parse({
 });
 afterEach(() => vi.unstubAllGlobals());
 describe("declarative response rendering", () => {
+  it("keeps an owned thumbnail beside prose without treating adjacent form controls as media", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:owned-preview"),
+      revokeObjectURL: vi.fn(),
+    });
+    const mediaBlock = ResponseUiBlock.parse({
+      ...block,
+      spec: {
+        ...block.spec,
+        state: { ...block.spec.state, showPhoto: true },
+        elements: {
+          ...block.spec.elements,
+          root: { type: "Stack", props: {}, children: ["intro", "media", "controls", "hide"] },
+          intro: { type: "Text", props: { text: "Here is the workshop proposal." }, children: [] },
+          media: {
+            type: "Stack",
+            props: { direction: "horizontal" },
+            children: ["photo", "details"],
+          },
+          photo: {
+            type: "Image",
+            props: { artifactId: "owned-preview", alt: "Workshop preview", aspectRatio: 1 },
+            visible: { $state: "/showPhoto" },
+            children: [],
+          },
+          details: { type: "Stack", props: {}, children: ["title", "description"] },
+          title: {
+            type: "Text",
+            props: { text: "Studio session", style: "heading" },
+            children: [],
+          },
+          description: {
+            type: "Text",
+            props: { text: "A practical session with a small group and time for questions." },
+            children: [],
+          },
+          controls: {
+            type: "Stack",
+            props: { direction: "horizontal" },
+            children: ["amount", "total"],
+          },
+          hide: {
+            type: "Button",
+            props: {
+              label: "Hide preview",
+              action: { type: "set", path: "/showPhoto", value: false },
+            },
+            children: [],
+          },
+        },
+      },
+    });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const loadImage = vi.fn(async () => new Blob(["preview"], { type: "image/png" }));
+    function Fixture() {
+      const [state, change] = useState(mediaBlock.spec.state);
+      return (
+        <ResponseUiView
+          block={mediaBlock}
+          state={state}
+          onStateChange={change}
+          loadImage={loadImage}
+          dataLabel="View data"
+        />
+      );
+    }
+    try {
+      await act(async () => root.render(<Fixture />));
+      const media = container.querySelector(".response-ui-media");
+      expect(media?.firstElementChild?.querySelector("img")?.getAttribute("alt")).toBe(
+        "Workshop preview",
+      );
+      expect(media?.lastElementChild?.querySelector("h3")?.textContent).toBe("Studio session");
+      expect(media?.querySelector("input")).toBeNull();
+      expect(container.querySelectorAll(".response-ui-horizontal")).toHaveLength(1);
+      expect(container.textContent).toContain("Here is the workshop proposal.");
+      expect(loadImage).toHaveBeenCalledExactlyOnceWith("owned-preview");
+      await act(async () => container.querySelector("button")!.click());
+      expect(container.querySelector(".response-ui-media")).toBeNull();
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.textContent).toContain("Studio session");
+      expect(container.querySelector('input[type="number"]')).not.toBeNull();
+      expect(container.querySelector("output")?.textContent).toBe("30.00");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+  it("updates a financial metric and its two-column breakdown without losing long labels", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const label = "Workshop materials, room preparation, and accessibility arrangements";
+    const financialBlock = ResponseUiBlock.parse({
+      ...block,
+      spec: {
+        ...block.spec,
+        elements: {
+          ...block.spec.elements,
+          root: {
+            type: "Card",
+            props: { title: "Workshop budget" },
+            children: ["total", "breakdown", "amount"],
+          },
+          breakdown: {
+            type: "Table",
+            props: {
+              columns: ["Category", "Estimate"],
+              rows: [[label, { $calc: { op: "multiply", args: [{ $state: "/amount" }, 3] } }]],
+            },
+            children: [],
+          },
+        },
+      },
+    });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    function Fixture() {
+      const [state, change] = useState(financialBlock.spec.state);
+      return (
+        <ResponseUiView
+          block={financialBlock}
+          state={state}
+          onStateChange={change}
+          dataLabel="View data"
+        />
+      );
+    }
+    try {
+      await act(async () => root.render(<Fixture />));
+      const table = container.querySelector(".response-ui-breakdown table");
+      expect(
+        Array.from(table!.querySelectorAll('th[scope="col"]'), (cell) => cell.textContent),
+      ).toEqual(["Category", "Estimate"]);
+      const input = container.querySelector('input[type="number"]') as HTMLInputElement;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          input,
+          "24",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(container.querySelector("output")?.textContent).toBe("72.00");
+      expect(Array.from(table!.querySelectorAll("tbody td"), (cell) => cell.textContent)).toEqual([
+        label,
+        "72",
+      ]);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
   it("updates calculations and chart data without replacing the focused input, and only prefills follow-ups", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const container = document.createElement("div");

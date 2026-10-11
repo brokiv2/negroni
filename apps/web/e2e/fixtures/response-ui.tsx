@@ -1,13 +1,17 @@
 import { ResponseUiBlock } from "@rakazo/contracts";
-import { RESPONSE_UI_FIXTURE } from "@rakazo/contracts/response-ui-fixture";
+import {
+  RESPONSE_UI_FIXTURE,
+  RESPONSE_UI_LAYOUT_FIXTURE,
+} from "@rakazo/contracts/response-ui-fixture";
 import { createResponseUiStateSession } from "@rakazo/core";
 import { ResponseUiView } from "@rakazo/ui-web";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import "../../src/styles.css";
 
-const initial = RESPONSE_UI_FIXTURE;
-const storageKey = "response-ui-demo";
+const layouts = new URLSearchParams(location.search).has("layouts");
+const initial = layouts ? RESPONSE_UI_LAYOUT_FIXTURE : RESPONSE_UI_FIXTURE;
+const storageKey = layouts ? "response-ui-layouts" : "response-ui-demo";
 async function loadImage(artifactId: string) {
   if (artifactId !== "fixture-image") return null;
   const response = await fetch(new URL("./response-ui.png", import.meta.url));

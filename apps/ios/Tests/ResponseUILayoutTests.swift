@@ -70,11 +70,11 @@ final class ResponseUILayoutTests: XCTestCase {
   }
   @MainActor
   private func mount(
-    _ view: UIView, category: UIContentSizeCategory = .large
+    _ view: UIView, category: UIContentSizeCategory = .large, phoneWidth: CGFloat = 390
   ) -> UIViewController {
     let host = UIViewController()
     let child = UIViewController()
-    host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 3000)
+    host.view.frame = CGRect(x: 0, y: 0, width: phoneWidth, height: 3000)
     host.addChild(child)
     host.view.addSubview(child.view)
     child.view.frame = host.view.bounds
@@ -99,14 +99,14 @@ final class ResponseUILayoutTests: XCTestCase {
     NSLayoutConstraint.activate([
       view.leadingAnchor.constraint(equalTo: child.view.leadingAnchor, constant: 16),
       view.topAnchor.constraint(equalTo: child.view.topAnchor),
-      view.widthAnchor.constraint(equalToConstant: 358),
+      view.widthAnchor.constraint(equalToConstant: phoneWidth - 32),
     ])
     for _ in 0..<3 {
       height.isActive = false
       child.view.layoutIfNeeded()
       height.constant =
         view.systemLayoutSizeFitting(
-          CGSize(width: 358, height: 0), withHorizontalFittingPriority: .required,
+          CGSize(width: phoneWidth - 32, height: 0), withHorizontalFittingPriority: .required,
           verticalFittingPriority: .fittingSizeLevel
         ).height
       height.isActive = true
@@ -125,13 +125,17 @@ final class ResponseUILayoutTests: XCTestCase {
     let height = view.constraints.first {
       $0.firstAttribute == .height && $0.secondItem == nil && $0.relation == .equal
     }
-    height?.isActive = false
-    let fitted = view.systemLayoutSizeFitting(
-      CGSize(width: 358, height: 0),
-      withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-    height?.constant = fitted.height
-    height?.isActive = true
-    view.superview?.layoutIfNeeded()
+    for _ in 0..<3 {
+      height?.isActive = false
+      view.superview?.layoutIfNeeded()
+      let fitted = view.systemLayoutSizeFitting(
+        CGSize(width: view.bounds.width > 0 ? view.bounds.width : 358, height: 0),
+        withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+      height?.constant = fitted.height
+      height?.isActive = true
+      view.superview?.setNeedsLayout()
+      view.superview?.layoutIfNeeded()
+    }
     let image = UIGraphicsImageRenderer(bounds: view.bounds).image { context in
       Theme.canvas.setFill()
       context.fill(view.bounds)
@@ -480,5 +484,196 @@ final class ResponseUILayoutTests: XCTestCase {
       }
       XCTAssertGreaterThan(try XCTUnwrap(label.font).pointSize, 17)
     }
+  }
+  private func layoutFixture() throws -> JSON {
+    let url = try XCTUnwrap(
+      Bundle.main.url(forResource: "ResponseUiLayoutFixture", withExtension: "json"))
+    return try JSON.decode(Data(contentsOf: url))
+  }
+  @MainActor
+  private func layoutResponse(_ raw: JSON) throws -> (ResponseUIView, ResponseUIState) {
+    let document = try XCTUnwrap(ResponseUI(raw))
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 400), format: format)
+      .image { context in
+        Theme.secondary.setFill()
+        context.fill(CGRect(x: 0, y: 0, width: 600, height: 400))
+        Theme.muted.setFill()
+        context.fill(CGRect(x: 0, y: 250, width: 600, height: 150))
+        Theme.ink.setFill()
+        context.fill(CGRect(x: 320, y: 90, width: 180, height: 190))
+      }
+    return response(document, load: { _ in image })
+  }
+  @MainActor
+  private func loadedLayoutImage(_ view: UIView) async throws -> UIImageView {
+    let picture = try XCTUnwrap(descendants(view, as: UIImageView.self).first {
+      $0.accessibilityLabel == "Fictional riverside stay"
+    })
+    let deadline = Date().addingTimeInterval(2)
+    while picture.image == nil && Date() < deadline {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertNotNil(picture.image)
+    return picture
+  }
+  @MainActor
+  func testSharedFinancialAndMediaLayoutsKeepPhoneColumnsAndCapThumbnails() async throws {
+    let raw = try layoutFixture()
+    for width in [CGFloat(390), CGFloat(320), CGFloat(500)] {
+      let (view, _) = try layoutResponse(raw)
+      let host = mount(view, phoneWidth: width)
+      defer { withExtendedLifetime(host) {} }
+      let picture = try await loadedLayoutImage(view)
+      fitAndAttach(view, name: "response-ui-financial-media-\(Int(width))pt")
+      let media = try XCTUnwrap(descendants(view, as: UIStackView.self).first {
+        $0.accessibilityIdentifier == "response-ui-media-row"
+      })
+      XCTAssertEqual(media.axis, .horizontal)
+      XCTAssertEqual(picture.bounds.width, min(128, (width - 32) * 0.34), accuracy: 1)
+      XCTAssertEqual(picture.bounds.height, picture.bounds.width / 1.5, accuracy: 1)
+      let heading = try XCTUnwrap(descendants(view, as: UILabel.self).first {
+        $0.text == "Riverside stay"
+      })
+      let posterFrame = picture.convert(picture.bounds, to: view)
+      let headingFrame = heading.convert(heading.bounds, to: view)
+      XCTAssertEqual(posterFrame.minY, headingFrame.minY, accuracy: 1)
+      XCTAssertGreaterThanOrEqual(headingFrame.minX - posterFrame.maxX, 11)
+      let mediaFrame = media.convert(media.bounds, to: view)
+      let bridge = try XCTUnwrap(descendants(view, as: UILabel.self).first {
+        $0.text == raw["spec"]["elements"]["bridge"]["props"]["text"].string
+      })
+      let outro = try XCTUnwrap(descendants(view, as: UILabel.self).first {
+        $0.text == raw["spec"]["elements"]["outro"]["props"]["text"].string
+      })
+      XCTAssertLessThan(bridge.convert(bridge.bounds, to: view).maxY, mediaFrame.minY)
+      XCTAssertGreaterThan(outro.convert(outro.bounds, to: view).minY, mediaFrame.maxY)
+      let total = try XCTUnwrap(descendants(view, as: UILabel.self).first {
+        $0.accessibilityLabel == "Estimated total" && $0.text == ResponseUI.format(1250) + " EUR"
+      })
+      XCTAssertGreaterThanOrEqual(try XCTUnwrap(total.font).pointSize, 28)
+      let rows = descendants(view, as: UIStackView.self).filter {
+        $0.accessibilityIdentifier == "response-ui-table-row"
+      }
+      XCTAssertEqual(rows.count, 3)
+      var trailing: CGFloat?
+      for (index, row) in rows.enumerated() {
+        XCTAssertEqual(row.axis, .horizontal)
+        let labels = descendants(row, as: UILabel.self)
+        XCTAssertEqual(labels.count, 2)
+        let label = try XCTUnwrap(labels.first)
+        let value = try XCTUnwrap(labels.last)
+        XCTAssertEqual(label.text, raw["spec"]["elements"]["breakdown"]["props"]["rows"].array[index].array[0].string)
+        XCTAssertEqual(value.text,
+          ResponseUI.format(raw["spec"]["elements"]["breakdown"]["props"]["rows"].array[index].array[1]))
+        XCTAssertEqual(value.textAlignment, .right)
+        XCTAssertEqual(value.bounds.width, row.bounds.width * 0.36, accuracy: 1)
+        XCTAssertGreaterThan(value.convert(value.bounds, to: view).minX,
+          label.convert(label.bounds, to: view).maxX)
+        let edge = value.convert(value.bounds, to: view).maxX
+        if let trailing { XCTAssertEqual(edge, trailing, accuracy: 1) }
+        trailing = edge
+        XCTAssertTrue(row.isAccessibilityElement)
+        XCTAssertTrue(row.accessibilityLabel?.contains("Amount (EUR):") == true)
+      }
+      let separators = rows.first?.superview?.subviews.filter {
+        $0.backgroundColor == Theme.border && $0.bounds.height <= 1
+      } ?? []
+      XCTAssertEqual(separators.count, 2)
+    }
+  }
+  @MainActor
+  func testFinancialLabelsWrapAndThreeColumnTablesRetainAllHeaders() throws {
+    var raw = try layoutFixture()
+    let longLabel = "Accommodation including local service charges"
+    raw["spec"]["elements"]["breakdown"]["props"]["rows"] = [
+      [.string(longLabel), 850], ["Transport", 250], ["Meals", 150],
+    ]
+    let (view, _) = try layoutResponse(raw)
+    let host = mount(view, phoneWidth: 320)
+    defer { withExtendedLifetime(host) {} }
+    let label = try XCTUnwrap(descendants(view, as: UILabel.self).first { $0.text == longLabel })
+    XCTAssertGreaterThan(label.bounds.height, try XCTUnwrap(label.font).lineHeight * 1.4)
+    raw["spec"]["elements"]["breakdown"]["props"] = [
+      "columns": ["Expense", "Amount", "Currency"],
+      "rows": [["Meals", 150, "EUR"]],
+    ]
+    let (threeColumns, _) = try layoutResponse(raw)
+    let otherHost = mount(threeColumns)
+    defer { withExtendedLifetime(otherHost) {} }
+    let labels = descendants(threeColumns, as: UILabel.self)
+    for text in ["Expense: Meals", "Amount: 150", "Currency: EUR"] {
+      XCTAssertTrue(labels.contains { $0.text == text })
+    }
+    XCTAssertFalse(descendants(threeColumns, as: UIView.self).contains {
+      $0.accessibilityIdentifier == "response-ui-table-row"
+    })
+  }
+  @MainActor
+  func testMediaAndFinancialRowsStackAtAccessibilityAndNarrowWidths() async throws {
+    let raw = try layoutFixture()
+    for (width, category) in [
+      (CGFloat(390), UIContentSizeCategory.accessibilityExtraLarge),
+      (CGFloat(240), UIContentSizeCategory.large),
+    ] {
+      let (view, _) = try layoutResponse(raw)
+      let host = mount(view, category: category, phoneWidth: width)
+      defer { withExtendedLifetime(host) {} }
+      let picture = try await loadedLayoutImage(view)
+      fitAndAttach(view, name: "response-ui-media-financial-\(category.rawValue)-\(Int(width))pt")
+      XCTAssertEqual(view.traitCollection.preferredContentSizeCategory, category)
+      let media = try XCTUnwrap(descendants(view, as: UIStackView.self).first {
+        $0.accessibilityIdentifier == "response-ui-media-row"
+      })
+      XCTAssertEqual(media.axis, .vertical)
+      XCTAssertEqual(picture.bounds.width, width - 32, accuracy: 1)
+      let heading = try XCTUnwrap(descendants(view, as: UILabel.self).first {
+        $0.text == "Riverside stay"
+      })
+      XCTAssertGreaterThan(heading.convert(heading.bounds, to: view).minY,
+        picture.convert(picture.bounds, to: view).maxY)
+      let rows = descendants(view, as: UIStackView.self).filter {
+        $0.accessibilityIdentifier == "response-ui-table-row"
+      }
+      XCTAssertEqual(rows.count, 3)
+      for row in rows {
+        XCTAssertEqual(row.axis, .vertical)
+        let labels = descendants(row, as: UILabel.self)
+        let label = try XCTUnwrap(labels.first)
+        let value = try XCTUnwrap(labels.last)
+        XCTAssertEqual(label.bounds.width, row.bounds.width, accuracy: 1)
+        XCTAssertEqual(value.bounds.width, row.bounds.width, accuracy: 1)
+        XCTAssertGreaterThan(value.frame.minY, label.frame.maxY)
+        if category.isAccessibilityCategory {
+          XCTAssertGreaterThan(try XCTUnwrap(label.font).pointSize, 17)
+          XCTAssertGreaterThan(try XCTUnwrap(value.font).pointSize, 17)
+        }
+      }
+    }
+  }
+  @MainActor
+  func testHiddenMediaImageDoesNotLeaveAnEmptyColumnAndCanReappear() async throws {
+    var raw = try layoutFixture()
+    raw["spec"]["state"] = ["showImage": false]
+    raw["spec"]["elements"]["thumbnail"]["visible"] = ["$state": "/showImage"]
+    let (view, state) = try layoutResponse(raw)
+    let host = mount(view)
+    defer { withExtendedLifetime(host) {} }
+    func mediaRow() throws -> UIStackView {
+      try XCTUnwrap(descendants(view, as: UIStackView.self).first {
+        $0.accessibilityIdentifier == "response-ui-media-row"
+      })
+    }
+    let hiddenRow = try mediaRow()
+    XCTAssertEqual(hiddenRow.axis, .vertical)
+    XCTAssertTrue(try XCTUnwrap(hiddenRow.arrangedSubviews.first).isHidden)
+    XCTAssertEqual(try XCTUnwrap(hiddenRow.arrangedSubviews.last).bounds.width, 358, accuracy: 1)
+    XCTAssertTrue(state.change(["showImage": true]))
+    await state.flush()
+    _ = try await loadedLayoutImage(view)
+    fitAndAttach(view, name: "response-ui-media-image-visible-again")
+    XCTAssertEqual(try mediaRow().axis, .horizontal)
+    XCTAssertFalse(try XCTUnwrap(try mediaRow().arrangedSubviews.first).isHidden)
   }
 }

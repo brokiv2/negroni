@@ -147,7 +147,16 @@ import UIKit
             Theme.label(p["description"].string, style: .body, color: Theme.muted))
         }
       }
-      if type == "Grid" || (type == "Stack" && p["direction"].string == "horizontal") {
+      let mediaRow = type == "Stack" && p["direction"].string == "horizontal"
+        && children.count == 2
+        && session.document.spec["elements"][children[0]]["type"].string == "Image"
+        && ["Stack", "Text", "Card"].contains(
+          session.document.spec["elements"][children[1]]["type"].string)
+      if mediaRow {
+        stack.addArrangedSubview(
+          ResponseUIMediaRow(
+            image: element(children[0]), detail: element(children[1]), relayout: relayout))
+      } else if type == "Grid" || (type == "Stack" && p["direction"].string == "horizontal") {
         stack.addArrangedSubview(
           ResponseUIGrid(
             children.map { element($0) },
@@ -460,7 +469,24 @@ import UIKit
         rows.addArrangedSubview(
           Theme.label(p["caption"].string, style: .caption1, color: Theme.muted))
       }
-      for row in p["rows"].array {
+      for (rowIndex, row) in p["rows"].array.enumerated() {
+        if p["columns"].array.count == 2 && row.array.count == 2 {
+          if rowIndex > 0 {
+            let separator = UIView()
+            separator.backgroundColor = Theme.border
+            separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            rows.addArrangedSubview(separator)
+          }
+          let entry = ResponseUITableRow(columns: p["columns"].array.map(\.string), relayout: relayout)
+          updates.append { [weak self, weak entry] in
+            guard let self else { return }
+            entry?.update(
+              label: ResponseUI.format(read(row.array[0])),
+              value: ResponseUI.format(read(row.array[1])))
+          }
+          rows.addArrangedSubview(entry)
+          continue
+        }
         let entry = Theme.stack(spacing: 4)
         for (index, cell) in row.array.enumerated() {
           let label = Theme.label(style: .body)
@@ -852,6 +878,107 @@ private final class ResponseUIImageView: UIStackView {
   }
   required init(coder: NSCoder) { fatalError() }
   deinit { task?.cancel() }
+}
+
+/// A poster and its description remain a compact row while phone text is comfortably readable.
+private final class ResponseUIMediaRow: UIStackView {
+  private let image: UIView
+  private let detail: UIView
+  private let relayout: () -> Void
+  private var imageWidth: NSLayoutConstraint!
+  init(image: UIView, detail: UIView, relayout: @escaping () -> Void) {
+    self.image = image
+    self.detail = detail
+    self.relayout = relayout
+    super.init(frame: .zero)
+    accessibilityIdentifier = "response-ui-media-row"
+    axis = .horizontal
+    alignment = .top
+    spacing = 12
+    addArrangedSubview(image)
+    addArrangedSubview(detail)
+    imageWidth = image.widthAnchor.constraint(equalToConstant: 108)
+    imageWidth.isActive = true
+    detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+      (view: ResponseUIMediaRow, _) in view.setNeedsLayout()
+    }
+  }
+  required init(coder: NSCoder) { fatalError() }
+  override func layoutSubviews() {
+    if bounds.width > 0 {
+      let compact = bounds.width >= 240
+        && !traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        && !image.isHidden && !detail.isHidden
+      let nextAxis: NSLayoutConstraint.Axis = compact ? .horizontal : .vertical
+      let nextWidth = min(128, bounds.width * 0.34)
+      let changed = axis != nextAxis || (compact && abs(imageWidth.constant - nextWidth) > 0.5)
+      if !compact { imageWidth.isActive = false }
+      if axis != nextAxis {
+        axis = nextAxis
+        alignment = compact ? .top : .fill
+      }
+      imageWidth.isActive = compact
+      imageWidth.constant = nextWidth
+      if changed { DispatchQueue.main.async { [weak self] in self?.relayout() } }
+    }
+    super.layoutSubviews()
+  }
+}
+
+/// Two-column breakdowns keep the values aligned without forcing the labels onto one line.
+private final class ResponseUITableRow: UIStackView {
+  private let label = Theme.label()
+  private let value = ResponseUINumericLabel()
+  private let columns: [String]
+  private let relayout: () -> Void
+  private var valueWidth: NSLayoutConstraint!
+  init(columns: [String], relayout: @escaping () -> Void) {
+    self.columns = columns
+    self.relayout = relayout
+    super.init(frame: .zero)
+    accessibilityIdentifier = "response-ui-table-row"
+    isAccessibilityElement = true
+    axis = .horizontal
+    alignment = .top
+    spacing = 12
+    label.isAccessibilityElement = false
+    value.isAccessibilityElement = false
+    value.textAlignment = .right
+    label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    addArrangedSubview(label)
+    addArrangedSubview(value)
+    valueWidth = value.widthAnchor.constraint(equalToConstant: 114)
+    valueWidth.isActive = true
+    registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) {
+      (view: ResponseUITableRow, _) in view.setNeedsLayout()
+    }
+  }
+  required init(coder: NSCoder) { fatalError() }
+  func update(label: String, value: String) {
+    self.label.text = label
+    self.value.text = value
+    accessibilityLabel = "\(columns[0]): \(label). \(columns[1]): \(value)"
+  }
+  override func layoutSubviews() {
+    if bounds.width > 0 {
+      let compact = bounds.width >= 240
+        && !traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+      let nextAxis: NSLayoutConstraint.Axis = compact ? .horizontal : .vertical
+      let nextWidth = bounds.width * 0.36
+      let changed = axis != nextAxis || (compact && abs(valueWidth.constant - nextWidth) > 0.5)
+      if !compact { valueWidth.isActive = false }
+      if axis != nextAxis {
+        axis = nextAxis
+        alignment = compact ? .top : .fill
+      }
+      value.textAlignment = compact ? .right : .natural
+      valueWidth.isActive = compact
+      valueWidth.constant = nextWidth
+      if changed { DispatchQueue.main.async { [weak self] in self?.relayout() } }
+    }
+    super.layoutSubviews()
+  }
 }
 
 /// One column on a phone, more columns when the available width permits it.

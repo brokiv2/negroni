@@ -207,3 +207,81 @@ export const RESPONSE_UI_FIXTURE = ResponseUiBlock.parse({
     },
   },
 });
+
+export const RESPONSE_UI_LAYOUT_FIXTURE = ResponseUiBlock.parse({
+  kind: "response_ui",
+  id: "layouts",
+  summary: "Travel planning examples",
+  complete: true,
+  spec: {
+    root: "root",
+    summary: "Travel planning examples",
+    state: {},
+    elements: {
+      root: {
+        type: "Stack",
+        props: {},
+        children: ["intro", "budget", "bridge", "heading", "media", "outro"],
+      },
+      intro: {
+        type: "Text",
+        props: { text: "Fictional examples show two ways to present a five-day trip." },
+      },
+      budget: {
+        type: "Card",
+        props: { description: "Five-day travel estimate" },
+        children: ["total", "breakdown", "daily"],
+      },
+      total: {
+        type: "Metric",
+        props: { label: "Estimated total", value: 1250, unit: "EUR" },
+      },
+      breakdown: {
+        type: "Table",
+        props: {
+          columns: ["Expense", "Amount (EUR)"],
+          rows: [
+            ["Accommodation", 850],
+            ["Transport", 250],
+            ["Meals", 150],
+          ],
+        },
+      },
+      daily: {
+        type: "Metric",
+        props: { label: "Daily budget", value: 250, unit: "EUR/day" },
+      },
+      bridge: {
+        type: "Text",
+        props: { text: "The estimate is followed by a compact illustrated recommendation." },
+      },
+      heading: { type: "Text", props: { text: "Places to consider", style: "heading" } },
+      media: {
+        type: "Stack",
+        props: { direction: "horizontal", gap: "medium" },
+        children: ["thumbnail", "details"],
+      },
+      thumbnail: {
+        type: "Image",
+        props: { artifactId: "fixture-image", alt: "Fictional riverside stay", aspectRatio: 1.5 },
+      },
+      details: {
+        type: "Stack",
+        props: { gap: "small" },
+        children: ["name", "description", "link"],
+      },
+      name: { type: "Text", props: { text: "Riverside stay", style: "heading" } },
+      description: {
+        type: "Text",
+        props: {
+          text: "A quiet base near the walking route. Compare the room and transport costs before choosing.",
+        },
+      },
+      link: { type: "Link", props: { label: "View example", url: "https://example.test/stay" } },
+      outro: {
+        type: "Text",
+        props: { text: "These sample figures are illustrative; no booking has been made." },
+      },
+    },
+  },
+});

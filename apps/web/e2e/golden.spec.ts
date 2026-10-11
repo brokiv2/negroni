@@ -375,18 +375,34 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) => {
   const browserErrors: string[] = [];
   const failedRequests: string[] = [];
-  const onboardingSnapshotAborts: string[] = [];
-  const successfulTeamSnapshots = new Set<string>();
-  let onboarding = true;
-  const snapshotTarget = (request: Request) => {
-    if (request.method() !== "POST" || new URL(request.url()).pathname !== "/rpc/threads/get") {
+  const personalRequests = new Map<Request, string>();
+  const replacedContextRequests = new Set<Request>();
+  const canceledContextRequests: Request[] = [];
+  const successfulTeamRequests = new Set<string>();
+  let replacingPersonalBotId: string | null = null;
+  const threadTarget = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() !== "POST" ||
+      (path !== "/rpc/threads/get" && path !== "/rpc/threads/subscribe")
+    )
       return null;
-    }
     try {
       const body = request.postDataJSON() as {
         json?: { botId?: unknown; threadKind?: unknown };
       };
-      return typeof body.json?.botId === "string" ? body.json : null;
+      if (
+        typeof body.json?.botId !== "string" ||
+        (body.json.threadKind !== undefined &&
+          body.json.threadKind !== "team" &&
+          body.json.threadKind !== "personal")
+      )
+        return null;
+      return {
+        botId: body.json.botId,
+        threadKind: body.json.threadKind ?? "team",
+        path,
+      };
     } catch {
       return null;
     }
@@ -395,16 +411,21 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   page.on("console", (message) => {
     if (message.type() === "error") browserErrors.push(message.text());
   });
+  page.on("request", (request) => {
+    const target = threadTarget(request);
+    if (target?.threadKind !== "personal") return;
+    personalRequests.set(request, target.botId);
+    if (target.botId === replacingPersonalBotId) replacedContextRequests.add(request);
+  });
+  page.on("requestfinished", (request) => personalRequests.delete(request));
   page.on("requestfailed", (request) => {
-    const target = snapshotTarget(request);
+    personalRequests.delete(request);
     if (
-      onboarding &&
       request.failure()?.errorText === "net::ERR_ABORTED" &&
-      target?.threadKind === "personal" &&
-      typeof target.botId === "string"
+      replacedContextRequests.has(request)
     ) {
-      // Switching onboarding from Chat to Team cancels the former Personal snapshot.
-      onboardingSnapshotAborts.push(target.botId);
+      // Keep request identities: cleanup can report cancellation after Team is already visible.
+      canceledContextRequests.push(request);
       return;
     }
     failedRequests.push(
@@ -412,24 +433,25 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
     );
   });
   page.on("response", (response) => {
-    const target = snapshotTarget(response.request());
-    if (
-      response.status() === 200 &&
-      typeof target?.botId === "string" &&
-      (target.threadKind === undefined || target.threadKind === "team")
-    ) {
-      successfulTeamSnapshots.add(target.botId);
+    const target = threadTarget(response.request());
+    if (response.status() === 200 && target?.threadKind === "team") {
+      successfulTeamRequests.add(`${target.botId}:${target.path}`);
     }
   });
   const stamp = Date.now();
   const email = `shell-${stamp}@rakazo.test`;
   await signup(page, email, "password12", "Shell");
-  await completeOnboarding(page);
-  onboarding = false;
+  await completeOnboarding(page, undefined, "assistant");
   const chiefId = activeBotId(page);
-  expect(onboardingSnapshotAborts.length).toBeLessThanOrEqual(1);
-  for (const botId of onboardingSnapshotAborts) expect(botId).toBe(chiefId);
-  await expect.poll(() => successfulTeamSnapshots.has(chiefId)).toBe(true);
+  replacingPersonalBotId = chiefId;
+  for (const [request, botId] of personalRequests) {
+    if (botId === chiefId) replacedContextRequests.add(request);
+  }
+  await selectWorkspaceView(page, "team");
+  replacingPersonalBotId = null;
+  for (const path of ["/rpc/threads/get", "/rpc/threads/subscribe"]) {
+    await expect.poll(() => successfulTeamRequests.has(`${chiefId}:${path}`)).toBe(true);
+  }
   await page.evaluate(() => {
     Object.defineProperty(globalThis.crypto, "randomUUID", {
       value: undefined,
@@ -478,6 +500,15 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await expect(composer).toHaveAttribute("placeholder", "Message Chief");
   await captureScreenshot(page, testInfo, "14-active-bot-work-mobile");
   await page.setViewportSize({ width: 1280, height: 720 });
+  for (const path of ["/rpc/threads/get", "/rpc/threads/subscribe"]) {
+    expect(
+      canceledContextRequests.filter((request) => threadTarget(request)?.path === path).length,
+    ).toBeLessThanOrEqual(1);
+  }
+  for (const request of canceledContextRequests) {
+    expect(threadTarget(request)?.botId).toBe(chiefId);
+    expect(threadTarget(request)?.threadKind).toBe("personal");
+  }
   expect(browserErrors).toEqual([]);
   expect(failedRequests).toEqual([]);
   let releaseStopRequest: () => void = () => undefined;
