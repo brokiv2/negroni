@@ -15,6 +15,15 @@ export function activeBotId(page: Page) {
   return id;
 }
 
+export async function selectWorkspaceView(page: Page, view: "team" | "assistant") {
+  const target = page
+    .getByRole("navigation", { name: "Workspace" })
+    .getByRole("button", { name: view === "team" ? "Team" : "Chat", exact: true });
+  await target.click();
+  await expect(target).toHaveAttribute("aria-current", "page");
+  if (view === "team") await expect(page.locator(".rk-sidebar")).toBeVisible();
+}
+
 export async function rpc<T>(page: Page, procedure: string, body: unknown): Promise<T> {
   const response = await page.request.post(`/rpc/${procedure}`, { data: { json: body } });
   const parsed = (await response.json()) as { json?: T; error?: { message?: string } };
@@ -44,11 +53,7 @@ export async function completeOnboarding(
   // Most fixtures exercise Team controls. Assistant fixtures keep the product's
   // default Chat view explicitly instead of relying on hidden roster text.
   if (view === "team") {
-    await page
-      .getByRole("navigation", { name: "Workspace" })
-      .getByRole("button", { name: "Team", exact: true })
-      .click();
-    await expect(page.locator(".rk-sidebar")).toBeVisible();
+    await selectWorkspaceView(page, view);
   }
   if (testInfo) {
     await captureScreenshot(page, testInfo, "03-create-first-bot");
@@ -135,8 +140,10 @@ export async function openUserSettings(
   page: Page,
   section?: "general" | "models" | "memory" | "voice" | "usage" | "computer" | "updates",
 ) {
-  await page.getByTestId("user-menu-trigger").click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .getByTestId("shell-root")
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
   const settings = page.getByTestId("user-settings");
   await expect(settings).toBeVisible();
   if (section && section !== "general") {
@@ -159,6 +166,8 @@ export async function createNamedBot(
     computerMode: options.computerMode ?? "team",
   });
   await page.goto(`/app/${bot.id}`);
+  await selectWorkspaceView(page, "team");
+  await page.locator(`.rk-sidebar [data-roster-bot-id="${bot.id}"]`).click();
   await expect(page.getByPlaceholder(`Message ${name}`)).toBeVisible();
   return bot.id;
 }

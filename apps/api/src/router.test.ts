@@ -492,49 +492,29 @@ describe("connections.complete", () => {
   it("forwards an optional code to the managed connector", async () => {
     const complete = vi.fn().mockResolvedValue({ connectionRef: "gmail" });
     const connectionReady = vi.fn().mockResolvedValue(true);
-    const update = vi.fn().mockResolvedValue({
+    const pending = {
       id: "conn-1",
       connectorId: "composio",
       provider: "gmail",
       displayName: "Gmail",
-      status: "connected",
+      providerRef: "gmail-state",
+      status: "pending",
       createdAt: new Date("2026-08-26T00:00:00.000Z"),
-    });
+    };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findUniqueOrThrow = vi.fn().mockResolvedValue({ ...pending, status: "connected" });
     const prisma = {
       connection: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: "conn-1",
-          connectorId: "composio",
-          provider: "gmail",
-          displayName: "Gmail",
-          providerRef: "gmail-state",
-          status: "pending",
-          createdAt: new Date("2026-08-26T00:00:00.000Z"),
-        }),
-        findMany: vi.fn().mockResolvedValue([]),
-        update,
+        findFirst: vi.fn().mockResolvedValue(pending),
       },
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-        const row = {
-          id: "conn-1",
-          connectorId: "composio",
-          provider: "gmail",
-          displayName: "Gmail",
-          providerRef: "gmail-state",
-          status: "pending",
-          createdAt: new Date("2026-08-26T00:00:00.000Z"),
-        };
         const tx = {
           $executeRaw: vi.fn().mockResolvedValue(undefined),
           connection: {
-            findFirst: vi.fn().mockResolvedValueOnce(row).mockResolvedValueOnce(null),
+            findFirst: vi.fn().mockResolvedValueOnce(pending).mockResolvedValueOnce(null),
             findMany: vi.fn().mockResolvedValue([]),
-            update: vi
-              .fn()
-              .mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
-                ...row,
-                ...data,
-              })),
+            updateMany,
+            findUniqueOrThrow,
           },
         };
         return fn(tx);
@@ -583,6 +563,19 @@ describe("connections.complete", () => {
       expect.objectContaining({ spaceId: "workspace-1", userId: "user-1" }),
     );
     expect(connectionReady).toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "conn-1",
+        spaceId: "workspace-1",
+        userId: "user-1",
+        status: "pending",
+      },
+      data: { status: "connected", providerRef: "gmail-state" },
+    });
+    expect(findUniqueOrThrow).toHaveBeenCalledWith({ where: { id: "conn-1" } });
+    await expect(response.json()).resolves.toMatchObject({
+      json: { id: "conn-1", status: "connected", accountId: "gmail-state" },
+    });
   });
 });
 describe("connections.begin callback url", () => {

@@ -107,6 +107,7 @@ export function renderBotDirectory(bots: readonly BotAddress[]): string | undefi
     ...formatBotRosterLines(bots),
     "</teammate_directory>",
     "Use message_bot to hand a teammate a task, and for useful updates, questions, results and blockers. Delivery is async: the reply wakes you later as a new message, so never wait or poll for it. Do not send ack-only messages. Later updates only if they add something new.",
+    "When the user requests bounded phases or ordered review checkpoints, send one message_bot request with the phases field and the original assignment. Keep its scope, deadline and shared run allowance. The backend starts the next phase only after a verified review; never create separate requests for successive phases. Omit phases for single-step work.",
   ].join("\n");
 }
 

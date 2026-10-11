@@ -516,7 +516,13 @@ export function ShellPage() {
     useState<ReadonlySet<string>>(readSeenRunErrorIds);
   const [menuOpen, setMenuOpen] = useState(false);
   const [personalOpen, setPersonalOpen] = useState(false);
-  const [chatView, setChatView] = useState<"assistant" | "team">("assistant");
+  const [chatView, setChatView] = useState<"assistant" | "team">(() => {
+    try {
+      return window.localStorage.getItem("negroni:chat-view") === "team" ? "team" : "assistant";
+    } catch {
+      return "assistant";
+    }
+  });
   const [composerPrefill, setComposerPrefill] = useState<{
     nonce: number;
     targetKey: string;

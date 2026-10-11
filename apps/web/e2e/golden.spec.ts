@@ -5,6 +5,7 @@ import {
   completeOnboarding,
   realSandboxTimeout,
   rpc,
+  selectWorkspaceView,
   signup,
 } from "./helpers";
 
@@ -25,24 +26,36 @@ test("two users are isolated and a bot completes durable work", async ({ browser
   const stamp = Date.now();
   await signup(pageA, `ada-${stamp}@rakazo.test`, "password12", "Ada", testInfo);
   await completeOnboarding(pageA, testInfo);
-  await expect(pageA.getByText("Chief").first()).toBeVisible();
+  await expect(sidebarBotButton(pageA, /^Chief$/)).toBeVisible();
 
   await signup(pageB, `bob-${stamp}@rakazo.test`, "password12", "Bob");
   await completeOnboarding(pageB);
-  await expect(pageB.getByText("Chief").first()).toBeVisible();
+  await expect(sidebarBotButton(pageB, /^Chief$/)).toBeVisible();
   await expect(pageB.getByText("Ada", { exact: true })).toHaveCount(0);
 
   const composer = pageA.getByPlaceholder(/Message/);
   await composer.fill("write a file in your home called notes/result.txt that says isolation-ok");
   await pageA.keyboard.press("Enter");
   await expect(
-    pageA.getByText(/writing that into my home|isolation-ok|handled/i).first(),
+    pageA
+      .getByTestId("transcript")
+      .getByText(/writing that into my home|isolation-ok|handled/i)
+      .first(),
   ).toBeVisible({
     timeout: 30_000,
   });
+  await expect
+    .poll(() => threadRunStatus(pageA), { timeout: realSandboxTimeout(90_000, 30_000) })
+    .toBe("completed");
 
   await pageA.reload();
-  await expect(pageA.getByText(/isolation-ok|writing that into my home/i).first()).toBeVisible();
+  await selectWorkspaceView(pageA, "team");
+  await expect(
+    pageA
+      .getByTestId("transcript")
+      .getByText(/isolation-ok|writing that into my home/i)
+      .first(),
+  ).toBeVisible();
   await captureScreenshot(pageA, testInfo, "07-durable-bot-work");
 
   await a.close();
@@ -138,7 +151,10 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 
   await page.getByText("Integrations").click();
   await expect(page.getByPlaceholder("Search apps")).toBeVisible();
-  const featured = page.getByTestId("featured-connectors");
+  await page.getByRole("button", { name: "Add app", exact: true }).click();
+  const featured = page
+    .getByTestId("integration-categories")
+    .locator('section[data-section-id="popular"]');
   await expect(featured).toContainText(
     /Gmail[\s\S]*Google Calendar[\s\S]*Google Drive[\s\S]*Slack[\s\S]*Notion/,
   );
@@ -154,8 +170,10 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   ).toBeHidden();
   await captureScreenshot(page, testInfo, "11-plugins-catalog");
 
-  // Nearest ancestor with an Add/Added control (featured tile or catalog row).
-  const gmailRow = featured
+  // Search gives one stable row while the connected app leaves Popular.
+  await page.getByPlaceholder("Search apps").fill("Gmail");
+  const gmailRow = page
+    .getByRole("dialog", { name: "Integrations" })
     .getByText("Gmail", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
   await gmailRow.getByRole("button", { name: "Add", exact: true }).click();
@@ -194,13 +212,16 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(detailAgain.getByLabel("Account label")).toHaveCount(1);
   await detailAgain.getByRole("button", { name: "Uninstall", exact: true }).click();
   await expect(page.getByTestId("connection-detail")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add app", exact: true }).click();
+  await page.getByPlaceholder("Search apps").fill("Gmail");
   const gmailRowEmpty = page
-    .getByTestId("featured-connectors")
+    .getByRole("dialog", { name: "Integrations" })
     .getByText("Gmail", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
   await expect(gmailRowEmpty.getByRole("button", { name: "Add", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "11b-connected-plugins-empty");
 
+  await page.getByPlaceholder("Search apps").fill("Linear");
   const linearRow = page
     .getByText("Linear", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
@@ -216,10 +237,9 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(page.getByTestId("connection-detail")).toHaveCount(0);
   await expect(linearRow.getByRole("button", { name: "Add", exact: true })).toBeVisible();
 
+  await page.getByPlaceholder("Search apps").fill("");
   const advanced = page.getByTestId("integrations-advanced");
-  await advanced.evaluate((element) => {
-    (element as HTMLDetailsElement).open = true;
-  });
+  await advanced.locator("summary").click();
   await expect(page.getByRole("button", { name: "Manage MCP servers", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add MCP server", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add OpenAPI", exact: true })).toBeVisible();
@@ -300,7 +320,7 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 
   await page.getByRole("button", { name: "Close integrations" }).click();
 
-  await page.getByText("Chief").first().click();
+  await sidebarBotButton(page, /^Chief$/).click();
   const gear = page.getByRole("button", { name: "Show settings" });
   if (!(await gear.isVisible().catch(() => false))) {
     await page.getByTitle("Agent computer").click();
@@ -422,6 +442,7 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await page.getByPlaceholder("Password").fill("password12");
   await page.getByRole("button", { name: "Continue with email" }).click();
   await page.waitForURL(/\/app/, { timeout: 20_000 });
+  await selectWorkspaceView(page, "team");
   await expect(sidebarBotButton(page, /^Chief/)).toBeVisible();
   await expect(sidebarBotButton(page, /Scout/)).toBeVisible();
   await captureScreenshot(page, testInfo, "15-restored-session");
@@ -434,7 +455,7 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await signup(page, `menu-${stamp}@rakazo.test`, "password12", "Menu");
   await completeOnboarding(page);
 
-  const chief = page.getByRole("button", { name: /Chief/ }).first();
+  const chief = sidebarBotButton(page, /^Chief$/);
   await chief.click({ button: "right" });
   await expect(page.getByRole("menu", { name: "Actions for Chief" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Edit Profile" })).toBeVisible();
@@ -455,10 +476,10 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await chief.click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Unpin", exact: true })).toBeVisible();
   await page.getByRole("menuitem", { name: "Duplicate" }).click();
-  await expect(page.getByText("Chief copy").first()).toBeVisible();
+  await expect(sidebarBotButton(page, /^Chief copy$/)).toBeVisible();
   await captureScreenshot(page, testInfo, "17-pinned-and-duplicated-bot");
 
-  const copy = page.getByRole("button", { name: /Chief copy/ }).first();
+  const copy = sidebarBotButton(page, /^Chief copy$/);
   await copy.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByRole("alertdialog", { name: "Delete Chief copy?" })).toBeVisible();

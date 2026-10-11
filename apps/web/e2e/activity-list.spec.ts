@@ -3,7 +3,7 @@ import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 /** Activity rows sit above `[data-sidebar-group]` bots; match their aria-label. */
 function activityRow(page: Page, botName: string) {
-  return page.locator("aside").getByRole("button", {
+  return page.locator(".rk-sidebar").getByRole("button", {
     name: new RegExp(`^${botName}, `),
   });
 }
@@ -13,7 +13,7 @@ async function captureActivitySidebar(
   testInfo: Parameters<typeof captureScreenshot>[1],
   name: string,
 ) {
-  const aside = page.locator("aside").first();
+  const aside = page.locator(".rk-sidebar");
   const toggle = page.getByRole("button", { name: "Activity", exact: true });
   await toggle.scrollIntoViewIfNeeded();
   // Keep the header (bell + Create) in frame with the Now/Recent list.
@@ -42,7 +42,7 @@ test("sidebar Now and Recent surface active and terminal runs", async ({ page },
   await signup(page, `activity-${stamp}@rakazo.test`, "password12", "Activity");
   await completeOnboarding(page);
 
-  const aside = page.locator("aside").first();
+  const aside = page.locator(".rk-sidebar");
   const activityToggle = page.getByRole("button", { name: "Activity", exact: true });
   await expect(activityToggle).toHaveAttribute("aria-pressed", "false");
   await expect(activityToggle).toHaveAttribute("data-activity-mode", "off");

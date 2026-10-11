@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { cleanupActors, type EvalActor, type EvalApp } from "./runner.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupActors, type EvalActor, type EvalApp, waitForDelegatedWork } from "./runner.js";
 
 const actors: EvalActor[] = [
   {
@@ -110,4 +110,87 @@ describe("eval trial isolation", () => {
       expect(f.abort).toHaveBeenCalledWith("root-run");
     },
   );
+});
+
+describe("delegated eval completion", () => {
+  afterEach(() => vi.useRealTimers());
+
+  function delegationFixture() {
+    const record = { kind: "delegation", state: "working" };
+    const runs = [{ status: "completed" }];
+    let toolCount = 0;
+    const findTasks = vi.fn(async () => [{ delegation: { ...record } }]);
+    const prisma = {
+      run: { findMany: vi.fn(async () => runs.map((run) => ({ ...run }))) },
+      task: { findMany: findTasks },
+      event: { count: vi.fn(async () => toolCount) },
+    } as unknown as EvalApp["prisma"];
+    return {
+      prisma,
+      record,
+      runs,
+      findTasks,
+      setToolCount: (count: number) => (toolCount = count),
+    };
+  }
+
+  it("waits through terminal-run gaps before a review and before the next phase", async () => {
+    vi.useFakeTimers();
+    const f = delegationFixture();
+    let settled = false;
+    const waiting = waitForDelegatedWork(f.prisma, actors, {
+      deadline: Date.now() + 5_000,
+      maxToolCalls: 30,
+      clearedToolCount: 0,
+    }).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(settled).toBe(false);
+
+    f.record.state = "reviewing";
+    f.runs.push({ status: "running" });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(settled).toBe(false);
+
+    f.runs[1]!.status = "completed";
+    await vi.advanceTimersByTimeAsync(200);
+    expect(settled).toBe(false);
+    f.record.state = "queued";
+    await vi.advanceTimersByTimeAsync(200);
+    expect(settled).toBe(false);
+
+    f.record.state = "completed";
+    await vi.advanceTimersByTimeAsync(200);
+    await waiting;
+    expect(settled).toBe(true);
+    expect(f.findTasks).toHaveBeenCalledWith({
+      where: { OR: [{ userId: "eval-user", spaceId: "eval-space" }] },
+      select: { delegation: true },
+    });
+  });
+
+  it("keeps the tool-call limit while only a durable continuation is pending", async () => {
+    const f = delegationFixture();
+    f.setToolCount(29);
+    await expect(
+      waitForDelegatedWork(f.prisma, actors, {
+        deadline: Date.now() + 5_000,
+        maxToolCalls: 30,
+        clearedToolCount: 2,
+      }),
+    ).rejects.toThrow("Delegated tool call budget exceeded");
+  });
+
+  it("reports a durable request for assistance without supplying a repair prompt", async () => {
+    const f = delegationFixture();
+    f.record.state = "needs_input";
+    await expect(
+      waitForDelegatedWork(f.prisma, actors, {
+        deadline: Date.now() + 5_000,
+        maxToolCalls: 30,
+        clearedToolCount: 0,
+      }),
+    ).rejects.toThrow("Delegated work requested assistance; no coaching supplied");
+  });
 });

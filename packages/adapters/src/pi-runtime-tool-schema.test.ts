@@ -4,6 +4,26 @@ import { parseConnectorToolArgs } from "./lazy-tool-catalog.js";
 import { jsonSchemaParameters, parametersFor } from "./pi-runtime.js";
 
 describe("jsonSchemaParameters", () => {
+  it("preserves optional bounded phase assignments in the model-facing message tool", () => {
+    const tool = builtinAgentTools.find((entry) => entry.name === "message_bot")!;
+    const wire = JSON.parse(JSON.stringify(parametersFor(tool)));
+    const request = {
+      message: "Review the inbox within this read-only assignment.",
+      phases: [
+        "Find the launch blocker.",
+        "Verify the invoice correction.",
+        "Recommend next steps.",
+      ],
+    };
+    expect(parseConnectorToolArgs(wire, request)).toEqual(request);
+    expect(parseConnectorToolArgs(wire, { message: "Read the launch message." })).toEqual({
+      message: "Read the launch message.",
+    });
+    for (const phases of [["One step"], ["A", "B", "C", "D"], [1, 2]]) {
+      expect(() => parseConnectorToolArgs(wire, { ...request, phases })).toThrow();
+    }
+  });
+
   it("exposes fields from a locally referenced allOf branch", () => {
     const tool = {
       name: "catalog_search",

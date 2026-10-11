@@ -1074,7 +1074,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "message_bot",
     description:
-      'Hand a task to another of the user\'s bots, or send it a useful update, question, result or blocker. You must call this tool to actually deliver it — writing the message in your own reply text (e.g. "[to Comms] ...") does not send anything and the recipient never sees it. Delivery is async: a reply wakes you later as a new message, so do not wait or poll for it. For a request, state the scope, the allowed actions, the expected result and how it will be checked. Do not send ack-only messages. Later updates only if they add something new.',
+      "Hand a task to another of the user's bots, or send it a useful update, question, result or blocker. For user-requested bounded phases or ordered review checkpoints, send one request with the phases field. The backend preserves the original scope, deadline and shared run allowance, and starts each next phase only after a verified review; do not send separate requests for successive phases. If you need a new specialist for that plan, create it without a first-task prompt, then send this request with phases. Single-step work does not need phases. You must call this tool to deliver the message. Delivery is async: a reply wakes you later, so do not wait or poll. State the scope, allowed actions, expected result and how it will be checked. Do not send ack-only messages; later updates must add something new.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1103,7 +1103,7 @@ export const builtinAgentTools: ConnectorTool[] = [
           minItems: 2,
           maxItems: 3,
           description:
-            "For a new request: optional bounded phases within the message's original scope. Each phase is reviewed before the next starts. The same run allowance and deadline cover all phases; never add new permissions or unrelated objectives.",
+            "Use for a new request with user-requested bounded phases or ordered review checkpoints. List 2 to 3 phase assignments within the message's original scope. The backend continues after each verified review using one shared run allowance and deadline. Do not dispatch each phase separately or add new permissions or unrelated objectives. Omit for single-step work.",
         },
       },
       required: ["message"],

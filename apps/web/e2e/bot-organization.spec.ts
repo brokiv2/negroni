@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  rpc,
+  selectWorkspaceView,
+  signup,
+} from "./helpers";
 
 test("pinned bots and sidebar sections persist", async ({ page }, testInfo) => {
   const stamp = Date.now();
@@ -7,8 +14,9 @@ test("pinned bots and sidebar sections persist", async ({ page }, testInfo) => {
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const bot = sidebar.getByRole("button", { name: /^Chief/ });
 
   await bot.click({ button: "right" });
@@ -36,6 +44,7 @@ test("pinned bots and sidebar sections persist", async ({ page }, testInfo) => {
   await captureScreenshot(page, testInfo, "bot-sections");
 
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect(projects).toContainText("Projects");
   await expect(projects).toContainText("Chief");
 
@@ -67,6 +76,7 @@ test("bots can be reordered by drag or keyboard and keep that order", async ({ p
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
   const chiefId = activeBotId(page);
   const alpha = await rpc<{ id: string }>(page, "bots/create", {
@@ -86,8 +96,9 @@ test("bots can be reordered by drag or keyboard and keep that order", async ({ p
     computerMode: "team",
   });
   await page.reload();
+  await selectWorkspaceView(page, "team");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const rows = sidebar.locator("[data-roster-bot-id]");
   const order = () =>
     rows.evaluateAll((items) => items.map((item) => item.getAttribute("data-roster-bot-id")));
@@ -132,6 +143,7 @@ test("bots can be reordered by drag or keyboard and keep that order", async ({ p
   await staleListDelivered;
   await expect.poll(order).toEqual([beta.id, chiefId, alpha.id]);
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect.poll(order).toEqual([beta.id, chiefId, alpha.id]);
 
   const betaRow = sidebar.locator(`[data-roster-bot-id="${beta.id}"]`);
@@ -139,6 +151,7 @@ test("bots can be reordered by drag or keyboard and keep that order", async ({ p
   await page.keyboard.press("Alt+ArrowDown");
   await expect.poll(order).toEqual([chiefId, beta.id, alpha.id]);
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect.poll(order).toEqual([chiefId, beta.id, alpha.id]);
 
   let releaseRejectedReorder!: () => void;
@@ -173,24 +186,30 @@ test("bots can be reordered by drag or keyboard and keep that order", async ({ p
   await queuedReorderSaved;
   await expect.poll(order).toEqual([beta.id, alpha.id, chiefId]);
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect.poll(order).toEqual([beta.id, alpha.id, chiefId]);
 });
 
-test("chat composer controls are vertically centered", async ({ page }) => {
+test("chat composer actions are aligned below the message input", async ({ page }) => {
   const stamp = Date.now();
   await signup(page, `composer-layout-${stamp}@rakazo.test`, "password12", "Composer Layout");
   await completeOnboarding(page);
 
-  const centers = await page.getByTestId("composer-bar").evaluate((composer) =>
-    ["Attach file", "Message Chief", "Voice", "Send"].map((label) => {
+  const layout = await page.getByTestId("composer-bar").evaluate((composer) => {
+    const actions = ["Attach file", "Chat model", "Voice", "Send"].map((label) => {
       const element = composer.querySelector<HTMLElement>(`[aria-label="${label}"]`);
       if (!element) throw new Error(`Missing composer control: ${label}`);
       const box = element.getBoundingClientRect();
-      return box.top + box.height / 2;
-    }),
-  );
+      return { top: box.top, center: box.top + box.height / 2 };
+    });
+    const input = composer.querySelector('[aria-label="Message Chief"]');
+    if (!input) throw new Error("Missing message input");
+    return { actions, inputBottom: input.getBoundingClientRect().bottom };
+  });
 
+  const centers = layout.actions.map((action) => action.center);
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+  expect(layout.inputBottom).toBeLessThanOrEqual(Math.min(...layout.actions.map((a) => a.top)));
 });
 
 test("group chats share every context-menu action", async ({ page }, testInfo) => {
@@ -199,6 +218,7 @@ test("group chats share every context-menu action", async ({ page }, testInfo) =
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
   const chiefId = activeBotId(page);
   const partner = await rpc<{ id: string }>(page, "bots/create", {
@@ -214,8 +234,9 @@ test("group chats share every context-menu action", async ({ page }, testInfo) =
     botIds: [chiefId, partner.id],
   });
   await page.reload();
+  await selectWorkspaceView(page, "team");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const group = sidebar.getByRole("button", { name: /^Group menu/ });
   await group.click({ button: "right" });
   for (const action of [

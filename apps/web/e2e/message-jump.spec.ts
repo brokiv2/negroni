@@ -63,11 +63,12 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
         (response.request().postData() ?? "").includes('"around"'),
       { timeout: 15_000 },
     );
-    await page.evaluate((id) => {
+    const pushedMessageId = await page.evaluate((id) => {
       history.pushState({}, "", `?m=${id}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
+      return new URL(window.location.href).searchParams.get("m");
     }, messageId);
-    await expect(page).toHaveURL(new RegExp(`m=${messageId}`));
+    expect(pushedMessageId).toBe(messageId);
 
     // The jump lands mid-stream: the around-page fetch succeeds while sends
     // keep landing, and the target scrolls back into view. (The transcript

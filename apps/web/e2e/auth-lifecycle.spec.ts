@@ -24,7 +24,7 @@ test("restricted signup waits for mailbox verification", async ({ page }, testIn
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
   await captureScreenshot(page, testInfo, "signup-verification-required");
   await page.getByRole("link", { name: "Back to sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Sign in to Rakazo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Negroni" })).toBeVisible();
 });
 
 test("logout protects bot deep links and sign-in restores the session", async ({
@@ -51,7 +51,11 @@ test("logout protects bot deep links and sign-in restores the session", async ({
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();
 
   await page.getByRole("button", { name: new RegExp(userName, "i") }).click();
-  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+  await expect(
+    page
+      .locator('[data-slot="popover-content"]')
+      .getByRole("button", { name: "Settings", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Usage", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
   await expect(
@@ -72,19 +76,19 @@ test("logout protects bot deep links and sign-in restores the session", async ({
   await captureScreenshot(page, testInfo, "36-account-menu");
 
   await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page.getByRole("heading", { name: "Sign in to Rakazo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Negroni" })).toBeVisible();
   await page.goto("/");
   await expect(page.locator('[data-rakazo-surface="welcome"]')).toBeVisible();
   await expect(page.getByText(/Your team of always-on agents/)).toBeVisible();
   await page.getByRole("button", { name: /Sign up/ }).click();
   await expect(page).toHaveURL(/\/sign-up$/);
-  await expect(page.getByRole("heading", { name: "Create your Rakazo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create your Negroni" })).toBeVisible();
   await page.goto("/");
   await captureScreenshot(page, testInfo, "37-logged-out-welcome");
 
   await page.goto(protectedBotPath);
   await page.waitForURL((url) => url.pathname === "/sign-in");
-  await expect(page.getByRole("heading", { name: "Sign in to Rakazo" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Negroni" })).toBeVisible();
   await expect(page.getByText("Chief", { exact: true })).toHaveCount(0);
   await expect(page.getByText(userName, { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Email")).toHaveAttribute("autocomplete", "username");
@@ -153,7 +157,10 @@ test("changes and recovers an email password", async ({ page }, testInfo) => {
   await page.waitForURL(/\/app\/[^/]+$/);
 
   await page.getByTestId("user-menu-trigger").click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
   const settings = page.getByTestId("user-settings");
   await expect(settings).toBeVisible();
   await expect(page.getByTestId("sidebar-search").locator("input")).toHaveAttribute(

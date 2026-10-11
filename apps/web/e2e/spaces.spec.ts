@@ -8,7 +8,7 @@ test("spaces stay invisible by default and chat creation requires approval", asy
   await signup(page, `spaces-${stamp}@rakazo.test`, "password12", "Space Owner");
   await completeOnboarding(page);
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   await expect(sidebar.getByText("Personal", { exact: true })).toHaveCount(0);
   await expect(sidebar.getByRole("button", { name: /^Chief/ })).toHaveCount(1);
   await captureScreenshot(page, testInfo, "single-space-sidebar");
@@ -77,7 +77,7 @@ test("a new space auto-completes onboarding and can be deleted from its menu", a
   await signup(page, `spaces-delete-${stamp}@rakazo.test`, "password12", "Space Owner");
   await completeOnboarding(page);
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   await openNewSpace(page);
   const dialog = page.getByRole("dialog", { name: "New space" });
   await dialog.getByLabel("Name").fill("Temporary");
@@ -134,7 +134,7 @@ test("deleting the last bot in a space stays in the app after first use", async 
   await page.reload();
   await expect(page).not.toHaveURL(/\/onboarding/);
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   await openNewSpace(page);
   const dialog = page.getByRole("dialog", { name: "New space" });
   await dialog.getByLabel("Name").fill("Side");

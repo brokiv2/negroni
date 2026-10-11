@@ -22,18 +22,29 @@ test("assistant view keeps one conversation and returns to team view", async ({
 
   const composer = page.getByRole("combobox", { name: /Message Chief/ });
   await composer.fill("**Formatted reply**");
-  await page.getByRole("button", { name: "Attach file", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Preview formatting" }).click();
-  await expect(page.locator("strong").filter({ hasText: "Formatted reply" })).toBeVisible();
+  await composer.press("Enter");
+  const formattedMessage = page
+    .getByTestId("transcript")
+    .locator("strong")
+    .filter({ hasText: "Formatted reply" })
+    .first();
+  await expect(formattedMessage).toBeVisible();
   await captureScreenshot(page, testInfo, "assistant-view");
 
   await page.reload();
   await expect(sidebar).toBeHidden();
+  await expect(formattedMessage).toBeVisible();
   await workspace.getByRole("button", { name: "Team", exact: true }).click();
   await expect(sidebar).toBeVisible();
   await expect(workspace.getByRole("button", { name: "Team", exact: true })).toHaveAttribute(
     "aria-current",
     "page",
   );
+  await page.reload();
+  await expect(workspace.getByRole("button", { name: "Team", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(sidebar).toBeVisible();
   await captureScreenshot(page, testInfo, "team-view");
 });
