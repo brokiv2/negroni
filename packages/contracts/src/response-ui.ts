@@ -230,10 +230,14 @@ export function parseUiSpec(value: unknown, partial = false): UiSpec | null {
   const spec = parsed.data;
   const entries = Object.entries(spec.elements);
   if (entries.length > RESPONSE_UI_MAX_ELEMENTS || Object.keys(spec.state).length > 64) return null;
-  for (const [id, element] of entries) {
+  // JSONB can reorder elements. Apply every component's defaults before
+  // validating actions against inputs elsewhere in the composition.
+  for (const [, element] of entries) {
     const props = UiComponentProps[element.type].safeParse(element.props);
     if (!props.success || (element.children.length && !CONTAINERS.has(element.type))) return null;
     element.props = props.data;
+  }
+  for (const [id, element] of entries) {
     if (!partial && !referencesExist([element.props, element.visible], spec.state)) return null;
     if (
       element.type === "Table" &&
@@ -323,7 +327,7 @@ export function validateUiState(
       return false;
     }
     if (element.type === "Input" || element.type === "Slider") {
-      if (element.type === "Input" && p.input === "text") {
+      if (element.type === "Input" && (p.input ?? "text") === "text") {
         if (typeof value !== "string") return false;
       } else if (
         typeof value !== "number" ||

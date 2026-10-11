@@ -1,6 +1,12 @@
 import type { UiExpression, UiSpec } from "@rakazo/contracts";
-import { parseUiSpec, responseUiCatalogPrompt, validateUiState } from "@rakazo/contracts";
+import {
+  MessageBlock,
+  parseUiSpec,
+  responseUiCatalogPrompt,
+  validateUiState,
+} from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
+import { RESPONSE_UI_FIXTURE } from "../../contracts/src/response-ui.fixture.js";
 import { createResponseUiStream, evaluateUiExpression } from "./response-ui.js";
 
 const calculator: UiSpec = {
@@ -93,6 +99,24 @@ describe("composed response contracts and arithmetic", () => {
     expect(validateUiState(calculator, { ...calculator.state, tip: "20" })).toBe(false);
     expect(validateUiState(calculator, { ...calculator.state, tip: 50 })).toBe(false);
     expect(validateUiState(calculator, { ...calculator.state, injected: "send" })).toBe(false);
+  });
+  it("validates actions after applying input defaults regardless of element order", () => {
+    const reordered = {
+      ...RESPONSE_UI_FIXTURE,
+      spec: {
+        ...RESPONSE_UI_FIXTURE.spec,
+        elements: Object.fromEntries(
+          Object.entries(RESPONSE_UI_FIXTURE.spec.elements).sort(([a], [b]) =>
+            a === "set" ? -1 : b === "set" ? 1 : a.localeCompare(b),
+          ),
+        ),
+      },
+    };
+    expect(MessageBlock.safeParse(reordered).success).toBe(true);
+    expect(validateUiState(reordered.spec, { ...reordered.spec.state, note: "Sample" })).toBe(true);
+    const invalid = structuredClone(reordered);
+    invalid.spec.elements.set!.props.action = { type: "set", path: "/people", value: 0 };
+    expect(MessageBlock.safeParse(invalid).success).toBe(false);
   });
   it("rejects unknown components, executable props, graph cycles and missing children", () => {
     expect(

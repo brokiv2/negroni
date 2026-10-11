@@ -62,4 +62,6 @@ PR verification exposed a cancellation during context preparation that prevented
 
 The first CI run passed lint, types, unit/native core tests, production compilation, container validation, and both interactive-response browser cases. Its Electron fixtures expected the old product name; the authorization fixture omitted OAuth completion; the general browser fixtures selected hidden roster text and assumed the previous workspace navigation. Those fixture expectations are updated. The complete CI rerun and automated review remain pending.
 
+An integrated chat check found that JSONB key reordering could make a set action validate before an implicit text input received its default type. The composition validator now normalizes all components before checking cross-component actions, and state validation honors the default text input type on stored documents. A unit regression reorders components while preserving rejection of invalid action values; a PostgreSQL regression reads and edits the full native/web conformance fixture after storage. All 26 focused response tests, six response-state database tests, and the shared-contract type check pass.
+
 Remaining: integrated client QA, interactive native review, CI/automated review, and release checks. The installed runtime and mobile releases have not been updated. The overall implementation remains in progress.

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Actor } from "@rakazo/contracts";
-import { ResponseUiBlock } from "@rakazo/contracts";
+import { ResponseUiBlock, StoredMessageBlock } from "@rakazo/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { RESPONSE_UI_FIXTURE } from "../../contracts/src/response-ui.fixture.js";
 import { createDb } from "./client.js";
 import { updateResponseUiState } from "./response-ui.js";
 
@@ -134,6 +135,29 @@ suite("response input persistence (PostgreSQL)", () => {
     expect(retry.block.revision).toBe(1);
     expect(retry.eventSeq).toBeNull();
     expect(await db.prisma.event.count({ where: { threadId: h.thread.id } })).toBe(1);
+  });
+  it("reads and updates a complete composition after JSONB reorders its elements", async () => {
+    const h = await setup();
+    await db.prisma.message.update({
+      where: { id: h.message.id },
+      data: { blocks: [RESPONSE_UI_FIXTURE] },
+    });
+    const stored = await db.prisma.message.findUniqueOrThrow({ where: { id: h.message.id } });
+    const parsed = StoredMessageBlock.parse((stored.blocks as unknown[])[0]);
+    expect(parsed.kind).toBe("response_ui");
+    const state = { ...RESPONSE_UI_FIXTURE.spec.state, people: 4, note: "Sample budget" };
+    const result = await updateResponseUiState(db.prisma, h.actor, {
+      ...h.input,
+      blockId: RESPONSE_UI_FIXTURE.id,
+      state,
+    });
+    expect(result.block.state).toEqual(state);
+    const reopened = await db.prisma.message.findUniqueOrThrow({ where: { id: h.message.id } });
+    expect(StoredMessageBlock.parse((reopened.blocks as unknown[])[0])).toMatchObject({
+      kind: "response_ui",
+      revision: 1,
+      state,
+    });
   });
   it("accepts one of two concurrent devices and rejects the stale write", async () => {
     const h = await setup();
