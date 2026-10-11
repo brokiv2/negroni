@@ -125,11 +125,13 @@ describeWithDatabase("Composio catalog reconciliation", () => {
       provider: "GMAIL",
       displayName: "Personal",
     });
+    await rpc(app, cookie, "connections/complete", { connectionId: first.connectionId });
     const second = await rpc<{ connectionId: string }>(app, cookie, "connections/begin", {
       connectorId: "composio",
       provider: "GMAIL",
       displayName: "Work",
     });
+    await rpc(app, cookie, "connections/complete", { connectionId: second.connectionId });
     await expect(
       rpc<Array<{ id: string; displayName: string; status: string }>>(
         app,
@@ -218,7 +220,8 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     });
     await expect(
       rpc<{ status: string }>(app, cookie, "connections/complete", { connectionId: revoked.id }),
-    ).resolves.toMatchObject({ status: "revoked" });
+    ).rejects.toThrow("connections/complete");
+    await expect(statuses([revoked.id])).resolves.toEqual([{ id: revoked.id, status: "revoked" }]);
     const pending = await createConnection(actor, "GMAIL");
     vi.spyOn(composio, "connectionReady").mockImplementationOnce(async () => {
       await handles.prisma.connection.update({
@@ -230,6 +233,7 @@ describeWithDatabase("Composio catalog reconciliation", () => {
     await expect(
       rpc<{ status: string }>(app, cookie, "connections/complete", { connectionId: pending.id }),
     ).resolves.toMatchObject({ status: "revoked" });
+    await expect(statuses([pending.id])).resolves.toEqual([{ id: pending.id, status: "revoked" }]);
   });
 
   it("does not mutate local state when the provider catalog fails", async () => {

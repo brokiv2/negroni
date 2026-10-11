@@ -255,6 +255,14 @@ describeWithDatabase("API authorization and resource isolation", () => {
       "connections/begin",
       connectionInput("Owner Connection"),
     );
+    await rpc(app, owner, "connections/complete", {
+      connectionId: ownerConnection.connectionId,
+    });
+    expect(
+      await handles.prisma.connection.findUniqueOrThrow({
+        where: { id: ownerConnection.connectionId },
+      }),
+    ).toMatchObject({ status: "connected", userId: ownerActor.userId });
     const ownerMemory = await handles.prisma.memoryDocument.create({
       data: {
         spaceId: ownerActor.spaceId,

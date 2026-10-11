@@ -371,7 +371,10 @@ scenario("async specialist delegation (PostgreSQL, fake runtime)", () => {
         const which = request.prompt.includes("pricing") ? "pricing" : "timeline";
         reviews.push(which);
         assert.ok(request.prompt.includes(`Recommend on ${which}`));
-        yield { type: "done", text: `Reviewed ${which}.` };
+        yield {
+          type: "done",
+          text: `For ${which}, docs/a.md costs 10 and ships in May; docs/b.md costs 14 and ships in March.`,
+        };
         return;
       }
       const which = request.prompt.includes("pricing") ? "pricing" : "timeline";
@@ -403,7 +406,10 @@ scenario("async specialist delegation (PostgreSQL, fake runtime)", () => {
       assert.deepEqual(reviews.sort(), ["pricing", "timeline"]);
       for (const row of settled) {
         const which = row.record.assignment.includes("pricing") ? "pricing" : "timeline";
-        assert.equal(row.record.review?.summary, `Reviewed ${which}.`);
+        assert.equal(
+          row.record.review?.summary,
+          `For ${which}, docs/a.md costs 10 and ships in May; docs/b.md costs 14 and ships in March.`,
+        );
         assert.ok(row.record.outcome?.text.includes(`Recommend on ${which}`));
       }
     } finally {
@@ -533,7 +539,7 @@ scenario("async specialist delegation (PostgreSQL, fake runtime)", () => {
     handlers.set(fixture.mainId, async function* (request) {
       if (request.prompt.includes("<original_assignment>")) {
         reviews += 1;
-        yield { type: "done", text: "Reviewed." };
+        yield { type: "done", text: "Plan A is cheaper according to docs/a.md and docs/b.md." };
         return;
       }
       yield* delegate(request, fixture.analystId);
@@ -541,6 +547,14 @@ scenario("async specialist delegation (PostgreSQL, fake runtime)", () => {
     handlers.set(fixture.analystId, async function* (request) {
       await hold.opened;
       seedDocuments(fixture.analystId);
+      for (const file of ["docs/a.md", "docs/b.md"]) {
+        yield {
+          type: "tool",
+          name: "read_file",
+          args: { path: file },
+          executionId: `${request.runId}:${file}`,
+        };
+      }
       yield {
         type: "tool",
         name: "message_bot",
@@ -581,11 +595,22 @@ scenario("async specialist delegation (PostgreSQL, fake runtime)", () => {
         transitionDelegation(record, "cancelled", new Date(), "child_cancelled"),
       );
       late.release();
-      const childRun = await waitFor("late child returned", async () => {
+      const childRun = await waitFor("cancelled child stopped", async () => {
         const run = await p.run.findFirst({ where: { taskId: second!.taskId } });
-        return run?.botOutcomeReturnedAt ? run : null;
+        return run && ["completed", "failed", "cancelled"].includes(run.status) ? run : null;
       });
-      assert.equal(childRun.status, "completed");
+      assert.equal(childRun.leaseOwner, null);
+      assert.equal(await p.attempt.count({ where: { runId: childRun.id, status: "running" } }), 0);
+      assert.equal(
+        await p.event.count({
+          where: {
+            runId: childRun.id,
+            type: "agent.tool.completed",
+            payload: { path: ["outcome"], equals: "succeeded" },
+          },
+        }),
+        0,
+      );
       const [, after] = await delegations(fixture);
       assert.equal(after!.record.state, "cancelled");
       assert.equal(after!.record.outcome, undefined);

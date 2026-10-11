@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ThreadSnapshot } from "@rakazo/contracts";
+import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
@@ -99,7 +100,7 @@ describeAttachments("chat attachments", () => {
     const badMime = await raw(app, cookie, "artifacts/create", {
       botId: bot.id,
       name: "evil.zip",
-      mimeType: "application/zip",
+      mimeType: "invalid-mime",
       contentBase64: Buffer.from("zip").toString("base64"),
     });
     expect(badMime.status).toBeGreaterThanOrEqual(400);
@@ -108,7 +109,7 @@ describeAttachments("chat attachments", () => {
       botId: bot.id,
       name: "big.bin",
       mimeType: "text/plain",
-      contentBase64: Buffer.alloc(10 * 1024 * 1024 + 1, 1).toString("base64"),
+      contentBase64: Buffer.alloc(ATTACHMENT_MAX_BYTES + 1, 1).toString("base64"),
     });
     expect(oversize.status).toBeGreaterThanOrEqual(400);
   });

@@ -3,7 +3,7 @@ import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 test("opens the assistant conversation and keeps Team optional", async ({ page }, testInfo) => {
   await signup(page, `assistant-${Date.now()}@rakazo.test`, "password12", "Assistant fixture");
-  await completeOnboarding(page);
+  await completeOnboarding(page, undefined, "assistant");
   const tabs = page.getByRole("navigation", { name: "Workspace" });
   await expect(tabs.getByRole("button", { name: "Chat", exact: true })).toHaveAttribute(
     "aria-current",

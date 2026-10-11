@@ -5,7 +5,7 @@ test("For you keeps publications separate from tasks and gives each article its 
   page,
 }, testInfo) => {
   await signup(page, `feed-${Date.now()}@rakazo.test`, "password12", "Feed reader");
-  await completeOnboarding(page);
+  await completeOnboarding(page, undefined, "assistant");
   const a = await rpc<{ id: string }>(page, "feed/create", {
     kind: "article",
     title: "Ocean research",
@@ -40,7 +40,7 @@ test("automation details are collapsed and deletion removes the schedule", async
   page,
 }, testInfo) => {
   await signup(page, `automation-${Date.now()}@rakazo.test`, "password12", "Feed reader");
-  await completeOnboarding(page);
+  await completeOnboarding(page, undefined, "assistant");
   const main = await rpc<{ botId: string }>(page, "personal/thread", {});
   const routine = await rpc<{ id: string }>(page, "routines/create", {
     botId: main.botId,

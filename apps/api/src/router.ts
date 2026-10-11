@@ -4497,13 +4497,21 @@ export function createRouter(deps: RouterDeps): Router<typeof appContract, Route
                   return current;
                 }
               }
-              return tx.connection.update({
-                where: { id: current.id },
+              // Remote completion can overlap a disconnect that writes the row
+              // without this provider lock. Do not overwrite its terminal state.
+              await tx.connection.updateMany({
+                where: {
+                  id: current.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  status: current.status,
+                },
                 data: {
                   status: "connected",
                   ...(providerRef ? { providerRef } : {}),
                 },
               });
+              return tx.connection.findUniqueOrThrow({ where: { id: current.id } });
             },
             { timeout: 60_000 },
           );

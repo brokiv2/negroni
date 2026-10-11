@@ -4585,8 +4585,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: runId },
           select: { status: true, leaseOwner: true, leaseFence: true },
         });
+        if (!authorizationAllowed) {
+          if (run.trigger === "bot_message") await delegationRunGate(deps.prisma, runId);
+          await deps.events.finalizeRun({
+            spaceId: run.spaceId,
+            threadId: thread.id,
+            botId: bot.id,
+            runId,
+            taskId: run.taskId,
+            attemptId: attempt.id,
+            leaseOwner: workerId,
+            leaseFence: fence,
+            outcome: "failed",
+            error: "This background assignment was stopped, changed or expired.",
+          });
+          return;
+        }
         if (
-          !authorizationAllowed ||
           !mayOpenModelStream(
             beforeModel,
             workerId,
