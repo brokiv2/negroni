@@ -1,4 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   activeBotId,
   captureScreenshot,
@@ -374,19 +375,61 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) => {
   const browserErrors: string[] = [];
   const failedRequests: string[] = [];
+  const onboardingSnapshotAborts: string[] = [];
+  const successfulTeamSnapshots = new Set<string>();
+  let onboarding = true;
+  const snapshotTarget = (request: Request) => {
+    if (request.method() !== "POST" || new URL(request.url()).pathname !== "/rpc/threads/get") {
+      return null;
+    }
+    try {
+      const body = request.postDataJSON() as {
+        json?: { botId?: unknown; threadKind?: unknown };
+      };
+      return typeof body.json?.botId === "string" ? body.json : null;
+    } catch {
+      return null;
+    }
+  };
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") browserErrors.push(message.text());
   });
   page.on("requestfailed", (request) => {
+    const target = snapshotTarget(request);
+    if (
+      onboarding &&
+      request.failure()?.errorText === "net::ERR_ABORTED" &&
+      target?.threadKind === "personal" &&
+      typeof target.botId === "string"
+    ) {
+      // Switching onboarding from Chat to Team cancels the former Personal snapshot.
+      onboardingSnapshotAborts.push(target.botId);
+      return;
+    }
     failedRequests.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText ?? ""}`,
     );
+  });
+  page.on("response", (response) => {
+    const target = snapshotTarget(response.request());
+    if (
+      response.status() === 200 &&
+      typeof target?.botId === "string" &&
+      (target.threadKind === undefined || target.threadKind === "team")
+    ) {
+      successfulTeamSnapshots.add(target.botId);
+    }
   });
   const stamp = Date.now();
   const email = `shell-${stamp}@rakazo.test`;
   await signup(page, email, "password12", "Shell");
   await completeOnboarding(page);
+  onboarding = false;
+  const chiefId = activeBotId(page);
+  expect(onboardingSnapshotAborts.length).toBeLessThanOrEqual(1);
+  for (const botId of onboardingSnapshotAborts) expect(botId).toBe(chiefId);
+  await expect.poll(() => successfulTeamSnapshots.has(chiefId)).toBe(true);
   await page.evaluate(() => {
     Object.defineProperty(globalThis.crypto, "randomUUID", {
       value: undefined,
