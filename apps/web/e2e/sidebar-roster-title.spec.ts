@@ -6,7 +6,7 @@ async function captureSidebarRoster(
   testInfo: Parameters<typeof captureScreenshot>[1],
   name: string,
 ) {
-  const aside = page.locator("aside").first();
+  const aside = page.locator(".rk-sidebar");
   await expect(aside).toBeVisible();
   const box = await aside.boundingBox();
   if (box) {
@@ -43,7 +43,7 @@ test("sidebar roster shows bot title pill below the name", async ({ page }, test
   await page.goto(`/app/${bot.id}`);
   await page.waitForURL(new RegExp(`/app/${bot.id}$`));
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const row = sidebar.locator(`[data-roster-bot-id="${bot.id}"]`);
   await expect(row).toBeVisible();
 

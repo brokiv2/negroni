@@ -198,10 +198,10 @@ test("connects, lists, and uses an OpenAI-compatible endpoint", async ({ page },
     await page.getByRole("button", { name: "Find models" }).click();
     await expect(discoveredModels).toHaveValue(LOCAL_MODEL_ID);
     await expect(page.getByText("Found 1 model.")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
     await captureScreenshot(page, testInfo, "openai-compatible-model-discovery");
 
-    await page.getByRole("button", { name: "Save" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Saved.")).toBeVisible();
     await expect(page.getByRole("button", { name: /OpenAI-compatible/ })).toContainText(
       "Connected",
@@ -210,9 +210,9 @@ test("connects, lists, and uses an OpenAI-compatible endpoint", async ({ page },
 
     await page.getByLabel("OpenAI-compatible server URL").fill("");
     await expect(page.getByRole("button", { name: "Find models" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
     await page.getByLabel("OpenAI-compatible server URL").fill(baseUrl);
-    await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 
     if (process.env.AGENT_RUNTIME === "pi") {
       await page.getByRole("button", { name: "Close model settings" }).click();
@@ -243,7 +243,9 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   const providerSearch = page.getByPlaceholder("Search providers");
   await providerSearch.fill("scripted");
   await page.getByRole("button", { name: /Scripted/ }).click();
-  await expect(page.getByRole("combobox", { name: "Model" })).toHaveText(/Scripted runtime/);
+  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveText(
+    /Scripted runtime/,
+  );
   const apiKeyInput = page.getByLabel("API key");
   await expect(apiKeyInput).toHaveAttribute("autocomplete", "new-password");
   await apiKeyInput.fill("fake-scripted-key-one");
@@ -269,7 +271,9 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   expect(updated.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(16384);
   await page.reload();
   await openUserSettings(page, "models");
-  await expect(page.getByRole("combobox", { name: "Model" })).toHaveText(/Scripted runtime/);
+  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveText(
+    /Scripted runtime/,
+  );
   await page.getByText("Advanced", { exact: true }).click();
   await expect(page.getByLabel("Maximum output tokens")).toHaveValue("16384");
 

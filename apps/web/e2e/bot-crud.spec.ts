@@ -4,6 +4,7 @@ import {
   completeOnboarding,
   createBotFromPicker,
   openNewBot,
+  selectWorkspaceView,
   signup,
 } from "./helpers";
 
@@ -13,8 +14,9 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
-  const botList = page.locator("aside").first();
+  const botList = page.locator(".rk-sidebar");
   await expect(botList.getByRole("button", { name: /^Chief/ })).toBeVisible();
 
   let createFailed = false;
@@ -140,6 +142,7 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await captureScreenshot(page, testInfo, "28-edited-bot-profile");
 
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect(botList.getByRole("button", { name: /^Atlas/ })).toBeVisible();
   await expect(page.getByPlaceholder("Message Atlas")).toBeVisible();
   await page.locator("main").getByRole("button", { name: "Atlas", exact: true }).click();
@@ -174,6 +177,7 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
 
   await page.goto(deletedBotPath);
   await page.waitForURL((url) => url.pathname !== deletedBotPath);
+  await selectWorkspaceView(page, "team");
   await expect(botList.getByText(longUnbrokenName, { exact: true })).toHaveCount(0);
   await expect(botList.getByRole("button", { name: /^Chief/ })).toBeVisible();
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();

@@ -1,5 +1,6 @@
 import type { MessageBlock, RunActivityRow } from "@rakazo/contracts";
 import { t } from "../i18n";
+
 export { approvalNotes, approvalRows } from "./approvals";
 
 /**

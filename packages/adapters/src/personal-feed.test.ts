@@ -42,7 +42,9 @@ describe("personal feed", () => {
     }));
     const prisma = { feedItem: { findFirst } } as unknown as PrismaClient;
     const prompt = await feedDiscussionContext(prisma, scope, "article-thread");
-    expect(findFirst).toHaveBeenCalledWith({ where: { ...scope, thread: { id: "article-thread" } } });
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { ...scope, thread: { id: "article-thread" } },
+    });
     expect(prompt).toContain("untrusted source data");
     expect(prompt).toContain("Do not claim to have read text not provided");
   });
@@ -87,21 +89,37 @@ describe("personal feed", () => {
 });
 
 describe("feed curation boundaries", () => {
-  const raw = {kind:"article",title:"Source",summary:"Verified summary",url:"https://example.com/post",topic:"AI"};
-  it("enforces excluded topics and selected domains outside the prompt", async()=>{
-    for(const data of [{excludedTopics:["ai"]},{sourceDomains:["allowed.example"]}]){
-      const prisma={feedProfile:{findUnique:vi.fn(async()=>({data}))}} as unknown as PrismaClient;
-      await expect(publishFeed(prisma,scope,"root",raw)).rejects.toThrow();
+  const raw = {
+    kind: "article",
+    title: "Source",
+    summary: "Verified summary",
+    url: "https://example.com/post",
+    topic: "AI",
+  };
+  it("enforces excluded topics and selected domains outside the prompt", async () => {
+    for (const data of [{ excludedTopics: ["ai"] }, { sourceDomains: ["allowed.example"] }]) {
+      const prisma = {
+        feedProfile: { findUnique: vi.fn(async () => ({ data })) },
+      } as unknown as PrismaClient;
+      await expect(publishFeed(prisma, scope, "root", raw)).rejects.toThrow();
     }
   });
-  it("stops automated publication when the daily limit is reached", async()=>{
-    const create=vi.fn();
-    const prisma={
-      feedProfile:{findUnique:vi.fn(async()=>({data:{maxItems:3}}))},
-      bot:{findMany:vi.fn(async()=>[])},feedItem:{findUnique:vi.fn(async()=>null)},
-      $transaction:async(fn:(tx:unknown)=>Promise<unknown>)=>fn({$executeRaw:vi.fn(),feedProfile:{findUnique:vi.fn(async()=>({data:{maxItems:3}}))},feedItem:{findUnique:vi.fn(async()=>null),count:vi.fn(async()=>3),create}}),
+  it("stops automated publication when the daily limit is reached", async () => {
+    const create = vi.fn();
+    const prisma = {
+      feedProfile: { findUnique: vi.fn(async () => ({ data: { maxItems: 3 } })) },
+      bot: { findMany: vi.fn(async () => []) },
+      feedItem: { findUnique: vi.fn(async () => null) },
+      $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: vi.fn(),
+          feedProfile: { findUnique: vi.fn(async () => ({ data: { maxItems: 3 } })) },
+          feedItem: { findUnique: vi.fn(async () => null), count: vi.fn(async () => 3), create },
+        }),
     } as unknown as PrismaClient;
-    await expect(publishFeed(prisma,scope,"root",raw,{automated:true})).rejects.toThrow("Daily feed limit");
+    await expect(publishFeed(prisma, scope, "root", raw, { automated: true })).rejects.toThrow(
+      "Daily feed limit",
+    );
     expect(create).not.toHaveBeenCalled();
   });
 });

@@ -297,7 +297,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "attach_file",
     description:
-      "Attach a workspace file from this bot's home to the chat thread as an image or common file. The file stays in place; users can open it from the message and from the Artifacts tab. For a self-contained HTML page, document, or anything else meant to be opened and viewed on its own (not just downloaded) — give it name and description: a short human-readable title and a one-line summary of what it is. Skip them for an ordinary attachment like a log file or export. To UPDATE something you already made, call this again with the exact same name — it becomes a new version of that same artifact (visible in a version switcher) instead of a separate one; a different name always starts a new artifact.",
+      "Attach a workspace file from this bot's home to the chat thread as an image or common file. The file stays in place; users can open it from the message and from the Artifacts tab. Use the returned artifactId to show an attached image in an Image response component. For a self-contained HTML page, document, or anything else meant to be opened and viewed on its own (not just downloaded) — give it name and description: a short human-readable title and a one-line summary of what it is. Skip them for an ordinary attachment like a log file or export. To UPDATE something you already made, call this again with the exact same name — it becomes a new version of that same artifact (visible in a version switcher) instead of a separate one; a different name always starts a new artifact.",
     inputSchema: {
       type: "object",
       properties: {
@@ -353,6 +353,12 @@ export const builtinAgentTools: ConnectorTool[] = [
       properties: { reason: { type: "string" } },
       required: ["reason"],
     },
+  },
+  {
+    name: "response_ui_catalog",
+    description:
+      "Read the shared response component vocabulary and streaming format before composing an interactive explanation, comparison, form, chart, diagram, checklist or calculator. These are local response components, not executable code or external actions. Use ordinary prose when it is clearer.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "show_weather",
@@ -831,7 +837,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "work_create",
     description:
-      "Save one responsibility per explicit user request with a specific future check, deadline and bounded run allowance. Include all requested outcomes in its objective; retries return the same responsibility even if renamed. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
+      "Save one responsibility per explicit user request with a future fallback check, deadline and bounded run allowance. Subscribe through eventWatches to a specific owned account's thread, item, sender or event kind when a source change should continue this work immediately. Include all requested outcomes; retries return the same responsibility even if renamed. Only for explicit continuing work, never greetings, interests or brainstorming. Use schedule_create for a fixed recurring report. Preserve the original scope. Do not claim a wake is saved until this tool succeeds.",
     inputSchema: z.toJSONSchema(CreateAssistantWorkInput),
   },
   {
@@ -843,7 +849,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "work_update",
     description:
-      "Save the outcome of your work: waiting requires nextWakeAt and a reason, needs_input waits for the user, completed requires verified result evidence. Use the version from work_list. End the turn after saving a background outcome; unchanged checks finish with NO_RESPONSE.",
+      "Save the outcome: waiting requires a fallback nextWakeAt and reason; optional eventWatches subscribe to a specific owned account's thread, item, sender or kind. Omit eventWatches to preserve them, or pass [] to clear them. needs_input is for a real decision or access blocker; completed requires verified result evidence. Use the version from work_list. End the turn after saving a background outcome; unchanged checks finish with NO_RESPONSE.",
     inputSchema: z.toJSONSchema(UpdateAssistantWorkInput),
   },
   {
@@ -1068,7 +1074,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "message_bot",
     description:
-      'Hand a task to another of the user\'s bots, or send it a useful update, question, result or blocker. You must call this tool to actually deliver it — writing the message in your own reply text (e.g. "[to Comms] ...") does not send anything and the recipient never sees it. Delivery is async: a reply wakes you later as a new message, so do not wait or poll for it. For a request, state the scope, the allowed actions, the expected result and how it will be checked. Do not send ack-only messages. Later updates only if they add something new.',
+      "Hand a task to another of the user's bots, or send it a useful update, question, result or blocker. For user-requested bounded phases or ordered review checkpoints, send one request with the phases field. The backend preserves the original scope, deadline and shared run allowance, and starts each next phase only after a verified review; do not send separate requests for successive phases. If you need a new specialist for that plan, create it without a first-task prompt, then send this request with phases. Single-step work does not need phases. You must call this tool to deliver the message. Delivery is async: a reply wakes you later, so do not wait or poll. State the scope, allowed actions, expected result and how it will be checked. Do not send ack-only messages; later updates must add something new.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1090,6 +1096,14 @@ export const builtinAgentTools: ConnectorTool[] = [
           maxItems: 20,
           description:
             "For a request: exact file paths or URLs the recipient must use. Its result is checked against them.",
+        },
+        phases: {
+          type: "array",
+          items: { type: "string", minLength: 1, maxLength: 2_000 },
+          minItems: 2,
+          maxItems: 3,
+          description:
+            "Use for a new request with user-requested bounded phases or ordered review checkpoints. List 2 to 3 phase assignments within the message's original scope. The backend continues after each verified review using one shared run allowance and deadline. Do not dispatch each phase separately or add new permissions or unrelated objectives. Omit for single-step work.",
         },
       },
       required: ["message"],

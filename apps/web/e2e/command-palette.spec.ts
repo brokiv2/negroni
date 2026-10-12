@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  rpc,
+  selectWorkspaceView,
+  signup,
+} from "./helpers";
 
 test("command palette opens with keyboard, filters, and switches bots", async ({
   page,
@@ -9,6 +16,7 @@ test("command palette opens with keyboard, filters, and switches bots", async ({
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
   const chiefId = activeBotId(page);
   const researcher = await rpc<{ id: string }>(page, "bots/create", {
@@ -20,12 +28,10 @@ test("command palette opens with keyboard, filters, and switches bots", async ({
     computerMode: "team",
   });
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await page.waitForURL(/\/app\/[^/]+$/);
   await expect(
-    page
-      .locator("aside")
-      .first()
-      .getByRole("button", { name: /^Researcher/ }),
+    page.locator(".rk-sidebar").getByRole("button", { name: /^Researcher/ }),
   ).toBeVisible();
 
   await page.keyboard.press("ControlOrMeta+K");

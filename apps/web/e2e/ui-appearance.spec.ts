@@ -6,7 +6,7 @@ async function captureSidebarSearchSelected(
   testInfo: Parameters<typeof captureScreenshot>[1],
   name: string,
 ) {
-  const aside = page.locator("aside").first();
+  const aside = page.locator(".rk-sidebar");
   const search = aside.getByTestId("sidebar-search");
   const selected = aside.getByRole("button", { name: /^Chief/ }).first();
   await expect(search).toBeVisible();
@@ -50,7 +50,10 @@ test("account settings appearance control switches to light mode", async ({ page
   await completeOnboarding(page, testInfo);
 
   await page.getByTestId("user-menu-trigger").click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
   const settings = page.getByTestId("user-settings");
   await expect(settings).toBeVisible();
   await expect(settings.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
@@ -85,7 +88,10 @@ test("account settings appearance control switches to light mode", async ({ page
   await captureScreenshot(page, testInfo, "inline-code-light");
 
   await page.getByTestId("user-menu-trigger").click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
   await expect(settings).toBeVisible();
   await settings.getByTestId("ui-appearance-dark").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -103,7 +109,7 @@ test("sidebar bot rows hover with the same tone as the integrations row", async 
   await completeOnboarding(page, testInfo);
   await createNamedBot(page, "Second Bot");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const chief = sidebar.getByRole("button", { name: /^Chief/ }).first();
   await expect(chief).toBeVisible();
   const readChiefBg = () => chief.evaluate((el) => getComputedStyle(el).backgroundColor);

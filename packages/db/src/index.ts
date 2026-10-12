@@ -12,6 +12,7 @@ export * from "./messages.js";
 export * from "./messaging.js";
 export * from "./model-credentials.js";
 export * from "./repos.js";
+export * from "./response-ui.js";
 export * from "./scope.js";
 export * from "./spaces.js";
 export * from "./thread-kind.js";

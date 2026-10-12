@@ -5,6 +5,7 @@ import {
   createNamedBot,
   openNewGroup,
   rpc,
+  selectWorkspaceView,
   signup,
 } from "./helpers";
 
@@ -18,6 +19,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
   const researcherId = await createBot(page, "Researcher");
   const writerId = await createBot(page, "Research Writer");
@@ -46,6 +48,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
     apiKey: "fake-group-voice-key",
   });
   await page.reload();
+  await selectWorkspaceView(page, "team");
   await expect(page).toHaveURL(groupUrl);
   await expect(page.getByRole("combobox", { name: "Message Draft team" })).toBeVisible();
 
@@ -87,10 +90,10 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
     });
   });
   await page.reload();
+  await selectWorkspaceView(page, "team");
   // Anchor ^ so Now/Recent activity rows ("Bot · Draft team, …") do not match.
   const groupAvatar = page
-    .locator("aside")
-    .first()
+    .locator(".rk-sidebar")
     .getByRole("button", { name: /^Draft team/ })
     .locator(".rakazo-group-avatar");
   await expect(groupAvatar).toBeVisible();
@@ -105,12 +108,13 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await page.unroute("**/rpc/groups/list");
   await page.unroute("**/rpc/threads/get");
   await page.reload();
+  await selectWorkspaceView(page, "team");
 
   await page.getByTestId("bot-settings-trigger").click();
   const desktopSettings = page.getByTestId("side-panel");
   const groupName = desktopSettings.locator("label:has-text('Name') input");
   await groupName.fill("Unsaved Draft team name");
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   await sidebar.getByRole("button", { name: /^Review team/ }).click();
   await expect(groupName).toHaveValue("Review team");
   await sidebar.getByRole("button", { name: /^Draft team/ }).click();
@@ -186,6 +190,7 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   const cityAsk = page.locator("p").filter({ hasText: /^Which city should I use\?$/ });
   if ((await cityAsk.count()) === 0) {
     await page.reload({ waitUntil: "domcontentloaded" });
+    await selectWorkspaceView(page, "team");
     await expect(page.getByRole("combobox", { name: "Message Draft team" })).toBeVisible({
       timeout: 15_000,
     });
@@ -260,5 +265,6 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await rpc(page, "groups/remove", { groupId: reviewGroup.id });
   await page.goto(`/app/g/${reviewGroup.id}`);
   await page.waitForURL(/\/app\/(?!g\/)[^/]+$/);
+  await selectWorkspaceView(page, "team");
   await expect(page.getByRole("combobox", { name: /Message/ })).toBeVisible();
 });

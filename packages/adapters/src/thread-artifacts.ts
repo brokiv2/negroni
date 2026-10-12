@@ -23,6 +23,7 @@ import { withResolvedArtifactVersion } from "@rakazo/db";
 import { resolveBotWorkspacePath } from "./computer-support.js";
 
 export type MaterializedThreadFile = {
+  artifactId: string;
   name: string;
   mimeType: string;
   size: number;
@@ -166,6 +167,7 @@ export async function materializeCurrentTurnFiles(
       input.context,
     );
     materialized.push({
+      artifactId: row.id,
       name: row.name,
       mimeType: row.mimeType,
       size: row.size,
@@ -182,7 +184,7 @@ export function currentTurnFilesInstruction(files: readonly MaterializedThreadFi
     "Current-turn attached files are available on your computer. Inspect them before answering:",
     ...files.map(
       (file) =>
-        `- ${JSON.stringify(file.name)} (${file.mimeType}, ${file.size} bytes): ${JSON.stringify(file.path)}`,
+        `- ${JSON.stringify(file.name)} (${file.mimeType}, ${file.size} bytes): ${JSON.stringify(file.path)}; artifactId: ${JSON.stringify(file.artifactId)}`,
     ),
   ].join("\n");
 }

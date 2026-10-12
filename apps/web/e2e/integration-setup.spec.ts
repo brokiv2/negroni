@@ -246,7 +246,10 @@ test("configured server owners manage providers from settings", async ({ page },
   await expect(page.getByRole("heading", { name: "Server integrations" })).toBeHidden();
   await completeOnboarding(page);
   await page.getByTestId("user-menu-trigger").click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page
+    .locator('[data-slot="popover-content"]')
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
   const settings = page.getByTestId("user-settings");
   const link = settings.getByRole("link", { name: "Server integrations", exact: true });
   await expect(link).toBeVisible();

@@ -50,6 +50,9 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private var active = false
   /// The Radar update the next message from the composer is about.
   private var replyRadar: (id: String, title: String)?
+  private var replyMessage: (id: String, title: String)?
+  private var responseStates: [String: ResponseUIState] = [:]
+  private var responseRelayoutPending = false
   /// A message to bring into view once it is loaded (a notification's message, the latest brief).
   private var pendingFocus: String?
   private var focusTask: Task<Void, Never>?
@@ -307,6 +310,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   private func render(_ next: JSON) {
     let nearBottom = followsLatest && !table.isDragging && !table.isDecelerating
     let previousTimeline = timeline
+    let previousMessages = messages
     let wasAdjusting = adjustingScroll
     adjustingScroll = true
     defer { adjustingScroll = wasAdjusting }
@@ -374,7 +378,23 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     guard rows != messages || nextTimeline != previousTimeline || activityChanged else { return }
     messages = rows
     timeline = nextTimeline
-    UIView.performWithoutAnimation { table.reloadData() }
+    if !first, table.numberOfRows(inSection: 0) == previousTimeline.count,
+      let changes = ChatTimeline.changes(old: previousTimeline, oldMessages: previousMessages,
+      new: nextTimeline, newMessages: rows) {
+      for case let cell as MessageCell in table.visibleCells {
+        guard let message = rows.first(where: { $0["id"].string == cell.messageID }),
+          let previous = previousMessages.first(where: { $0["id"].string == cell.messageID }), message != previous else { continue }
+        if ThreadLogic.onlyResponseStateChanged(old: [previous], new: [message]) {
+          cell.receiveResponseState(message)
+        } else { configure(cell, message: message) }
+      }
+      UIView.performWithoutAnimation {
+        table.performBatchUpdates {
+          table.deleteRows(at: changes.removed.map { IndexPath(row: $0, section: 0) }, with: .none)
+          table.insertRows(at: changes.inserted.map { IndexPath(row: $0, section: 0) }, with: .none)
+        }
+      }
+    } else { UIView.performWithoutAnimation { table.reloadData() } }
 
     table.layoutIfNeeded()
     if nearBottom || first { scrollToEnd(animated: false) }
@@ -582,6 +602,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let messageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let sentAttachments = attachments
     let radar = replyRadar
+    let reply = replyMessage
     let blocks: [JSON] =
       (messageText.isEmpty ? [] : [["kind": "text", "text": .string(messageText)]])
       + sentAttachments.map { artifact in
@@ -610,7 +631,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
             "text": .string(text), "artifactIds": .array(sentAttachments.map { $0["id"] }),
             "clientNonce": .string(nonce),
           ]).merging(threadModel.map { ["model": $0] } ?? [:])
-            .merging(radar.map { ["radarUpdateId": .string($0.id)] } ?? [:]))
+            .merging(radar.map { ["radarUpdateId": .string($0.id)] } ?? [:])
+            .merging(reply.map { ["replyToMessageId": .string($0.id)] } ?? [:]))
         if let index = outgoing.firstIndex(where: { $0["id"].string == nonce }),
           !receipt["seq"].isNull
         {
@@ -636,6 +658,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
         }
         attachments.insert(contentsOf: sentAttachments, at: 0)
         if replyRadar == nil, let radar { setReply(radar) }
+        if replyRadar == nil, replyMessage == nil, let reply {
+          replyMessage = reply
+          composer.replyContext = reply.title
+        }
         composer.attachmentCount = attachments.count
         composer.attachmentNames = attachments.map { $0["name"].string }.joined(separator: ", ")
         render(snapshot)
@@ -691,6 +717,7 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
   }
   private func setReply(_ reply: (id: String, title: String)?) {
     replyRadar = reply
+    replyMessage = nil
     composer.replyContext = reply?.title
   }
   func focus(messageID: String) {
@@ -990,6 +1017,10 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
     let message = messages[messageIndex]
     let cell =
       tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
+    configure(cell, message: message)
+    return cell
+  }
+  private func configure(_ cell: MessageCell, message: JSON) {
     cell.configure(
       message, target: target, connections: connectedApps, host: self,
       relayout: { [weak self] in self?.table.performBatchUpdates(nil) },
@@ -1001,12 +1032,67 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
           AttachmentController(target: self?.target ?? [:], block: block), animated: true)
       }, answer: { [weak self] block, value in self?.answer(message, block, value: value) },
       connect: { [weak self] block in self?.connectApp(message: message, block: block) },
+      response: { [weak self] block in self?.responseView(message: message, block: block) },
       openComputer: { [weak self] in
         guard let self else { return }
         let botID = message["botId"].string.isEmpty ? target["botId"].string : message["botId"].string
         navigationController?.pushViewController(ComputerController(botID: botID), animated: true)
       })
-    return cell
+  }
+  private func responseView(message: JSON, block: ResponseUI) -> ResponseUIView {
+    let messageID = message["id"].string, key = messageID + ":" + block.id
+    let imageTarget = target
+    let imageServer = API.shared.base, imageSpace = API.shared.spaceID, imageToken = API.shared.token
+    let state: ResponseUIState
+    if let existing = responseStates[key] { state = existing; state.receive(block) }
+    else {
+      let server = API.shared.base, space = API.shared.spaceID, token = API.shared.token
+      state = ResponseUIState(block) { revision, values in
+        guard API.shared.base == server, API.shared.spaceID == space, API.shared.token == token else { throw CancellationError() }
+        do {
+          let result = try await API.shared.rpc("threads/responseUiState", [
+            "messageId": .string(messageID), "blockId": .string(block.id),
+            "revision": .number(Double(revision)), "state": .object(values),
+          ], requireConsent: false)
+          guard let updated = ResponseUI(result) else { throw URLError(.cannotParseResponse) }
+          return updated
+        } catch let error as APIError where error.status == 409 { throw ResponseUIStateConflict() }
+      }
+      responseStates[key] = state
+    }
+    return ResponseUIView(session: state, live: messageID.hasPrefix("progress:"),
+      onInputFocus: { [weak self] in self?.followsLatest = false },
+      relayout: { [weak self] in self?.relayoutResponse() },
+      refresh: { [weak self] in
+        guard let self else { throw CancellationError() }
+        let page = try await API.shared.rpc("threads/messages", target.merging(["around": ["messageId": .string(messageID)]]))
+        guard let message = page["messages"].array.first(where: { $0["id"].string == messageID }),
+          let raw = message["blocks"].array.first(where: { $0["kind"].string == "response_ui" && $0["id"].string == block.id }),
+          let fresh = ResponseUI(raw) else { throw URLError(.cannotParseResponse) }
+        return fresh
+      }, loadImage: { artifactID in
+        await ImageStore.shared.ownedArtifactImage(artifactID, target: imageTarget,
+          contextMatches: {
+            API.shared.base == imageServer && API.shared.spaceID == imageSpace
+              && API.shared.token == imageToken
+          })
+      }, followUp: { [weak self] text in
+        guard let self else { return }
+        setReply(nil)
+        replyMessage = (messageID, block.summary)
+        composer.replyContext = block.summary
+        composer.setDraft(composer.draft.isEmpty ? text : composer.draft + "\n" + text)
+        composer.textView.becomeFirstResponder()
+      })
+  }
+  private func relayoutResponse() {
+    guard !responseRelayoutPending else { return }
+    responseRelayoutPending = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      responseRelayoutPending = false
+      table.performBatchUpdates(nil)
+    }
   }
   func tableView(
     _ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint
@@ -1024,6 +1110,8 @@ final class ChatController: UIViewController, UITableViewDataSource, UITableView
 }
 
 final class MessageCell: UITableViewCell {
+  private(set) var messageID = ""
+  private var responseViews: [String: ResponseUIView] = [:]
   private let bubble = UIView(), stack = Theme.stack(spacing: 8)
   private var leading: NSLayoutConstraint!, trailing: NSLayoutConstraint!
   private var imageTasks: [Task<Void, Never>] = []
@@ -1056,8 +1144,11 @@ final class MessageCell: UITableViewCell {
     open: @escaping (JSON) -> Void,
     answer: @escaping (JSON, String?) -> Void,
     connect: @escaping (JSON) -> Void,
+    response: @escaping (ResponseUI) -> ResponseUIView?,
     openComputer: @escaping () -> Void
   ) {
+    if messageID != message["id"].string { responseViews = [:] }
+    messageID = message["id"].string
     imageTasks.forEach { $0.cancel() }
     imageTasks = []
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1070,6 +1161,15 @@ final class MessageCell: UITableViewCell {
     leading.constant = user ? 48 : 16
     trailing.constant = -16
     for block in ThreadLogic.visibleBlocks(message) {
+      if block["kind"].string == "response_ui", let document = ResponseUI(block) {
+        let view = responseViews[document.id] ?? response(document)
+        if let view {
+          responseViews[document.id] = view
+          view.receive(document, live: messageID.hasPrefix("progress:"))
+          stack.addArrangedSubview(view)
+          continue
+        }
+      }
       if block["kind"].string == "ask", !block["emailDraft"].isNull {
         let card = EmailDraftCardView(block) { answer(block, nil) }
         card.isUserInteractionEnabled = canAnswer
@@ -1222,6 +1322,12 @@ final class MessageCell: UITableViewCell {
       }
     }
 
+  }
+  func receiveResponseState(_ message: JSON) {
+    for block in message["blocks"].array {
+      guard let document = ResponseUI(block), let view = responseViews[document.id] else { continue }
+      view.receive(document, live: messageID.hasPrefix("progress:"))
+    }
   }
   private func addAnswers(_ block: JSON, actions: [JSON], answer: @escaping (JSON, String?) -> Void)
   {

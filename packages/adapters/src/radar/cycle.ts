@@ -267,7 +267,17 @@ async function synthesize(cycle: RadarCycle, summaryAt: Date | null) {
 }
 
 /** Excerpts are cleared after 30 days and signals deleted after 90. */
-async function retain(prisma: PrismaClient, owner: RadarOwner, now: Date) {
+export async function retainRadarObservations(prisma: PrismaClient, owner: RadarOwner, now: Date) {
+  // Work keeps semantic event identities for deduplication, but copies of source
+  // content follow the same retention period as the originating observation.
+  await prisma.assistantWorkEvent.updateMany({
+    where: {
+      work: owner,
+      signal: { ...owner, createdAt: { lt: new Date(now.getTime() - 30 * DAY) } },
+      snapshot: { not: {} },
+    },
+    data: { snapshot: {} },
+  });
   await prisma.radarSignal.updateMany({
     where: {
       ...owner,
@@ -486,7 +496,7 @@ export async function runRadarCycle(deps: RadarCycleDeps, scope: RadarOwner): Pr
     );
     if (tally.retention !== today)
       await stage("retention", async () => {
-        await retain(prisma, owner, now);
+        await retainRadarObservations(prisma, owner, now);
         tally.retention = today;
       });
     next = await nextCycle(cycle, tally.passes < max ? pending : 0);

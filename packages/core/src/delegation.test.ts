@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  advanceDelegationPhase,
   chargeDelegationRun,
   createDelegationRecord,
   DELEGATED_NO_RESULT_TEXT,
@@ -13,6 +14,7 @@ import {
   delegationStopReason,
   stateAfterReview,
   transitionDelegation,
+  validateDelegationPhases,
 } from "./delegation.js";
 
 const now = new Date("2026-10-01T10:00:00.000Z");
@@ -118,6 +120,8 @@ describe("delegated task lifecycle", () => {
     expect(rework.parentTaskRef).toBe("task-parent");
     expect(rework.budget).toEqual({ maxRuns: parent.budget.maxRuns, usedRuns: 4 });
     expect(rework.deadline).toBe(parent.deadline);
+    expect(rework.originalAssignment).toBe(parent.assignment);
+    expect(rework.sources).toEqual(parent.sources);
   });
 });
 
@@ -209,12 +213,145 @@ describe("review outcome", () => {
     expect(stateAfterReview({ ...blocked, outcome: { ...blocked.outcome, failed: true } })).toBe(
       "failed",
     );
-    expect(stateAfterReview(reviewing("ok per docs/a.md docs/b.md"))).toBe("completed");
+    const result = reviewing("Recommend A per docs/a.md docs/b.md.");
+    expect(stateAfterReview(result)).toBe("needs_input");
+    expect(
+      stateAfterReview({
+        ...result,
+        review: delegationReview({
+          taskRef: "t",
+          record: result,
+          summary: "A meets the requested conditions.",
+          reviewRunId: "review",
+          now,
+        }),
+      }),
+    ).toBe("completed");
   });
 
   it("names the stopped task without exposing ids", () => {
     expect(delegationStopNotice(fresh(), "budget_exhausted")).toBe(
       'I stopped "Compare docs/a.md and docs/b.md and recommend one." before reviewing its result: it reached its run limit.',
     );
+  });
+});
+
+describe("bounded delegated phases", () => {
+  const phases = [
+    "Read and compare both sources.",
+    "Check the tradeoffs.",
+    "Write the recommendation.",
+  ];
+  function phaseRecord() {
+    return createDelegationRecord({
+      assignment: "Recommend one option with evidence.",
+      sources: ["docs/a.md", "docs/b.md"],
+      phases,
+      requester,
+      assigneeBotId: "analyst",
+      now,
+    });
+  }
+  function reviewed(
+    record: DelegationRecord,
+    text = "Recommend A per docs/a.md and docs/b.md.",
+    reads = 2,
+  ) {
+    const result: DelegationRecord = {
+      ...transitionDelegation(record, "reviewing", now),
+      outcome: {
+        intent: "result",
+        text,
+        messageId: "result",
+        childRunId: "child",
+        readCount: reads,
+        receivedAt: now.toISOString(),
+      },
+      checks: delegationResultChecks({
+        intent: "result",
+        text,
+        sources: record.sources,
+        readCount: reads,
+      }),
+    };
+    return {
+      ...result,
+      review: delegationReview({
+        taskRef: "phase",
+        record: result,
+        summary: "The result follows from both cited sources.",
+        reviewRunId: "review",
+        now,
+      }),
+    };
+  }
+  it("keeps three verified stages under one assignment and one allowance", () => {
+    const first = reviewed(chargeDelegationRun(phaseRecord(), now));
+    expect(() => transitionDelegation(first, "completed", now)).toThrow(/intermediate phase/);
+    const second = advanceDelegationPhase(first, now);
+    expect(second).toMatchObject({
+      state: "queued",
+      assignment: first.assignment,
+      budget: { usedRuns: 4 },
+      deadline: first.deadline,
+      phases: { index: 1, completed: [{ index: 0, outcome: first.outcome, review: first.review }] },
+    });
+    expect(second.outcome).toBeUndefined();
+    expect(second.review).toBeUndefined();
+    const third = advanceDelegationPhase(reviewed(chargeDelegationRun(second, now)), now);
+    const final = transitionDelegation(reviewed(chargeDelegationRun(third, now)), "completed", now);
+    expect(final.budget).toEqual({ maxRuns: 8, usedRuns: 7 });
+    expect(final.phases?.completed).toHaveLength(2);
+  });
+  it("does not advance or complete missing evidence and bare completion claims", () => {
+    const partial = reviewed(phaseRecord(), "I recommend A based on docs/a.md.", 1);
+    expect(partial.review.outcome).toBe("partial");
+    expect(stateAfterReview(partial)).toBe("needs_input");
+    expect(() => advanceDelegationPhase(partial, now)).toThrow(/verified/);
+    expect(() => transitionDelegation(partial, "completed", now)).toThrow(/verified review/);
+    const result = reviewed(phaseRecord());
+    expect(
+      delegationReview({
+        taskRef: "phase",
+        record: result,
+        summary: "Done.",
+        reviewRunId: "review",
+        now,
+      }).outcome,
+    ).toBe("incomplete");
+  });
+  it("retains the phase plan on rework and never resets expired or exhausted work", () => {
+    const parent = reviewed(chargeDelegationRun(phaseRecord(), now));
+    const rework = createDelegationRecord({
+      assignment: "Verify the missing detail.",
+      sources: [],
+      requester,
+      assigneeBotId: "analyst",
+      parent: { ...parent, taskRef: "parent" },
+      now,
+    });
+    expect(rework.phases).toEqual(parent.phases);
+    expect(rework.sources).toEqual(parent.sources);
+    expect(rework.originalAssignment).toBe(parent.assignment);
+    expect(() =>
+      advanceDelegationPhase({ ...parent, budget: { maxRuns: 8, usedRuns: 8 } }, now),
+    ).toThrow(/cannot continue/);
+    expect(() => advanceDelegationPhase(parent, new Date(now.getTime() + 25 * 3600_000))).toThrow(
+      /cannot continue/,
+    );
+    expect(() =>
+      advanceDelegationPhase(transitionDelegation(parent, "cancelled", now), now),
+    ).toThrow(/verified intermediate/);
+  });
+  it("rejects empty, oversized and unbounded plans", () => {
+    for (const invalid of [
+      [],
+      ["one"],
+      ["one", "two", "three", "four"],
+      ["", "two"],
+      ["x".repeat(2001), "two"],
+      [42, "two"],
+    ])
+      expect(() => validateDelegationPhases(invalid)).toThrow();
   });
 });

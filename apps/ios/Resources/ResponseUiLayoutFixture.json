@@ -1,0 +1,98 @@
+{
+  "kind": "response_ui",
+  "id": "layouts",
+  "summary": "Travel planning examples",
+  "spec": {
+    "root": "root",
+    "elements": {
+      "root": {
+        "type": "Stack",
+        "props": {},
+        "children": ["intro", "budget", "bridge", "heading", "media", "outro"]
+      },
+      "intro": {
+        "type": "Text",
+        "props": { "text": "Fictional examples show two ways to present a five-day trip." },
+        "children": []
+      },
+      "budget": {
+        "type": "Card",
+        "props": { "description": "Five-day travel estimate" },
+        "children": ["total", "breakdown", "daily"]
+      },
+      "total": {
+        "type": "Metric",
+        "props": { "label": "Estimated total", "value": 1250, "unit": "EUR" },
+        "children": []
+      },
+      "breakdown": {
+        "type": "Table",
+        "props": {
+          "columns": ["Expense", "Amount (EUR)"],
+          "rows": [["Accommodation", 850], ["Transport", 250], ["Meals", 150]]
+        },
+        "children": []
+      },
+      "daily": {
+        "type": "Metric",
+        "props": { "label": "Daily budget", "value": 250, "unit": "EUR/day" },
+        "children": []
+      },
+      "bridge": {
+        "type": "Text",
+        "props": { "text": "The estimate is followed by a compact illustrated recommendation." },
+        "children": []
+      },
+      "heading": {
+        "type": "Text",
+        "props": { "text": "Places to consider", "style": "heading" },
+        "children": []
+      },
+      "media": {
+        "type": "Stack",
+        "props": { "direction": "horizontal", "gap": "medium" },
+        "children": ["thumbnail", "details"]
+      },
+      "thumbnail": {
+        "type": "Image",
+        "props": {
+          "artifactId": "fixture-image",
+          "alt": "Fictional riverside stay",
+          "aspectRatio": 1.5
+        },
+        "children": []
+      },
+      "details": {
+        "type": "Stack",
+        "props": { "gap": "small" },
+        "children": ["name", "description", "link"]
+      },
+      "name": {
+        "type": "Text",
+        "props": { "text": "Riverside stay", "style": "heading" },
+        "children": []
+      },
+      "description": {
+        "type": "Text",
+        "props": {
+          "text": "A quiet base near the walking route. Compare the room and transport costs before choosing."
+        },
+        "children": []
+      },
+      "link": {
+        "type": "Link",
+        "props": { "label": "View example", "url": "https://example.test/stay" },
+        "children": []
+      },
+      "outro": {
+        "type": "Text",
+        "props": { "text": "These sample figures are illustrative; no booking has been made." },
+        "children": []
+      }
+    },
+    "state": {},
+    "summary": "Travel planning examples"
+  },
+  "revision": 0,
+  "complete": true
+}

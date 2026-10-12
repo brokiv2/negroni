@@ -48,6 +48,7 @@ function row(patch: Partial<Parameters<typeof radarUpdateView>[0]> = {}) {
     feedback: null,
     feedbackAt: null,
     createdAt: now,
+    observedAt: now,
     updatedAt: now,
     message: { threadId: "thread-1" },
     connection: { displayName: "Work mail", metadata: { accountLabel: "me@example.test" } },

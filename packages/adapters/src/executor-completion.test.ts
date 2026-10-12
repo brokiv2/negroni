@@ -1,3 +1,4 @@
+import { ResponseUiBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   completionMarksUnread,
@@ -9,6 +10,7 @@ import {
   mayOpenModelStream,
   NO_RESPONSE,
   ROUTINE_SILENT_REPLY_GUIDANCE,
+  redactResponseUiBlock,
   runAllowsSilentEmpty,
   runIdentityInstruction,
   runPromotesMidTurnNarration,
@@ -72,6 +74,30 @@ describe("completionMessageSegments", () => {
 });
 
 describe("completionNotificationBody", () => {
+  it("uses the summary of a component-only reply and redacts secrets throughout the composition", () => {
+    const block = ResponseUiBlock.parse({
+      kind: "response_ui",
+      id: "demo",
+      summary: "Estimate demo-private-key",
+      complete: true,
+      spec: {
+        root: "root",
+        summary: "Estimate demo-private-key",
+        state: { note: "demo-private-key" },
+        elements: {
+          root: {
+            type: "Input",
+            props: { label: "Note demo-private-key", bind: "/note", input: "text" },
+            children: [],
+          },
+        },
+      },
+    });
+    expect(completionNotificationBody("", [block])).toBe(block.summary);
+    const safe = redactResponseUiBlock(block, ["demo-private-key"]);
+    expect(JSON.stringify(safe)).not.toContain("demo-private-key");
+    expect(ResponseUiBlock.safeParse(safe).success).toBe(true);
+  });
   it("omits a body when only tool or step activity remains", () => {
     const steps = completionMessageSegments([
       { kind: "steps" as const, steps: [{ label: "Message bot", count: 1 }] },

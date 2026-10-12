@@ -9,28 +9,42 @@ test("assistant view keeps one conversation and returns to team view", async ({
 
   const rootThread = new URL(page.url()).pathname;
   const sidebar = page.locator(".rk-sidebar");
-  const workspace = page.getByRole("button", { name: "Choose workspace" });
+  const workspace = page.getByRole("navigation", { name: "Workspace" });
   await expect(sidebar).toBeVisible();
 
-  await workspace.click();
-  await page.getByRole("menuitemradio", { name: /Personal assistant/ }).click();
+  await workspace.getByRole("button", { name: "Chat", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${rootThread}$`));
   await expect(sidebar).toBeHidden();
-  await expect(workspace).toContainText("Personal");
+  await expect(workspace.getByRole("button", { name: "Chat", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 
-  await page.getByRole("button", { name: "Conversation", exact: true }).first().click();
   const composer = page.getByRole("combobox", { name: /Message Chief/ });
   await composer.fill("**Formatted reply**");
-  await page.getByRole("button", { name: "Attach file", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Preview formatting" }).click();
-  await expect(page.locator("strong").filter({ hasText: "Formatted reply" })).toBeVisible();
+  await composer.press("Enter");
+  const formattedMessage = page
+    .getByTestId("transcript")
+    .locator("strong")
+    .filter({ hasText: "Formatted reply" })
+    .first();
+  await expect(formattedMessage).toBeVisible();
   await captureScreenshot(page, testInfo, "assistant-view");
 
   await page.reload();
   await expect(sidebar).toBeHidden();
-  await workspace.click();
-  await page.getByRole("menuitemradio", { name: /Team chats/ }).click();
+  await expect(formattedMessage).toBeVisible();
+  await workspace.getByRole("button", { name: "Team", exact: true }).click();
   await expect(sidebar).toBeVisible();
-  await expect(workspace).toContainText("Team");
+  await expect(workspace.getByRole("button", { name: "Team", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.reload();
+  await expect(workspace.getByRole("button", { name: "Team", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(sidebar).toBeVisible();
   await captureScreenshot(page, testInfo, "team-view");
 });

@@ -297,7 +297,7 @@ const vesperColors = {
   link: "#1473C8",
   success: "#E3F3E8",
   warning: "#FDF0DF",
-  overlay: "rgba(35,48,44,0.25)",
+  overlay: "rgba(35, 48, 44, 0.25)",
   scrollbar: "#EEEEF0",
   scrollbarHover: "#D8DBDE",
 } as const satisfies ColorTokens;
@@ -324,7 +324,7 @@ export const vesperLight: ThemeTokens = {
     statusOnline: "#57AD85",
     statusOffline: "#ACB0B5",
     errorSurface: "#FBEFED",
-    modalShade: "rgba(35,48,44,0.25)",
+    modalShade: "rgba(35, 48, 44, 0.25)",
     grabHandle: "#D8DBDE",
     code: "#E2E4E7",
     pdfBadge: "#FC2359",

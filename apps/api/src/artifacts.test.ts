@@ -1,8 +1,15 @@
 import type { ArtifactStore } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { IsolationError } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { ArtifactListCursorError, deleteArtifactFamily, listSpaceArtifacts } from "./artifacts.js";
+import {
+  ArtifactListCursorError,
+  deleteArtifactFamily,
+  getOwnedArtifact,
+  getSpaceArtifact,
+  listSpaceArtifacts,
+} from "./artifacts.js";
 
 const actor: Actor = {
   userId: "user-1",
@@ -10,6 +17,77 @@ const actor: Actor = {
   email: "owner@example.com",
   isDeploymentOwner: false,
 };
+
+describe("composed image artifact ownership", () => {
+  const row = {
+    id: "image-1",
+    botId: "bot-1",
+    groupId: null,
+    runId: null,
+    spaceId: "space-1",
+    userId: "user-1",
+    storageKey: "stored-image",
+    name: "photo.png",
+    description: null,
+    mimeType: "image/png",
+    size: 3,
+    version: 1,
+    createdAt: new Date("2026-10-01T00:00:00Z"),
+  };
+  function fixture(groupId: string | null = null) {
+    const stored = { ...row, groupId };
+    const findFirst = vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+      Object.entries(where).every(([key, value]) => stored[key as keyof typeof stored] === value)
+        ? stored
+        : null,
+    );
+    const get = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    return {
+      deps: {
+        prisma: { artifact: { findFirst } } as unknown as PrismaClient,
+        artifacts: { get } as unknown as ArtifactStore,
+      },
+      findFirst,
+      get,
+    };
+  }
+  it("reads the owned conversation image and never reads bytes for a foreign or missing reference", async () => {
+    const f = fixture();
+    expect(
+      await getOwnedArtifact(f.deps, actor, { botId: "bot-1", artifactId: "image-1" }),
+    ).toMatchObject({ id: "image-1", mimeType: "image/png", contentBase64: "AQID" });
+    expect(f.get).toHaveBeenCalledOnce();
+    f.get.mockClear();
+    for (const [scope, input] of [
+      [
+        { ...actor, userId: "other-user" },
+        { botId: "bot-1", artifactId: "image-1" },
+      ],
+      [
+        { ...actor, spaceId: "other-space" },
+        { botId: "bot-1", artifactId: "image-1" },
+      ],
+      [actor, { botId: "other-bot", artifactId: "image-1" }],
+      [actor, { botId: "bot-1", artifactId: "missing" }],
+    ] as const) {
+      await expect(getOwnedArtifact(f.deps, scope, input)).rejects.toBeInstanceOf(IsolationError);
+    }
+    expect(f.get).not.toHaveBeenCalled();
+  });
+  it("requires the same owned group before reading image bytes", async () => {
+    const f = fixture("group-1");
+    const input = { artifactId: "image-1", groupId: "group-1", contextBotId: "bot-1" };
+    await expect(getSpaceArtifact(f.deps, actor, input)).resolves.toMatchObject({ id: "image-1" });
+    f.get.mockClear();
+    await expect(
+      getSpaceArtifact(f.deps, actor, { ...input, groupId: "other-group" }),
+    ).rejects.toBeInstanceOf(IsolationError);
+    await expect(
+      getSpaceArtifact(f.deps, { ...actor, userId: "other-user" }, input),
+    ).rejects.toBeInstanceOf(IsolationError);
+    expect(f.get).not.toHaveBeenCalled();
+  });
+});
 
 function listRow(id: string, familyId: string, createdAt = "2026-09-01T00:00:00.000Z") {
   return {

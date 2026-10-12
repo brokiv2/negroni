@@ -117,6 +117,7 @@ describe("current-turn thread files", () => {
     );
     expect(files).toEqual([
       {
+        artifactId: "artifact-1",
         name: "../quarterly report.pdf",
         mimeType: "application/pdf",
         size: 4,
@@ -124,6 +125,7 @@ describe("current-turn thread files", () => {
       },
     ]);
     expect(currentTurnFilesInstruction(files)).toContain('"attachments/artifact-1.pdf"');
+    expect(currentTurnFilesInstruction(files)).toContain('artifactId: "artifact-1"');
   });
 
   it("also materializes image attachments, not just files", async () => {
@@ -183,7 +185,13 @@ describe("current-turn thread files", () => {
       expect.objectContaining({ botId: "bot-1" }),
     );
     expect(files).toEqual([
-      { name: "photo.png", mimeType: "image/png", size: 4, path: "attachments/image-1.png" },
+      {
+        artifactId: "image-1",
+        name: "photo.png",
+        mimeType: "image/png",
+        size: 4,
+        path: "attachments/image-1.png",
+      },
     ]);
   });
 });

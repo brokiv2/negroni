@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { Router } from "@orpc/server";
 import { implement, ORPCError } from "@orpc/server";
 import type {
   AdapterContext,
@@ -165,6 +166,7 @@ import {
   newestVoiceCredentialOrder,
   Prisma,
   parseComputerMode,
+  ResponseUiStateError,
   releaseSpaceDeletionClaim,
   renewSpaceDeletionClaim,
   restoreBotUnderComputerQuota,
@@ -176,6 +178,7 @@ import {
   selectSpaceModelPreference,
   selectSpaceVoicePreference,
   touchGroupUpdatedAt,
+  updateResponseUiState,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
@@ -610,14 +613,15 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
   await deps.jobs.enqueue(runContinueJob(run.id));
 }
 
-export function createRouter(deps: RouterDeps) {
-  const os = implement(appContract).$context<{
-    actor: Actor | null;
-    signal?: AbortSignal;
-    requestOrigin?: string;
-    /** "web" for browser and desktop clients, "native" for the phone apps. */
-    client?: "native" | "web";
-  }>();
+type RouterContext = {
+  actor: Actor | null;
+  signal?: AbortSignal;
+  requestOrigin?: string;
+  /** "web" for browser and desktop clients, "native" for the phone apps. */
+  client?: "native" | "web";
+};
+export function createRouter(deps: RouterDeps): Router<typeof appContract, RouterContext> {
+  const os = implement(appContract).$context<RouterContext>();
   /** A desktop or web client reading the personal thread holds back Radar pushes briefly. */
   const notePresence = (
     context: { actor: Actor; client?: "native" | "web" },
@@ -1767,6 +1771,22 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     threads: {
+      responseUiState: authed.threads.responseUiState.handler(async ({ context, input }) => {
+        try {
+          const result = await updateResponseUiState(deps.prisma, context.actor, input);
+          if (result.eventSeq !== null)
+            await deps.events.notify(result.threadId, result.eventSeq).catch((error) => {
+              getLogger().error("response state realtime notification", error);
+            });
+          return result.block;
+        } catch (error) {
+          if (error instanceof ResponseUiStateError)
+            throw new ORPCError(error.reason === "conflict" ? "CONFLICT" : "BAD_REQUEST", {
+              message: error.message,
+            });
+          throw error;
+        }
+      }),
       activity: authed.threads.activity.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const runs = await deps.prisma.run.findMany({
@@ -4477,13 +4497,21 @@ export function createRouter(deps: RouterDeps) {
                   return current;
                 }
               }
-              return tx.connection.update({
-                where: { id: current.id },
+              // Remote completion can overlap a disconnect that writes the row
+              // without this provider lock. Do not overwrite its terminal state.
+              await tx.connection.updateMany({
+                where: {
+                  id: current.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  status: current.status,
+                },
                 data: {
                   status: "connected",
                   ...(providerRef ? { providerRef } : {}),
                 },
               });
+              return tx.connection.findUniqueOrThrow({ where: { id: current.id } });
             },
             { timeout: 60_000 },
           );
@@ -5176,9 +5204,15 @@ export function createRouter(deps: RouterDeps) {
         return listArtifactVersions(deps, context.actor, input);
       }),
       create: authed.artifacts.create.handler(async ({ context, input }) => {
-        const botId = input.botId
-          ? (await repos.getBot(context.actor, input.botId)).id
-          : (await groupRepos.getGroupTarget(context.actor, input.groupId!)).members[0]?.bot.id;
+        const feedTarget = input.feedItemId
+          ? await resolveThreadTarget(deps.prisma, context.actor, input)
+          : null;
+        const botId =
+          feedTarget?.kind === "bot"
+            ? feedTarget.botId
+            : input.botId
+              ? (await repos.getBot(context.actor, input.botId)).id
+              : (await groupRepos.getGroupTarget(context.actor, input.groupId!)).members[0]?.bot.id;
         if (!botId) throw new IsolationError();
         try {
           return await createOwnedArtifact(deps, context.actor, { ...input, botId });
@@ -5200,10 +5234,14 @@ export function createRouter(deps: RouterDeps) {
             contextBotId,
           });
         }
-        await repos.getBot(context.actor, input.botId!);
+        const feedTarget = input.feedItemId
+          ? await resolveThreadTarget(deps.prisma, context.actor, input)
+          : null;
+        const botId = feedTarget?.kind === "bot" ? feedTarget.botId : input.botId!;
+        await repos.getBot(context.actor, botId);
         try {
           return await getOwnedArtifact(deps, context.actor, {
-            botId: input.botId!,
+            botId,
             artifactId: input.artifactId,
           });
         } catch (error) {

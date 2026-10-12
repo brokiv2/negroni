@@ -81,7 +81,6 @@ export function VesperAppsScreen({ onSwitchToNegroni }: { onSwitchToNegroni: () 
           detail={t("Spaces, bots, groups and the operator settings live in Negroni.")}
         />
       )}
-
     </View>
   );
 }

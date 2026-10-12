@@ -101,11 +101,23 @@ async function main() {
         "packages/testkit/src/bot-secrets.test.ts",
         "packages/db/src/space-membership.postgres.test.ts",
         "packages/db/src/messaging.postgres.test.ts",
+        "packages/db/src/response-ui.postgres.test.ts",
         "packages/memory/src/commit.postgres.test.ts",
         "packages/adapters/src/wakeup.postgres.test.ts",
         "packages/adapters/src/realtime.postgres.test.ts",
         "packages/adapters/src/job-reconciler.postgres.test.ts",
         "packages/adapters/src/cloud-agent.postgres.test.ts",
+        "packages/adapters/src/assistant-work.postgres.test.ts",
+        "packages/adapters/src/delegations.postgres.test.ts",
+        "packages/adapters/src/feed-research.postgres.test.ts",
+        "packages/adapters/src/interest-learning.postgres.test.ts",
+        "packages/adapters/src/radar/cycle.postgres.test.ts",
+        "packages/adapters/src/radar/radar.postgres.test.ts",
+        "apps/api/src/assistant-work.executor.postgres.test.ts",
+        "apps/api/src/delegation.executor.postgres.test.ts",
+        "apps/api/src/feed-research.executor.postgres.test.ts",
+        "apps/api/src/radar.postgres.test.ts",
+        "packages/testkit/src/app-connections.postgres.test.ts",
       ];
       // Each app reconciles all durable work in its database, including intentionally
       // unfinished fixture runs. Clone the pristine migrated schema so one suite

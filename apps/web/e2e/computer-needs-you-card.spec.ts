@@ -7,6 +7,7 @@ import {
   createNamedBot,
   realSandboxTimeout,
   rpc,
+  selectWorkspaceView,
   signup,
 } from "./helpers";
 
@@ -38,6 +39,7 @@ test("needs-you computer card opens the computer", async ({ page }, testInfo) =>
   const card = page.getByTestId("computer-card");
   if ((await card.count()) === 0) {
     await page.reload({ waitUntil: "domcontentloaded" });
+    await selectWorkspaceView(page, "team");
     await expect(page.getByPlaceholder(/Message/)).toBeVisible({ timeout: 15_000 });
   }
   await expect(card).toBeVisible({ timeout: 15_000 });
@@ -69,6 +71,8 @@ test("needs-you computer card opens a group member bot computer", async ({ page 
   await mockMemberComputerRpcs(page, writerId);
 
   await page.goto(`/app/g/${group.id}`);
+  await selectWorkspaceView(page, "team");
+  await expect(page).toHaveURL(new RegExp(`/app/g/${group.id}$`));
   await expect(page.getByRole("combobox", { name: /Message Needs you team/ })).toBeVisible();
 
   const card = page.getByTestId("computer-card");

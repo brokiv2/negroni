@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { AskCard } from "./AskCard";
 import { FeedSettings } from "./FeedSettings";
+import { ResponseUiMessage } from "./ResponseUiMessage";
 import { NeedsYou } from "./radar/NeedsYou";
 import { RadarPanelDialog } from "./radar/RadarPanel";
 
@@ -47,7 +48,10 @@ export function PersonalWorkspace({
   const [radarRevision, setRadarRevision] = useState(0);
   const wasActive = useRef(active);
   useEffect(() => {
-    if (active && !wasActive.current) setRadarRevision((v) => v + 1);
+    if (active && !wasActive.current) {
+      setRadarRevision((v) => v + 1);
+      setRevision((v) => v + 1);
+    }
     wasActive.current = active;
   }, [active]);
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -415,9 +419,11 @@ function FeedArticle({ item }: { item: FeedItem }) {
 function FeedDiscussion({ item }: { item: FeedItem }) {
   const [snapshot, setSnapshot] = useState<ThreadSnapshot | null>(null);
   const [draft, setDraft] = useState("");
+  const [reply, setReply] = useState<{ messageId: string; summary: string } | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
-  const pending = useRef<{ text: string; nonce: string } | null>(null);
+  const pending = useRef<{ text: string; nonce: string; replyToMessageId?: string } | null>(null);
   const alive = useRef(true);
   const refresh = useCallback(async () => {
     const next = await rpc.threads.get({ feedItemId: item.id });
@@ -443,13 +449,21 @@ function FeedDiscussion({ item }: { item: FeedItem }) {
   }, [active, refresh]);
   async function send(text = draft) {
     if (!text.trim() || sending || active) return;
-    if (pending.current?.text !== text) pending.current = { text, nonce: crypto.randomUUID() };
+    if (pending.current?.text !== text || pending.current.replyToMessageId !== reply?.messageId)
+      pending.current = { text, nonce: crypto.randomUUID(), replyToMessageId: reply?.messageId };
+    const attempt = pending.current;
     setSending(true);
     setError("");
     try {
-      await rpc.threads.send({ feedItemId: item.id, text, clientNonce: pending.current.nonce });
+      await rpc.threads.send({
+        feedItemId: item.id,
+        text,
+        clientNonce: attempt.nonce,
+        replyToMessageId: attempt.replyToMessageId,
+      });
       pending.current = null;
-      setDraft("");
+      setDraft((current) => (current === text ? "" : current));
+      setReply((current) => (current?.messageId === attempt.replyToMessageId ? null : current));
       await refresh();
     } catch {
       setError("Could not send. Retry keeps the same message.");
@@ -483,6 +497,18 @@ function FeedDiscussion({ item }: { item: FeedItem }) {
           {message.blocks.map((block, index) =>
             block.kind === "text" ? (
               <ChatMarkdown key={index}>{block.text}</ChatMarkdown>
+            ) : block.kind === "response_ui" ? (
+              <ResponseUiMessage
+                key={`${message.id}:${block.id}`}
+                messageId={message.id}
+                block={block}
+                target={{ feedItemId: item.id }}
+                onFollowUp={(text) => {
+                  setDraft((current) => (current ? `${current}\n${text}` : text));
+                  setReply({ messageId: message.id, summary: block.summary });
+                  composer.current?.focus();
+                }}
+              />
             ) : block.kind === "ask" ? (
               <AskCard
                 key={index}
@@ -533,6 +559,22 @@ function FeedDiscussion({ item }: { item: FeedItem }) {
           {error}
         </p>
       )}
+      {reply && (
+        <div className="flex items-center justify-between gap-2 rounded-xl bg-muted px-3 text-sm">
+          <span className="min-w-0 truncate" dir="auto">
+            {reply.summary}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            className="min-h-13 min-w-13 shrink-0 text-base"
+            aria-label="Cancel reply"
+            onClick={() => setReply(null)}
+          >
+            ×
+          </Button>
+        </div>
+      )}
       <form
         className="flex gap-2"
         onSubmit={(e) => {
@@ -541,13 +583,18 @@ function FeedDiscussion({ item }: { item: FeedItem }) {
         }}
       >
         <textarea
+          ref={composer}
           aria-label="Ask about this post"
           placeholder="Ask about this post…"
-          className="min-h-20 flex-1 rounded-xl border border-border bg-background p-3"
+          className="min-h-20 min-w-0 flex-1 rounded-xl border border-border bg-background p-3 text-base"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <button type="submit" className={button} disabled={sending || !!active || !draft.trim()}>
+        <button
+          type="submit"
+          className={`${button} min-h-13 px-4 text-base`}
+          disabled={sending || !!active || !draft.trim()}
+        >
           Send
         </button>
       </form>

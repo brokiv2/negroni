@@ -1,5 +1,28 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, openNewSpace, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openNewSpace,
+  rpc,
+  signup,
+} from "./helpers";
+
+async function expectScriptedFailure(page: Page) {
+  await expect
+    .poll(
+      async () => {
+        const snapshot = await rpc<{ run?: { status: string; error: string | null } | null }>(
+          page,
+          "threads/get",
+          { botId: activeBotId(page) },
+        );
+        return snapshot.run && { status: snapshot.run.status, error: snapshot.run.error };
+      },
+      { timeout: 30_000 },
+    )
+    .toEqual({ status: "failed", error: "Scripted run failure" });
+}
 
 function isPresented(error: Locator) {
   return error.evaluate((element) => {
@@ -29,12 +52,14 @@ test("a failed run is visible once without returning after reload", async ({ pag
 
   // "fail this run" makes the scripted runtime throw, so the run fails the same way a
   // real provider error would, without depending on how models are configured.
+  // The conversation shows the friendly error and keeps provider diagnostics hidden.
   await page.getByPlaceholder(/^Message /).fill("fail this run");
   await page.getByRole("button", { name: "Send" }).click();
+  await expectScriptedFailure(page);
 
   const error = page.getByTestId("composer-error");
   await expect(error).toBeVisible({ timeout: 30_000 });
-  await expect(error).toContainText("Scripted run failure");
+  await expect(error).toContainText("Something went wrong. Please try again.");
   await captureScreenshot(page, testInfo, "new-run-error-visible");
 
   await page.reload();
@@ -48,7 +73,7 @@ test("a failed run is visible once without returning after reload", async ({ pag
   await page.getByPlaceholder(/^Message /).fill("fail this run");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(error).toBeVisible({ timeout: 30_000 });
-  await expect(error).toContainText("Scripted run failure");
+  await expect(error).toContainText("Something went wrong. Please try again.");
 
   const dismissError = page.getByTestId("composer-error-dismiss");
   await dismissError.focus();
@@ -72,9 +97,10 @@ test("a covered run error is not remembered until it is presented", async ({ pag
   await expect(page.locator("main")).toHaveAttribute("aria-hidden", "true");
   await expect(page.locator("main")).toHaveJSProperty("inert", true);
   await sendButton.evaluate((button) => (button as HTMLButtonElement).click());
+  await expectScriptedFailure(page);
 
   const error = page.getByTestId("composer-error");
-  await expect(error).toContainText("Scripted run failure", { timeout: 30_000 });
+  await expect(error).toContainText("Something went wrong. Please try again.", { timeout: 30_000 });
   expect(await isPresented(error)).toBe(false);
   await captureScreenshot(page, testInfo, "run-error-covered-by-mobile-navigation");
   await page.reload();
@@ -93,7 +119,7 @@ test("a covered run error is not remembered until it is presented", async ({ pag
   if (!nextSendButton) throw new Error("Send button not found");
   await page.getByRole("button", { name: "Open navigation" }).click();
   await nextSendButton.evaluate((button) => (button as HTMLButtonElement).click());
-  await expect(error).toContainText("Scripted run failure", { timeout: 30_000 });
+  await expect(error).toContainText("Something went wrong. Please try again.", { timeout: 30_000 });
 
   await page.getByRole("button", { name: "Close navigation" }).click();
   await expect.poll(() => isPresented(error)).toBe(true);
@@ -116,7 +142,7 @@ test("a covered run error is not remembered until it is presented", async ({ pag
   const newSpaceDialog = page.getByRole("dialog", { name: "New space" });
   await expect(newSpaceDialog).toBeVisible();
   await modalSendButton.evaluate((button) => (button as HTMLButtonElement).click());
-  await expect(error).toContainText("Scripted run failure", { timeout: 30_000 });
+  await expect(error).toContainText("Something went wrong. Please try again.", { timeout: 30_000 });
   expect(await isPresented(error)).toBe(false);
   await expect.poll(() => seenRunErrorCount(page)).toBe(recordedErrorCount + 1);
 

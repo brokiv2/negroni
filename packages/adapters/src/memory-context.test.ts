@@ -73,6 +73,19 @@ function storeWith(read: MemoryStore["read"]): MemoryStore {
 }
 
 describe("on-demand memory", () => {
+  it("keeps index ordering stable when the store returns the same paths in another order", async () => {
+    const documents = [
+      document("a", "a.md", "first", 1, "2026-01-01"),
+      document("z", "z.md", "second", 1, "2026-01-01"),
+    ];
+    let reversed = false;
+    const store = storeWith(
+      vi.fn(async () => snapshot(reversed ? [...documents].reverse() : documents)),
+    );
+    const first = await loadAgentMemoryIndex(store, "bot-1", context);
+    reversed = true;
+    expect(await loadAgentMemoryIndex(store, "bot-1", context)).toBe(first);
+  });
   it("keeps old tasks and account statuses out of the automatic context", async () => {
     const store = storeWith(
       vi.fn(async () =>

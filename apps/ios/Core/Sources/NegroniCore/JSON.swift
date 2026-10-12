@@ -227,6 +227,7 @@ public enum ThreadLogic {
           !$0.isEmpty
         }.joined(separator: " · ")
       case "file", "image": return block["name"].string
+      case "response_ui": return ResponseUI(block)?.plainText ?? block["summary"].string
       default: return nil
       }
     }.joined(separator: "\n\n")
@@ -250,6 +251,15 @@ public enum ThreadLogic {
       return result
     }
     let payload = event["payload"]
+    if event["type"].string == "thread.message.updated" {
+      var messages = result["messages"].array
+      if let index = messages.firstIndex(where: { $0["id"] == payload["messageId"] }),
+        case .array = payload["blocks"] {
+        messages[index]["blocks"] = payload["blocks"]
+        result["messages"] = .array(messages)
+      }
+      return result
+    }
     if !payload["message"].isNull {
       let message = payload["message"]
       var messages = result["messages"].array

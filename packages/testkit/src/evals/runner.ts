@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { type AgentRuntime, type JobPublisher, runJobKey } from "@rakazo/adapter-kit";
 import { MessagingTeamChatEmulator } from "@rakazo/adapters";
 import type { ModelConnectInput, RunStatus } from "@rakazo/contracts";
-import { ACTIVE_RUN_STATUSES, isTerminal } from "@rakazo/core";
+import {
+  ACTIVE_RUN_STATUSES,
+  delegationRecord,
+  isDelegationActive,
+  isTerminal,
+} from "@rakazo/core";
 import type { createDb } from "@rakazo/db";
 import { discardBotIntroRun } from "../discard-bot-intro.js";
 import { sessionCookieHeader } from "../index.js";
@@ -329,6 +334,13 @@ export async function runTrial(
       if ("slack" in step && terminal.status === "completed") {
         await waitForMessagingDelivery(prisma, runId, deadline);
       }
+      if (scenario.waitForDelegations) {
+        await waitForDelegatedWork(prisma, actors, {
+          deadline,
+          maxToolCalls: options.maxToolCalls,
+          clearedToolCount,
+        });
+      }
       const snap = await rpc<{
         messages: Array<{
           role: string;
@@ -394,6 +406,19 @@ export async function runTrial(
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),
       },
+      ...(scenario.waitForDelegations
+        ? {
+            delegations: (
+              await handles.prisma.task.findMany({
+                where: { OR: actorScopes(actors) },
+                select: { delegation: true },
+              })
+            ).flatMap((task) => {
+              const record = delegationRecord(task.delegation);
+              return record ? [record] : [];
+            }),
+          }
+        : {}),
     };
     phase = "harness";
     result.criteria = scenario.grade(evidence);
@@ -516,6 +541,38 @@ async function waitForMessagingDelivery(
 
 function actorScopes(actors: readonly EvalActor[]) {
   return actors.map(({ userId, spaceId }) => ({ userId, spaceId }));
+}
+
+/** A terminal child run can still have a durable review or next phase to dispatch. */
+export async function waitForDelegatedWork(
+  prisma: EvalApp["prisma"],
+  actors: readonly EvalActor[],
+  options: { deadline: number; maxToolCalls: number; clearedToolCount: number },
+): Promise<void> {
+  await poll(async () => {
+    const [runs, tasks, count] = await Promise.all([
+      prisma.run.findMany({ where: { OR: actorScopes(actors) }, select: { status: true } }),
+      prisma.task.findMany({ where: { OR: actorScopes(actors) }, select: { delegation: true } }),
+      prisma.event.count({
+        where: { spaceId: { in: actors.map((actor) => actor.spaceId) }, type: "agent.tool.called" },
+      }),
+    ]);
+    if (count + options.clearedToolCount > options.maxToolCalls)
+      throw new EvalFailure("incomplete", "Delegated tool call budget exceeded");
+    const delegations = tasks.flatMap((task) => {
+      const record = delegationRecord(task.delegation);
+      return record ? [record] : [];
+    });
+    if (
+      runs.some((run) => ["waiting_input", "waiting_takeover"].includes(run.status)) ||
+      delegations.some((record) => record.state === "needs_input")
+    )
+      throw new EvalFailure("agent", "Delegated work requested assistance; no coaching supplied");
+    return runs.every((run) => isTerminal(run.status as RunStatus)) &&
+      delegations.every((record) => !isDelegationActive(record))
+      ? true
+      : undefined;
+  }, options.deadline);
 }
 
 async function findScopeBots(

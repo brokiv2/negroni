@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { captureScreenshot, completeOnboarding, selectWorkspaceView, signup } from "./helpers";
 
 test("titled sidebar section expands and collapses", async ({ page }, testInfo) => {
   const stamp = Date.now();
@@ -7,8 +7,9 @@ test("titled sidebar section expands and collapses", async ({ page }, testInfo) 
   await completeOnboarding(page);
   await page.goto("/app");
   await page.waitForURL(/\/app\/[^/]+$/);
+  await selectWorkspaceView(page, "team");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const bot = sidebar.getByRole("button", { name: /^Chief/ });
 
   await bot.click({ button: "right" });

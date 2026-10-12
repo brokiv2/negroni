@@ -202,6 +202,7 @@ export function speechFromBlocks(blocks: MessageBlock[]): string {
       if (block.kind === "text" || block.kind === "progress" || block.kind === "meta")
         return block.text;
       if (block.kind === "ask") return block.text;
+      if (block.kind === "response_ui") return block.summary;
       if (block.kind === "cloud_agent")
         return `${block.title}: ${block.status}${block.prUrl ? ` ${block.prUrl}` : ""}`;
       if (block.kind === "computer") return block.text;

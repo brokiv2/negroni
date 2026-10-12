@@ -22,7 +22,7 @@ test("spawned bots nest under their parent and collapse", async ({ page }, testI
   await expect(scout).toHaveAttribute("data-roster-depth", "1");
   await expect(rosterRow(page, /^Chief/)).toHaveAttribute("data-roster-depth", "0");
 
-  const sidebar = page.locator("aside").first();
+  const sidebar = page.locator(".rk-sidebar");
   const toggle = sidebar.getByRole("button", { name: "Collapse Chief" });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await sidebar.getByPlaceholder("Search").hover();

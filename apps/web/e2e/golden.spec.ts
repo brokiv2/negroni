@@ -1,10 +1,12 @@
-import { expect, type Page, test } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   activeBotId,
   captureScreenshot,
   completeOnboarding,
   realSandboxTimeout,
   rpc,
+  selectWorkspaceView,
   signup,
 } from "./helpers";
 
@@ -25,24 +27,52 @@ test("two users are isolated and a bot completes durable work", async ({ browser
   const stamp = Date.now();
   await signup(pageA, `ada-${stamp}@rakazo.test`, "password12", "Ada", testInfo);
   await completeOnboarding(pageA, testInfo);
-  await expect(pageA.getByText("Chief").first()).toBeVisible();
+  await expect(sidebarBotButton(pageA, /^Chief$/)).toBeVisible();
 
   await signup(pageB, `bob-${stamp}@rakazo.test`, "password12", "Bob");
   await completeOnboarding(pageB);
-  await expect(pageB.getByText("Chief").first()).toBeVisible();
+  await expect(sidebarBotButton(pageB, /^Chief$/)).toBeVisible();
   await expect(pageB.getByText("Ada", { exact: true })).toHaveCount(0);
 
   const composer = pageA.getByPlaceholder(/Message/);
   await composer.fill("write a file in your home called notes/result.txt that says isolation-ok");
+  const sendResponse = pageA.waitForResponse(
+    (response) => response.url().includes("/rpc/threads/send") && response.ok(),
+  );
   await pageA.keyboard.press("Enter");
+  const sent = (await (await sendResponse).json()) as { json: { runId: string } };
   await expect(
-    pageA.getByText(/writing that into my home|isolation-ok|handled/i).first(),
+    pageA
+      .getByTestId("transcript")
+      .getByText(/writing that into my home|isolation-ok|handled/i)
+      .first(),
   ).toBeVisible({
     timeout: 30_000,
   });
+  // Thread snapshots expose active or failed runs; the recent activity list
+  // retains the completed run, identified by this send's durable receipt.
+  await expect
+    .poll(
+      async () => {
+        const recent = await rpc<{ runs: Array<{ runId: string; status: string }> }>(
+          pageA,
+          "runs/list",
+          { filter: "recent" },
+        );
+        return recent.runs.find((run) => run.runId === sent.json.runId)?.status ?? "missing";
+      },
+      { timeout: realSandboxTimeout(90_000, 30_000) },
+    )
+    .toBe("completed");
 
   await pageA.reload();
-  await expect(pageA.getByText(/isolation-ok|writing that into my home/i).first()).toBeVisible();
+  await selectWorkspaceView(pageA, "team");
+  await expect(
+    pageA
+      .getByTestId("transcript")
+      .getByText(/isolation-ok|writing that into my home/i)
+      .first(),
+  ).toBeVisible();
   await captureScreenshot(pageA, testInfo, "07-durable-bot-work");
 
   await a.close();
@@ -138,10 +168,18 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 
   await page.getByText("Integrations").click();
   await expect(page.getByPlaceholder("Search apps")).toBeVisible();
-  const featured = page.getByTestId("featured-connectors");
+  await page.getByRole("button", { name: "Add app", exact: true }).click();
+  const featured = page
+    .getByTestId("integration-categories")
+    .locator('section[data-section-id="popular"]');
   await expect(featured).toContainText(
     /Gmail[\s\S]*Google Calendar[\s\S]*Google Drive[\s\S]*Slack[\s\S]*Notion/,
   );
+  // Developer integrations live in a collapsed category until it is opened.
+  await page
+    .getByTestId("integration-categories")
+    .getByRole("button", { name: /^Developer tools/ })
+    .click();
   await expect(page.getByText("GitHub", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add Executor", exact: true })).toBeHidden();
   await expect(page.getByRole("button", { name: "Add Treg", exact: true })).toBeHidden();
@@ -154,8 +192,10 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   ).toBeHidden();
   await captureScreenshot(page, testInfo, "11-plugins-catalog");
 
-  // Nearest ancestor with an Add/Added control (featured tile or catalog row).
-  const gmailRow = featured
+  // Search gives one stable row while the connected app leaves Popular.
+  await page.getByPlaceholder("Search apps").fill("Gmail");
+  const gmailRow = page
+    .getByRole("dialog", { name: "Integrations" })
     .getByText("Gmail", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
   await gmailRow.getByRole("button", { name: "Add", exact: true }).click();
@@ -194,13 +234,16 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(detailAgain.getByLabel("Account label")).toHaveCount(1);
   await detailAgain.getByRole("button", { name: "Uninstall", exact: true }).click();
   await expect(page.getByTestId("connection-detail")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add app", exact: true }).click();
+  await page.getByPlaceholder("Search apps").fill("Gmail");
   const gmailRowEmpty = page
-    .getByTestId("featured-connectors")
+    .getByRole("dialog", { name: "Integrations" })
     .getByText("Gmail", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
   await expect(gmailRowEmpty.getByRole("button", { name: "Add", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "11b-connected-plugins-empty");
 
+  await page.getByPlaceholder("Search apps").fill("Linear");
   const linearRow = page
     .getByText("Linear", { exact: true })
     .locator("xpath=ancestor::*[.//button][1]");
@@ -216,10 +259,9 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(page.getByTestId("connection-detail")).toHaveCount(0);
   await expect(linearRow.getByRole("button", { name: "Add", exact: true })).toBeVisible();
 
+  await page.getByPlaceholder("Search apps").fill("");
   const advanced = page.getByTestId("integrations-advanced");
-  await advanced.evaluate((element) => {
-    (element as HTMLDetailsElement).open = true;
-  });
+  await advanced.locator("summary").click();
   await expect(page.getByRole("button", { name: "Manage MCP servers", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add MCP server", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add OpenAPI", exact: true })).toBeVisible();
@@ -260,7 +302,10 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(page.getByPlaceholder("https://example.com/mcp")).toHaveValue(
     "https://mcp.example.test/mcp",
   );
-  await expect(page.locator("select")).toHaveValue("bearer");
+  const authTypeSelect = page.getByRole("combobox").filter({
+    has: page.getByRole("option", { name: "Bearer token", exact: true }),
+  });
+  await expect(authTypeSelect).toHaveValue("bearer");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await page.getByRole("button", { name: "Add Treg", exact: true }).click();
@@ -279,7 +324,7 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await page
     .getByPlaceholder("https://example.com/openapi.json")
     .fill("https://api.example.test/openapi.json");
-  await page.locator("select").selectOption("bearer");
+  await authTypeSelect.selectOption("bearer");
   await page.getByPlaceholder("Credential").fill("fake-openapi-browser-credential");
   await page.getByRole("button", { name: "Verify and add", exact: true }).click();
   await expect(
@@ -300,7 +345,7 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 
   await page.getByRole("button", { name: "Close integrations" }).click();
 
-  await page.getByText("Chief").first().click();
+  await sidebarBotButton(page, /^Chief$/).click();
   const gear = page.getByRole("button", { name: "Show settings" });
   if (!(await gear.isVisible().catch(() => false))) {
     await page.getByTitle("Agent computer").click();
@@ -330,19 +375,83 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
 test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) => {
   const browserErrors: string[] = [];
   const failedRequests: string[] = [];
+  const personalRequests = new Map<Request, string>();
+  const replacedContextRequests = new Set<Request>();
+  const canceledContextRequests: Request[] = [];
+  const successfulTeamRequests = new Set<string>();
+  let replacingPersonalBotId: string | null = null;
+  const threadTarget = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() !== "POST" ||
+      (path !== "/rpc/threads/get" && path !== "/rpc/threads/subscribe")
+    )
+      return null;
+    try {
+      const body = request.postDataJSON() as {
+        json?: { botId?: unknown; threadKind?: unknown };
+      };
+      if (
+        typeof body.json?.botId !== "string" ||
+        (body.json.threadKind !== undefined &&
+          body.json.threadKind !== "team" &&
+          body.json.threadKind !== "personal")
+      )
+        return null;
+      return {
+        botId: body.json.botId,
+        threadKind: body.json.threadKind ?? "team",
+        path,
+      };
+    } catch {
+      return null;
+    }
+  };
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") browserErrors.push(message.text());
   });
+  page.on("request", (request) => {
+    const target = threadTarget(request);
+    if (target?.threadKind !== "personal") return;
+    personalRequests.set(request, target.botId);
+    if (target.botId === replacingPersonalBotId) replacedContextRequests.add(request);
+  });
+  page.on("requestfinished", (request) => personalRequests.delete(request));
   page.on("requestfailed", (request) => {
+    personalRequests.delete(request);
+    if (
+      request.failure()?.errorText === "net::ERR_ABORTED" &&
+      replacedContextRequests.has(request)
+    ) {
+      // Keep request identities: cleanup can report cancellation after Team is already visible.
+      canceledContextRequests.push(request);
+      return;
+    }
     failedRequests.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText ?? ""}`,
     );
   });
+  page.on("response", (response) => {
+    const target = threadTarget(response.request());
+    if (response.status() === 200 && target?.threadKind === "team") {
+      successfulTeamRequests.add(`${target.botId}:${target.path}`);
+    }
+  });
   const stamp = Date.now();
   const email = `shell-${stamp}@rakazo.test`;
   await signup(page, email, "password12", "Shell");
-  await completeOnboarding(page);
+  await completeOnboarding(page, undefined, "assistant");
+  const chiefId = activeBotId(page);
+  replacingPersonalBotId = chiefId;
+  for (const [request, botId] of personalRequests) {
+    if (botId === chiefId) replacedContextRequests.add(request);
+  }
+  await selectWorkspaceView(page, "team");
+  replacingPersonalBotId = null;
+  for (const path of ["/rpc/threads/get", "/rpc/threads/subscribe"]) {
+    await expect.poll(() => successfulTeamRequests.has(`${chiefId}:${path}`)).toBe(true);
+  }
   await page.evaluate(() => {
     Object.defineProperty(globalThis.crypto, "randomUUID", {
       value: undefined,
@@ -391,6 +500,15 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await expect(composer).toHaveAttribute("placeholder", "Message Chief");
   await captureScreenshot(page, testInfo, "14-active-bot-work-mobile");
   await page.setViewportSize({ width: 1280, height: 720 });
+  for (const path of ["/rpc/threads/get", "/rpc/threads/subscribe"]) {
+    expect(
+      canceledContextRequests.filter((request) => threadTarget(request)?.path === path).length,
+    ).toBeLessThanOrEqual(1);
+  }
+  for (const request of canceledContextRequests) {
+    expect(threadTarget(request)?.botId).toBe(chiefId);
+    expect(threadTarget(request)?.threadKind).toBe("personal");
+  }
   expect(browserErrors).toEqual([]);
   expect(failedRequests).toEqual([]);
   let releaseStopRequest: () => void = () => undefined;
@@ -422,6 +540,7 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await page.getByPlaceholder("Password").fill("password12");
   await page.getByRole("button", { name: "Continue with email" }).click();
   await page.waitForURL(/\/app/, { timeout: 20_000 });
+  await selectWorkspaceView(page, "team");
   await expect(sidebarBotButton(page, /^Chief/)).toBeVisible();
   await expect(sidebarBotButton(page, /Scout/)).toBeVisible();
   await captureScreenshot(page, testInfo, "15-restored-session");
@@ -434,12 +553,21 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await signup(page, `menu-${stamp}@rakazo.test`, "password12", "Menu");
   await completeOnboarding(page);
 
-  const chief = page.getByRole("button", { name: /Chief/ }).first();
+  // Onboarding publishes a Team welcome. Establish a persisted read state before
+  // testing the menu's explicit unread action, independent of window focus.
+  await selectWorkspaceView(page, "team");
+  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible();
+  await rpc(page, "threads/markRead", { botId: activeBotId(page) });
+  await page.reload();
+  await selectWorkspaceView(page, "team");
+
+  const chief = sidebarBotButton(page, /^Chief$/);
   await chief.click({ button: "right" });
   await expect(page.getByRole("menu", { name: "Actions for Chief" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Edit Profile" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Mark as Unread", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "16-bot-context-menu");
   await page.getByRole("menuitem", { name: "Mark as Unread" }).click();
 
@@ -455,10 +583,10 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await chief.click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Unpin", exact: true })).toBeVisible();
   await page.getByRole("menuitem", { name: "Duplicate" }).click();
-  await expect(page.getByText("Chief copy").first()).toBeVisible();
+  await expect(sidebarBotButton(page, /^Chief copy$/)).toBeVisible();
   await captureScreenshot(page, testInfo, "17-pinned-and-duplicated-bot");
 
-  const copy = page.getByRole("button", { name: /Chief copy/ }).first();
+  const copy = sidebarBotButton(page, /^Chief copy$/);
   await copy.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByRole("alertdialog", { name: "Delete Chief copy?" })).toBeVisible();
