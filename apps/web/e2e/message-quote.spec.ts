@@ -371,6 +371,8 @@ test("a selection spanning two messages offers no quote action", async ({ page }
   await composer.press("Enter");
   await expect(userRow(firstText)).toBeVisible({ timeout: 20_000 });
   await composer.fill(secondText);
+  // The first row can arrive through SSE before the send's refresh releases the composer.
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await expect(userRow(secondText)).toBeVisible({ timeout: 20_000 });
 
@@ -410,6 +412,7 @@ test("quoting a second message retargets the armed reply", async ({ page }) => {
     (response) => response.url().includes("/rpc/threads/send") && response.ok(),
   );
   await composer.fill(secondText);
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
   await composer.press("Enter");
   await sentSecond;
   const secondRow = userRow(secondText);
