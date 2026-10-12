@@ -553,12 +553,21 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await signup(page, `menu-${stamp}@rakazo.test`, "password12", "Menu");
   await completeOnboarding(page);
 
+  // Onboarding publishes a Team welcome. Establish a persisted read state before
+  // testing the menu's explicit unread action, independent of window focus.
+  await selectWorkspaceView(page, "team");
+  await expect(page.getByText("What do you want me on first?", { exact: true })).toBeVisible();
+  await rpc(page, "threads/markRead", { botId: activeBotId(page) });
+  await page.reload();
+  await selectWorkspaceView(page, "team");
+
   const chief = sidebarBotButton(page, /^Chief$/);
   await chief.click({ button: "right" });
   await expect(page.getByRole("menu", { name: "Actions for Chief" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Edit Profile" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Mark as Unread", exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "16-bot-context-menu");
   await page.getByRole("menuitem", { name: "Mark as Unread" }).click();
 
